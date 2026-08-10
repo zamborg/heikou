@@ -119,14 +119,17 @@ func (m Model) helpContentLines() []string {
 		{helpKeyLabel(m.settings.SendMessageKey()) + " + text", "Send a follow-up to the selected live session; its row then shows this newest Heikou-routed message."},
 		{helpKeyLabel(m.settings.CycleRunnerKey()) + " · empty", "Cycle Codex, Claude, and no-agent for the next launch."},
 		{helpKeyLabel(m.settings.CycleRootKey()) + " · empty", "Cycle the registered roots of the selected workstream."},
-		{"↑ / ↓", "Select a workstream or session."},
+		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead."},
 		{"PgUp / PgDn", "Move through the dashboard list one viewport at a time."},
 		{"← / → · empty", "Collapse or expand the selected workstream."},
 		{"← / → · text", "Move the composer cursor."},
 		{"Enter · empty", "Collapse a workstream, or attach to an available session runtime."},
-		{"Home / Ctrl-A", "Move to the start of composer text; End / Ctrl-E moves to the end."},
+		{"Shift-Enter / Ctrl-J", "Insert a composer newline unless that chord is explicitly rebound to another composer action."},
+		{"Option-← / Option-→", "Move one word; Option-Delete removes the previous word."},
+		{"Command-← / Command-→", "Move to the start or end of the logical line; Command-↑ / Command-↓ jumps across the whole draft."},
+		{"Home / Ctrl-A", "Move to the start of the logical line; End / Ctrl-E moves to its end."},
 		{"Backspace / Ctrl-H", "Delete the previous character; Delete removes the next one."},
-		{"Ctrl-W / Ctrl-U", "Delete the previous word, or clear text before the cursor."},
+		{"Ctrl-W / Ctrl-U", "Delete the previous word, or clear text back to the current line start."},
 		{"Ctrl-R", "Cycle the next-session runner regardless of composer text."},
 		{"Ctrl-X twice", "Stop an available runtime while keeping its durable session record. Once no pane remains, the same chord twice permanently deletes that record and membership."},
 		{"F3", "Open the workstream organizer."},
@@ -138,6 +141,8 @@ func (m Model) helpContentLines() []string {
 	for _, binding := range composerBindings {
 		lines = appendHelpBinding(lines, m.width, binding.key, binding.description)
 	}
+	lines = appendHelpParagraph(lines, m.width,
+		"The macOS terminal decides which modifier chords reach Heikou. Enhanced Option/Command events and common Alt, Home/End, and Ctrl-key fallbacks are supported; use Ctrl-J when Shift-Enter is reported as ordinary Enter.")
 
 	lines = appendHelpSection(lines, m.width, "Workstream organizer · F3")
 	for _, binding := range []struct {

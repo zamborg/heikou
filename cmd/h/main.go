@@ -26,7 +26,7 @@ import (
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
-var version = "0.3.1"
+var version = "0.3.2"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -426,12 +426,16 @@ Usage:
 Dashboard:
   Type + Enter      start a new session (default binding)
   Type + Tab        send to the selected live session (default binding)
+  Shift-Enter       insert a composer newline (Ctrl-J fallback)
+  Option-←/→        move by word; Option-Delete deletes a word
+  Command-←/→       move to logical line start/end
+  Command-↑/↓       move to whole-draft start/end
   Empty Tab         switch the new-session runner (default binding)
   Empty Shift-Tab   cycle workstream roots (default binding)
   F1 / Empty ?      open scrollable help and the noun glossary
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
   F3                open the expandable workstream/session organizer
-  Up / Down         select a workstream or session
+  Up / Down         select a session; move draft lines when multiline
   Empty Enter       collapse a workstream or attach a session
   Organizer m       mark a session; Enter/m on a workstream moves it
   Organizer u/Space use a workstream or select a session and return

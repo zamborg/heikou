@@ -32,8 +32,10 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	wrapper := filepath.Join(fixtureDir, "fake agent")
 	script := "#!/bin/sh\n" +
 		"printf 'fake ready 日本\\n'\n" +
-		"IFS= read -r line\n" +
-		"printf 'received <%s>\\n' \"$line\"\n" +
+		"IFS= read -r first\n" +
+		"IFS= read -r second\n" +
+		"printf 'received first <%s>\\n' \"$first\"\n" +
+		"printf 'received second <%s>\\n' \"$second\"\n" +
 		"exit 7\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -78,7 +80,7 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	})
 
 	messageMarker := filepath.Join(t.TempDir(), "message-was-executed")
-	message := "literal $HOME $(touch " + messageMarker + ") `ticks` 'quotes' 日本語"
+	message := "literal $HOME $(touch " + messageMarker + ") `ticks` 'quotes'\nsecond\tline 日本語"
 	if err := manager.Send(ctx, session, message); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(preview, "received <") || !strings.Contains(preview, "日本語") {
+	if !strings.Contains(preview, "received first <literal") || !strings.Contains(preview, "received second <second") || !strings.Contains(preview, "日本語") {
 		t.Fatalf("capture did not retain literal message:\n%s", preview)
 	}
 
