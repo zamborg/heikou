@@ -26,7 +26,7 @@ import (
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -407,19 +407,23 @@ Usage:
   h doctor                             check local dependencies
 
 Dashboard:
-  Type + Enter      start a new session
-  Type + Tab        send to the selected live session
-  Empty Tab         switch the new-session runner
-  Empty Shift-Tab   cycle roots in the selected workstream
+  Type + Enter      start a new session (default binding)
+  Type + Tab        send to the selected live session (default binding)
+  Empty Tab         switch the new-session runner (default binding)
+  Empty Shift-Tab   cycle workstream roots (default binding)
+  F1 / Empty ?      open scrollable help and the noun glossary
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
-  F3                organize workstreams, roots, membership, and notes
+  F3                open the expandable workstream/session organizer
   Up / Down         select a workstream or session
   Empty Enter       collapse a workstream or attach a session
+  Organizer m       mark a session; Enter/m on a workstream moves it
+  Organizer u/Space use a workstream or select a session and return
   Ctrl-b d          detach the native terminal back to heikou
   Ctrl-\            alternate one-chord detach shortcut
-  Ctrl-X twice      stop runtime; keep the durable record
+  Ctrl-X twice      stop runtime; repeat once pane-free to delete record
   Esc               clear the composer, then quit
 
+Composer bindings are configurable in JSON and shown in settings/help.
 Closing heikou never stops agents. Both h and H invoke the same binary.`)
 }
 

@@ -23,6 +23,7 @@ const (
 type Repository interface {
 	Load(context.Context) (State, error)
 	Mutate(context.Context, func(*State) (bool, error)) (State, error)
+	WithLifecycleLock(context.Context, func() error) error
 	StatePath() string
 	ArtifactBase() string
 }
@@ -119,6 +120,24 @@ func (s FileStore) Mutate(ctx context.Context, mutate func(*State) (bool, error)
 	return state, nil
 }
 
+// WithLifecycleLock serializes operations that cross the durable store and
+// tmux, such as launching or deleting a session. It uses a separate lock from
+// state reads/writes so those operations may still call Load and Mutate.
+func (s FileStore) WithLifecycleLock(ctx context.Context, operation func() error) error {
+	if operation == nil {
+		return errors.New("lifecycle operation is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	lock, err := lockFile(ctx, s.Path+".lifecycle.lock", unix.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	return operation()
+}
+
 func (s FileStore) loadUnlocked() (State, error) {
 	data, err := os.ReadFile(s.Path)
 	if err != nil {
@@ -185,22 +204,25 @@ func (s FileStore) writeUnlocked(state State) error {
 }
 
 func (s FileStore) lock(ctx context.Context, kind int) (*os.File, error) {
-	lockPath := s.Path + ".lock"
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	return lockFile(ctx, s.Path+".lock", kind)
+}
+
+func lockFile(ctx context.Context, path string, kind int) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open state lock: %w", err)
+		return nil, fmt.Errorf("open state lock %q: %w", path, err)
 	}
 	for {
 		if err := unix.Flock(int(file.Fd()), kind|unix.LOCK_NB); err == nil {
 			return file, nil
 		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
 			_ = file.Close()
-			return nil, fmt.Errorf("lock state: %w", err)
+			return nil, fmt.Errorf("lock state %q: %w", path, err)
 		}
 		select {
 		case <-ctx.Done():
 			_ = file.Close()
-			return nil, fmt.Errorf("lock state: %w", ctx.Err())
+			return nil, fmt.Errorf("lock state %q: %w", path, ctx.Err())
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

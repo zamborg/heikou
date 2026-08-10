@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,10 +15,11 @@ import (
 )
 
 type memoryRepository struct {
-	mu        sync.Mutex
-	state     workstream.State
-	path      string
-	artifacts string
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	state       workstream.State
+	path        string
+	artifacts   string
 }
 
 func newMemoryRepository(root string) *memoryRepository {
@@ -51,6 +53,11 @@ func (r *memoryRepository) Mutate(_ context.Context, mutate func(*workstream.Sta
 
 func (r *memoryRepository) StatePath() string    { return r.path }
 func (r *memoryRepository) ArtifactBase() string { return r.artifacts }
+func (r *memoryRepository) WithLifecycleLock(_ context.Context, operation func() error) error {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	return operation()
+}
 
 type fakeSupervisor struct {
 	mu       sync.Mutex
@@ -255,6 +262,209 @@ func TestStopRecordsOutcomeOnlyAfterTmuxKillSucceeds(t *testing.T) {
 	record, _ = state.Session(id)
 	if record.Outcome == nil || record.Outcome.Kind != workstream.OutcomeStopped {
 		t.Fatalf("successful kill outcome = %#v", record.Outcome)
+	}
+}
+
+func TestDeleteSessionRefusesAnyRetainedRuntime(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	id := "018f0000-0000-4000-8000-000000000032"
+
+	for _, test := range []struct {
+		name   string
+		status heikou.Status
+	}{
+		{name: "live pane", status: heikou.StatusLive},
+		{name: "dead retained pane", status: heikou.StatusExited},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newMemoryRepository(root)
+			controller := New(&fakeSupervisor{sessions: []heikou.Session{{
+				ID: id, Name: "h-" + id, Backend: heikou.BackendCodex, Status: test.status,
+			}}}, repository, "heikou-test")
+			container, err := controller.CreateWorkstream(context.Background(), "Core", "", []string{root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+				state.Sessions = append(state.Sessions, workstream.SessionRecord{
+					ID: id, Backend: heikou.BackendCodex, InitialPrompt: "keep me", InitialRoot: root,
+					CreatedAt: now, Launch: workstream.LaunchIntent{Status: workstream.LaunchPending},
+				})
+				state.Memberships = append(state.Memberships, workstream.Membership{
+					WorkstreamID: container.ID, SessionID: id, JoinedAt: now,
+				})
+				return true, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := controller.DeleteSession(context.Background(), id); err == nil {
+				t.Fatal("DeleteSession removed a record with a retained runtime")
+			}
+			state, err := repository.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := state.Session(id); !ok || state.WorkstreamForSession(id) != container.ID {
+				t.Fatalf("refused delete changed durable state: %#v", state)
+			}
+		})
+	}
+}
+
+func TestDeleteSessionRemovesAbsentRuntimeRecordAndMembership(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+
+	for index, test := range []struct {
+		name    string
+		outcome *workstream.Outcome
+	}{
+		{name: "stopped", outcome: &workstream.Outcome{Kind: workstream.OutcomeStopped, RecordedAt: now}},
+		{name: "unavailable"},
+		{name: "start failed", outcome: &workstream.Outcome{Kind: workstream.OutcomeStartFailed, Error: "runner missing", RecordedAt: now}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newMemoryRepository(root)
+			controller := New(&fakeSupervisor{}, repository, "heikou-test")
+			container, err := controller.CreateWorkstream(context.Background(), "Core", "", []string{root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := "018f0000-0000-4000-8000-00000000004" + string(rune('1'+index))
+			_, err = repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+				state.Sessions = append(state.Sessions, workstream.SessionRecord{
+					ID: id, Backend: heikou.BackendClaude, InitialPrompt: "delete me", InitialRoot: root,
+					CreatedAt: now, Launch: workstream.LaunchIntent{Status: workstream.LaunchPending}, Outcome: test.outcome,
+				})
+				state.Memberships = append(state.Memberships, workstream.Membership{
+					WorkstreamID: container.ID, SessionID: id, JoinedAt: now,
+				})
+				return true, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := controller.DeleteSession(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			state, err := repository.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := state.Session(id); ok {
+				t.Fatalf("session %s remains after deletion", id)
+			}
+			for _, membership := range state.Memberships {
+				if membership.SessionID == id {
+					t.Fatalf("membership remains after deletion: %#v", membership)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteSessionRejectsUnknownID(t *testing.T) {
+	repository := newMemoryRepository(t.TempDir())
+	controller := New(&fakeSupervisor{}, repository, "heikou-test")
+	before, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "018f0000-0000-4000-8000-000000000051"
+	if err := controller.DeleteSession(context.Background(), id); err == nil {
+		t.Fatal("DeleteSession accepted an unknown durable id")
+	}
+	after, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("unknown delete changed revision from %d to %d", before.Revision, after.Revision)
+	}
+}
+
+func TestDeleteSessionRejectsOrphanedRuntime(t *testing.T) {
+	id := "018f0000-0000-4000-8000-000000000052"
+	repository := newMemoryRepository(t.TempDir())
+	supervisor := &fakeSupervisor{sessions: []heikou.Session{{
+		ID: id, Name: "h-" + id, Backend: heikou.BackendCodex, Status: heikou.StatusLive,
+	}}}
+	controller := New(supervisor, repository, "heikou-test")
+	if err := controller.DeleteSession(context.Background(), id); err == nil {
+		t.Fatal("DeleteSession accepted an orphaned runtime")
+	}
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 0 || len(state.Memberships) != 0 {
+		t.Fatalf("orphan rejection created durable state: %#v", state)
+	}
+	observed, err := supervisor.Find(context.Background(), id)
+	if err != nil || observed.ID != id {
+		t.Fatal("orphan rejection stopped the runtime")
+	}
+}
+
+func TestDeleteSessionCannotRaceAConcurrentStartIntoAnOrphan(t *testing.T) {
+	root := t.TempDir()
+	repository := newMemoryRepository(root)
+	supervisor := &fakeSupervisor{}
+	starter := New(supervisor, repository, "heikou-test")
+	deleter := New(supervisor, repository, "heikou-test")
+	requestSeen := make(chan heikou.StartRequest, 1)
+	releaseStart := make(chan struct{})
+	supervisor.start = func(request heikou.StartRequest) (heikou.Session, error) {
+		requestSeen <- request
+		<-releaseStart
+		runtime := heikou.Session{
+			ID: request.ID, Name: "h-" + request.ID, PaneID: "%9", Backend: request.Backend,
+			Prompt: request.Prompt, Root: request.Root, Status: heikou.StatusLive, StartedAt: time.Now().UTC(),
+		}
+		supervisor.mu.Lock()
+		supervisor.sessions = append(supervisor.sessions, runtime)
+		supervisor.mu.Unlock()
+		return runtime, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type startResult struct {
+		session Session
+		err     error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		session, err := starter.Start(ctx, StartRequest{Backend: heikou.BackendCodex, Prompt: "launch", Root: root})
+		started <- startResult{session: session, err: err}
+	}()
+	request := <-requestSeen
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- deleter.DeleteSession(ctx, request.ID) }()
+	select {
+	case err := <-deleted:
+		t.Fatalf("delete completed while start held the lifecycle boundary: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseStart)
+	result := <-started
+	if result.err != nil || !result.session.Alive() {
+		t.Fatalf("Start() = session %#v, error %v", result.session, result.err)
+	}
+	if err := <-deleted; err == nil || !strings.Contains(err.Error(), "runtime exists") {
+		t.Fatalf("DeleteSession() after concurrent start error = %v", err)
+	}
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Session(request.ID); !ok {
+		t.Fatal("concurrent delete removed the launched session record")
 	}
 }
 

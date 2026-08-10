@@ -49,6 +49,49 @@ func TestFileStorePersistsVersionedAtomicState(t *testing.T) {
 	}
 }
 
+func TestLifecycleLockSerializesFileStoreInstances(t *testing.T) {
+	base := t.TempDir()
+	first := FileStore{Path: filepath.Join(base, "state.json"), Artifacts: filepath.Join(base, "data")}
+	second := FileStore{Path: first.Path, Artifacts: first.Artifacts}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- first.WithLifecycleLock(context.Background(), func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- second.WithLifecycleLock(context.Background(), func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("second lifecycle operation entered before the first released its lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second lifecycle operation did not enter after release")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateRejectsMultipleActiveMemberships(t *testing.T) {
 	now := time.Now()
 	root := t.TempDir()

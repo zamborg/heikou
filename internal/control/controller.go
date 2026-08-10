@@ -103,6 +103,7 @@ type Service interface {
 	Send(context.Context, string, string) error
 	Capture(context.Context, string, int) (string, error)
 	Stop(context.Context, string) error
+	DeleteSession(context.Context, string) error
 	AttachCommand(context.Context, string) (*exec.Cmd, error)
 	CreateWorkstream(context.Context, string, string, []string) (workstream.Workstream, error)
 	RenameWorkstream(context.Context, string, string) error
@@ -207,6 +208,18 @@ func (c *Controller) Find(ctx context.Context, query string) (Session, error) {
 }
 
 func (c *Controller) Start(ctx context.Context, request StartRequest) (Session, error) {
+	var session Session
+	var startErr error
+	if err := c.store.WithLifecycleLock(ctx, func() error {
+		session, startErr = c.startLocked(ctx, request)
+		return nil
+	}); err != nil {
+		return Session{}, err
+	}
+	return session, startErr
+}
+
+func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Session, error) {
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
 		return Session{}, errors.New("prompt cannot be empty")
@@ -359,6 +372,55 @@ func (c *Controller) Stop(ctx context.Context, id string) error {
 		return fmt.Errorf("runtime stopped but durable outcome was not recorded: %w", err)
 	}
 	return nil
+}
+
+// DeleteSession removes durable organization only. It deliberately refuses to
+// remove a record while tmux still has a matching pane, even when that pane is
+// dead, and never stops a runtime as a side effect.
+func (c *Controller) DeleteSession(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("session id is required")
+	}
+	return c.store.WithLifecycleLock(ctx, func() error {
+		return c.deleteSessionLocked(ctx, id)
+	})
+}
+
+func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
+	runtimes, err := c.supervisor.Sessions(ctx)
+	if err != nil {
+		return fmt.Errorf("list runtime sessions before delete: %w", err)
+	}
+	for _, runtime := range runtimes {
+		if runtime.ID == id {
+			return fmt.Errorf("cannot delete session %q while its tmux runtime exists", id)
+		}
+	}
+
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		index := -1
+		for candidate := range state.Sessions {
+			if state.Sessions[candidate].ID == id {
+				index = candidate
+				break
+			}
+		}
+		if index == -1 {
+			return false, fmt.Errorf("durable session %q not found", id)
+		}
+
+		state.Sessions = append(state.Sessions[:index], state.Sessions[index+1:]...)
+		memberships := state.Memberships[:0]
+		for _, membership := range state.Memberships {
+			if membership.SessionID != id {
+				memberships = append(memberships, membership)
+			}
+		}
+		state.Memberships = memberships
+		return true, nil
+	})
+	return err
 }
 
 func (c *Controller) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {

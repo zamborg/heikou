@@ -20,6 +20,12 @@ type fakeController struct {
 	startRequest control.StartRequest
 	adoptSession string
 	adoptTarget  string
+	stopped      string
+	deleted      string
+	movedSession string
+	movedTarget  string
+	sentSession  string
+	sentText     string
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
@@ -30,11 +36,21 @@ func (f *fakeController) Start(_ context.Context, request control.StartRequest) 
 	f.startRequest = request
 	return control.Session{ID: "018f0000-0000-4000-8000-000000000099", Backend: request.Backend, Prompt: request.Prompt, Root: request.Root, WorkstreamID: request.WorkstreamID, Durable: true, Status: control.StatusLive}, nil
 }
-func (f *fakeController) Send(context.Context, string, string) error { return nil }
+func (f *fakeController) Send(_ context.Context, id, message string) error {
+	f.sentSession, f.sentText = id, message
+	return nil
+}
 func (f *fakeController) Capture(context.Context, string, int) (string, error) {
 	return "", nil
 }
-func (f *fakeController) Stop(context.Context, string) error { return nil }
+func (f *fakeController) Stop(_ context.Context, id string) error {
+	f.stopped = id
+	return nil
+}
+func (f *fakeController) DeleteSession(_ context.Context, id string) error {
+	f.deleted = id
+	return nil
+}
 func (f *fakeController) AttachCommand(context.Context, string) (*exec.Cmd, error) {
 	return exec.Command("true"), nil
 }
@@ -43,7 +59,10 @@ func (f *fakeController) CreateWorkstream(context.Context, string, string, []str
 }
 func (f *fakeController) RenameWorkstream(context.Context, string, string) error { return nil }
 func (f *fakeController) ArchiveWorkstream(context.Context, string) error        { return nil }
-func (f *fakeController) MoveSession(context.Context, string, string) error      { return nil }
+func (f *fakeController) MoveSession(_ context.Context, sessionID, workstreamID string) error {
+	f.movedSession, f.movedTarget = sessionID, workstreamID
+	return nil
+}
 
 func (f *fakeController) AdoptSession(_ context.Context, sessionID, workstreamID string) (control.Session, error) {
 	f.adoptSession, f.adoptTarget = sessionID, workstreamID
@@ -64,6 +83,14 @@ func TestViewStaysWithinTerminalAtCommonSizes(t *testing.T) {
 		model.previewID = session.ID
 		model.preview = "output 日本語\nwide 👩🏽‍💻 and combining e\u0301\n" + strings.Repeat("long output ", 30)
 		assertViewFits(t, model.View().Content, size.width, size.height)
+	}
+}
+
+func TestDashboardClipsAtTinyTerminalHeights(t *testing.T) {
+	for height := 1; height <= 7; height++ {
+		model, _ := newTestModel("/tmp", heikou.BackendCodex)
+		model.width, model.height = 40, height
+		assertViewFits(t, model.View().Content, model.width, model.height)
 	}
 }
 
@@ -222,9 +249,96 @@ func TestF3OpensOrganizerWithoutStealingPrintableInput(t *testing.T) {
 	}
 }
 
+func TestOrganizerShowsExpandableSessionTree(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-000000000034", "Core", []string{"/tmp/core"}, now)
+	member := testDurableSession("018f0000-0000-4000-8000-000000000035", container.ID, heikou.BackendCodex, "member task", "/tmp/core", now)
+	ungrouped := testDurableSession("018f0000-0000-4000-8000-000000000036", "", heikou.BackendClaude, "inbox task", "/tmp", now)
+	orphan := testOrphan("018f0000-0000-4000-8000-000000000037", "/tmp", now)
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member, ungrouped}, Orphans: []control.Session{orphan}}
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	want := []string{workstreamRowKey(container.ID), sessionRowKey(member), ungroupedKey, sessionRowKey(ungrouped), orphanedKey, sessionRowKey(orphan)}
+	rows := model.organizerRows()
+	if len(rows) != len(want) {
+		t.Fatalf("organizer rows = %#v", rows)
+	}
+	for index, key := range want {
+		if rows[index].key != key {
+			t.Fatalf("organizer row[%d] = %q, want %q", index, rows[index].key, key)
+		}
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}))
+	model = updated.(Model)
+	for _, row := range model.organizerRows() {
+		if row.sessionID == member.ID {
+			t.Fatal("collapsed organizer group still includes its session")
+		}
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	model = updated.(Model)
+	if _, found := findOrganizerRow(model.organizerRows(), sessionRowKey(member)); !found {
+		t.Fatal("expanded organizer group did not restore its session")
+	}
+}
+
+func TestOrganizerMovesDurableSessionWithoutClosing(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	core := testWorkstream("018f0000-0000-4000-8000-000000000038", "Core", []string{"/tmp/core"}, now)
+	web := testWorkstream("018f0000-0000-4000-8000-000000000039", "Web", []string{"/tmp/web"}, now)
+	member := testDurableSession("018f0000-0000-4000-8000-00000000003a", core.ID, heikou.BackendCodex, "member", "/tmp/core", now)
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{core, web}, Sessions: []control.Session{member}}
+	model.selected = sessionRowKey(member)
+	model.restoreSelection()
+	model.openOrganizer()
+	model.selectOrganizerKey(workstreamRowKey(web.ID))
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("destination Enter did not produce a move command")
+	}
+	message := cmd()
+	if controller.movedSession != member.ID || controller.movedTarget != web.ID {
+		t.Fatalf("move = session %q target %q", controller.movedSession, controller.movedTarget)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	if !model.organizerOpen || model.organizerSource != "" || model.organizerSelected != workstreamRowKey(web.ID) {
+		t.Fatalf("organizer did not remain ready after move: open=%v source=%q selected=%q", model.organizerOpen, model.organizerSource, model.organizerSelected)
+	}
+}
+
+func TestOrganizerUseReturnsWithSessionSelected(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-00000000003c", "Core", []string{"/tmp/api", "/tmp/web"}, now)
+	member := testDurableSession("018f0000-0000-4000-8000-00000000003d", container.ID, heikou.BackendCodex, "member", "/tmp/web", now)
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member}}
+	model.collapsed[workstreamRowKey(container.ID)] = true
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+	model.selectOrganizerKey(sessionRowKey(member))
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
+	model = updated.(Model)
+	if model.organizerOpen || model.selected != sessionRowKey(member) || model.collapsed[workstreamRowKey(container.ID)] {
+		t.Fatalf("use did not return with visible session selected: open=%v selected=%q collapsed=%v", model.organizerOpen, model.selected, model.collapsed[workstreamRowKey(container.ID)])
+	}
+	if model.launchRoot() != "/tmp/web" {
+		t.Fatalf("use did not align the launch root to selected session: %q", model.launchRoot())
+	}
+}
+
 func TestOrganizerMoveExplicitlyAdoptsSelectedOrphan(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
-	orphan := testOrphan("018f0000-0000-4000-8000-000000000035", "/tmp", time.Now())
+	orphan := testOrphan("018f0000-0000-4000-8000-00000000003b", "/tmp", time.Now())
 	model.snapshot.Orphans = []control.Session{orphan}
 	model.selected = sessionRowKey(orphan)
 	model.restoreSelection()
@@ -232,7 +346,8 @@ func TestOrganizerMoveExplicitlyAdoptsSelectedOrphan(t *testing.T) {
 	if model.organizerSource != orphan.ID {
 		t.Fatal("orphan was not retained as organizer source")
 	}
-	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'm', Text: "m"}))
+	model.selectOrganizerKey(ungroupedKey)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	model = updated.(Model)
 	if cmd == nil {
 		t.Fatal("move on orphan did not produce an adoption command")
@@ -251,6 +366,239 @@ func TestSettingsAndOrganizerViewsStayWithinTerminal(t *testing.T) {
 		assertViewFits(t, model.View().Content, size.width, size.height)
 		model.settingsOpen, model.organizerOpen = false, true
 		assertViewFits(t, model.View().Content, size.width, size.height)
+		model.organizerOpen, model.helpOpen = false, true
+		assertViewFits(t, model.View().Content, size.width, size.height)
+	}
+}
+
+func TestOrganizerViewportKeepsSelectedSessionVisible(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 60, 12
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-000000000050", "Many", []string{"/tmp"}, now)
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	for index := 0; index < 18; index++ {
+		id := "session-" + string(rune('a'+index))
+		model.snapshot.Sessions = append(model.snapshot.Sessions, testDurableSession(id, container.ID, heikou.BackendNoAgent, "task "+id, "/tmp", now))
+	}
+	model.openOrganizer()
+	last := model.snapshot.Sessions[len(model.snapshot.Sessions)-1]
+	model.selectOrganizerKey(sessionRowKey(last))
+	content := ansi.Strip(model.renderOrganizer())
+	if !strings.Contains(content, "task "+last.ID) {
+		t.Fatalf("selected session is outside organizer viewport:\n%s", content)
+	}
+	assertViewFits(t, model.View().Content, model.width, model.height)
+}
+
+func TestQuestionMarkHelpDoesNotStealComposerText(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 80, 24
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	model = updated.(Model)
+	if !model.helpOpen {
+		t.Fatal("? on an empty composer did not open help")
+	}
+	plain := ansi.Strip(strings.Join(model.helpContentLines(), "\n"))
+	for _, want := range []string{"local command center", "Nouns", "Workstream", "Orphaned"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("help is missing %q:\n%s", want, plain)
+		}
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	model.insertText("why")
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	model = updated.(Model)
+	if model.helpOpen || model.inputValue() != "why?" {
+		t.Fatalf("printable ? changed mode/input: help=%v input=%q", model.helpOpen, model.inputValue())
+	}
+}
+
+func TestHelpPanelScrolls(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height, model.helpOpen = 50, 12, true
+	before := ansi.Strip(model.renderHelp())
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	model = updated.(Model)
+	after := ansi.Strip(model.renderHelp())
+	if model.helpOffset == 0 || before == after {
+		t.Fatal("PageDown did not scroll help")
+	}
+	assertViewFits(t, model.View().Content, model.width, model.height)
+}
+
+func TestOpeningHelpCancelsDestructiveConfirmations(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000054", "", heikou.BackendCodex, "finished", "/tmp", time.Now())
+	session.Runtime = nil
+	session.Status = control.StatusStopped
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if model.confirmDelete != session.ID {
+		t.Fatal("delete confirmation was not armed")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
+	model = updated.(Model)
+	if model.confirmDelete != "" || !model.helpOpen {
+		t.Fatal("opening help did not cancel the destructive confirmation")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if cmd != nil || model.confirmDelete != session.ID {
+		t.Fatal("Ctrl-X after help did not require a fresh confirmation")
+	}
+}
+
+func TestConfiguredComposerKeysDriveActions(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	model.settings.ComposerKeys = config.ComposerKeys{
+		NewSession: "ctrl+shift+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
+	}
+	model.insertText("custom launch")
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd != nil || controller.startRequest.Prompt != "" {
+		t.Fatal("default Enter still started a session after rebinding")
+	}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "N", Mod: tea.ModCtrl | tea.ModShift}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("configured Ctrl-N did not start a session")
+	}
+	message := cmd()
+	if controller.startRequest.Prompt != "custom launch" {
+		t.Fatalf("start prompt = %q", controller.startRequest.Prompt)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	model = updated.(Model)
+	if model.backend != heikou.BackendCodex {
+		t.Fatal("default Tab still cycled runner after rebinding")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF6}))
+	if updated.(Model).backend != heikou.BackendClaude {
+		t.Fatal("configured F6 did not cycle runner")
+	}
+}
+
+func TestConfiguredSendKeyUsesComposerContext(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	model.settings.ComposerKeys = config.ComposerKeys{
+		NewSession: "ctrl+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
+	}
+	session := testDurableSession("018f0000-0000-4000-8000-000000000055", "", heikou.BackendCodex, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	model.insertText("follow up")
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
+	if cmd == nil {
+		t.Fatal("configured Shift-Enter did not send")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.sentSession != session.ID || controller.sentText != "follow up" {
+		t.Fatalf("send = session %q text %q", controller.sentSession, controller.sentText)
+	}
+}
+
+func TestSettingsRendersComposerBindings(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height, model.settingsOpen = 80, 24, true
+	model.settings.ComposerKeys = config.ComposerKeys{
+		NewSession: "ctrl+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
+	}
+	plain := ansi.Strip(model.View().Content)
+	for _, want := range []string{"composer keys", "Ctrl+N", "Shift+Enter", "F6", "Alt+R"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("settings view is missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestSmallSettingsPaneScrollsToLaunchCommands(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height, model.settingsOpen = 40, 15, true
+	if strings.Contains(ansi.Strip(model.View().Content), "launch commands") {
+		t.Fatal("test fixture no longer needs scrolling")
+	}
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
+	model = updated.(Model)
+	plain := ansi.Strip(model.View().Content)
+	if !strings.Contains(plain, "launch commands") || !strings.Contains(plain, "codex") {
+		t.Fatalf("settings did not scroll to launch commands:\n%s", plain)
+	}
+}
+
+func TestCtrlXStopsRuntimeBeforeDeletingDurableRecord(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000060", "", heikou.BackendCodex, "cleanup", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if cmd != nil || model.confirmStop != session.ID {
+		t.Fatal("first Ctrl-X did not arm runtime stop")
+	}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("second Ctrl-X did not stop runtime")
+	}
+	_ = cmd()
+	if controller.stopped != session.ID || controller.deleted != "" {
+		t.Fatalf("cleanup called stop=%q delete=%q", controller.stopped, controller.deleted)
+	}
+
+	session.Runtime = nil
+	session.Status = control.StatusStopped
+	model.busy = false
+	model.confirmStop = ""
+	model.snapshot.Sessions = []control.Session{session}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if cmd != nil || model.confirmDelete != session.ID {
+		t.Fatal("first Ctrl-X did not arm durable record deletion")
+	}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	if cmd == nil {
+		t.Fatal("second Ctrl-X did not delete durable record")
+	}
+	_ = cmd()
+	if controller.deleted != session.ID {
+		t.Fatalf("deleted session = %q", controller.deleted)
+	}
+}
+
+func TestCtrlXAlsoStopsHighlightedOrganizerSession(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000061", "", heikou.BackendCodex, "cleanup", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = ungroupedKey
+	model.restoreSelection()
+	model.openOrganizer()
+	model.selectOrganizerKey(sessionRowKey(session))
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	if cmd == nil {
+		t.Fatal("organizer Ctrl-X did not stop highlighted runtime")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.stopped != session.ID {
+		t.Fatalf("stopped session = %q", controller.stopped)
 	}
 }
 
@@ -317,6 +665,15 @@ func testDurableSession(id, workstreamID string, backend heikou.Backend, prompt,
 func testOrphan(id, root string, now time.Time) control.Session {
 	runtime := heikou.Session{ID: id, Name: "h-" + id, PaneID: "%2", Backend: heikou.BackendNoAgent, Prompt: "legacy pane", Root: root, CurrentPath: root, Status: heikou.StatusLive, StartedAt: now}
 	return control.Session{ID: id, Backend: runtime.Backend, Prompt: runtime.Prompt, Root: root, CreatedAt: now, Status: control.StatusLive, Orphaned: true, Runtime: &runtime}
+}
+
+func findOrganizerRow(rows []listRow, key string) (listRow, bool) {
+	for _, row := range rows {
+		if row.key == key {
+			return row, true
+		}
+	}
+	return listRow{}, false
 }
 
 func assertViewFits(t *testing.T, content string, width, height int) {

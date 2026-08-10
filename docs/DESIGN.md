@@ -158,14 +158,17 @@ agent request.
 ### Settings
 
 V0 has one settings file, normally `~/.config/heikou/config.json`. It contains a
-default runner and argv arrays for Codex and Claude. Arrays preserve the exact
-executable/flag boundary and avoid shell parsing. Environment compatibility
-variables override JSON values; explicit CLI flags select the runner and root.
-Changes apply to new sessions only.
+default runner, argv arrays for Codex and Claude, and four composer bindings:
+`new_session`, `send_message`, `cycle_runner`, and `cycle_root`. Arrays preserve
+the exact executable/flag boundary and avoid shell parsing. Composer bindings
+are context-aware: the first pair applies with text and the second while empty.
+Environment compatibility variables override JSON values; explicit CLI flags
+select the runner and root. Command changes apply to new sessions only.
 
 `Ctrl-S` opens a read-only settings view; `e` creates/opens the JSON file in the
-user's editor and `r` reloads it. There are intentionally no forms, schemas,
-accounts, or daemon-owned settings in this iteration.
+user's editor and `r` reloads it. The view displays the active composer bindings
+alongside launch commands. There are intentionally no forms, accounts, or
+daemon-owned settings in this iteration.
 
 ### Durable workstreams
 
@@ -228,6 +231,14 @@ Legacy panes can enter the durable model only through an explicit organizer
 action that atomically creates their `SessionRecord` and chosen membership;
 ordinary reconciliation never adopts them.
 
+Lifecycle cleanup is deliberately staged. Two presses of `Ctrl-X` stop and
+remove a present runtime while retaining its durable record. Only after no pane
+remains can another confirmed `Ctrl-X` delete that record and membership; the
+controller refuses deletion whenever it still observes a live or dead retained
+pane. Deletion never doubles as an implicit stop. A separate advisory lifecycle
+lock spans each launch and deletion, preventing concurrent dashboard or CLI
+processes from deleting a pending identity while its tmux runtime is created.
+
 ### Follow-up messages
 
 Messages never enter a shell command constructed by Heikou. It:
@@ -265,8 +276,13 @@ separate Orphaned tmux section. The composer deliberately avoids modal focus:
 When a workstream header is selected, empty `Enter` collapses/expands it instead
 of attaching. `Shift-Tab` cycles that workstream's explicit roots. The composer
 always renders the workstream and exact root that a typed `Enter` will use.
-`F3` opens a compact organizer for create, rename, add-root, move, notes/files,
-and archive actions.
+`F3` opens an expandable tree containing named workstreams, Ungrouped,
+Orphaned, and their session rows. `m` marks any session as a move source;
+`Enter` or `m` on a workstream or Ungrouped moves a durable session or explicitly
+adopts an orphan. `u` or `Space` returns to the dashboard with the highlighted
+workstream as launch target or the highlighted session selected. The organizer
+also supports create, rename, add-root, notes/files, archive, and the same safe
+stop/delete lifecycle as the dashboard.
 
 This makes the two most common actions one keystroke after typing while keeping
 their consequences distinct. A selected session's preview is always open, so
@@ -277,6 +293,11 @@ capable of arbitrary UTF-8.
 Rows stay intentionally sparse: process mark, runner, short ID, truthful state,
 initial task, optional root basename, and runtime. Detailed path, activity, and
 the exact terminal tail sit below the list.
+
+`F1`, or `?` when the composer is empty, opens a scrollable, viewport-safe help
+panel. It describes Heikou, reports the active composer bindings, and defines
+the core nouns: workstream, session, runtime, root, runner, composer,
+Ungrouped, and Orphaned.
 
 Future composer-prefix ideas are kept outside the committed architecture in
 [`todos/composer-modules.md`](../todos/composer-modules.md).
@@ -321,10 +342,13 @@ The automated suite covers:
 - multiline paste normalization;
 - paths containing spaces and Unicode;
 - literal prompts/messages containing shell-looking syntax;
-- strict JSON settings and exact configured argv transport;
+- strict JSON settings, context-aware composer bindings, and exact configured
+  argv transport;
+- scrollable help/glossary and expandable organizer navigation;
 - raw `no-agent` shells whose labels are never executed;
 - durable-before-launch ordering and failed-launch retention;
-- conservative reconciliation, explicit-stop outcomes, and orphan separation;
+- conservative reconciliation, staged stop/delete cleanup, and orphan
+  separation;
 - bracketed tmux paste delivery;
 - immediate/nonzero process exits and frozen runtimes; and
 - cleanup against random private tmux sockets.

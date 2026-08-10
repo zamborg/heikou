@@ -70,11 +70,6 @@ type listRow struct {
 	sessionID    string
 }
 
-type organizerItem struct {
-	id   string
-	name string
-}
-
 type Model struct {
 	controller control.Service
 	root       string
@@ -82,27 +77,33 @@ type Model struct {
 	store      config.Store
 	settings   config.Config
 
-	snapshot    control.Snapshot
-	cursor      int
-	selected    string
-	collapsed   map[string]bool
-	rootIndex   map[string]int
-	preview     string
-	previewID   string
-	width       int
-	height      int
-	busy        bool
-	notice      string
-	errorText   string
-	confirmStop string
+	snapshot      control.Snapshot
+	cursor        int
+	selected      string
+	collapsed     map[string]bool
+	rootIndex     map[string]int
+	preview       string
+	previewID     string
+	width         int
+	height        int
+	busy          bool
+	notice        string
+	errorText     string
+	confirmStop   string
+	confirmDelete string
 
 	input       []string
 	inputCursor int
 
-	settingsOpen bool
+	settingsOpen   bool
+	settingsOffset int
+	helpOpen       bool
+	helpOffset     int
 
 	organizerOpen        bool
 	organizerCursor      int
+	organizerSelected    string
+	organizerCollapsed   map[string]bool
 	organizerSource      string
 	organizerEdit        string
 	organizerInput       []string
@@ -114,7 +115,7 @@ type Model struct {
 func New(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config) Model {
 	return Model{
 		controller: controller, root: root, backend: backend, store: store, settings: settings,
-		collapsed: make(map[string]bool), rootIndex: make(map[string]int),
+		collapsed: make(map[string]bool), rootIndex: make(map[string]int), organizerCollapsed: make(map[string]bool),
 	}
 }
 
@@ -144,6 +145,11 @@ type sendMsg struct {
 }
 
 type stopMsg struct {
+	id  string
+	err error
+}
+
+type deleteMsg struct {
 	id  string
 	err error
 }
@@ -192,6 +198,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.snapshot = message.snapshot
+		if m.organizerSource != "" {
+			if _, found := m.session(m.organizerSource); !found {
+				m.organizerSource = ""
+			}
+		}
 		m.restoreSelection()
 		m.restoreOrganizerSelection()
 		if selected, ok := m.selectedSession(); ok && selected.Available() {
@@ -215,7 +226,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.session.ID != "" {
 			m.clearInput()
 			m.selected = sessionRowKey(message.session)
-			m.confirmStop = ""
+			m.confirmStop, m.confirmDelete = "", ""
 		}
 		if message.err != nil {
 			m.errorText = message.err.Error()
@@ -232,7 +243,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearInput()
 		m.notice = "message sent · " + shortID(message.id)
-		m.confirmStop = ""
+		m.confirmStop, m.confirmDelete = "", ""
 		return m, tea.Batch(m.refreshCmd(), m.previewCmd(message.id))
 
 	case stopMsg:
@@ -243,6 +254,25 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = "stopped runtime · " + shortID(message.id)
 		m.confirmStop = ""
+		if source, ok := m.session(message.id); ok && source.Orphaned && m.organizerSource == message.id {
+			m.organizerSource = ""
+		}
+		return m, m.refreshCmd()
+
+	case deleteMsg:
+		m.busy = false
+		if message.err != nil {
+			m.errorText = message.err.Error()
+			return m, nil
+		}
+		m.notice = "deleted session record · " + shortID(message.id)
+		m.confirmDelete = ""
+		if m.organizerSource == message.id {
+			m.organizerSource = ""
+		}
+		if selected, ok := m.selectedSession(); ok && selected.ID == message.id {
+			m.selected = ""
+		}
 		return m, m.refreshCmd()
 
 	case attachReadyMsg:
@@ -300,9 +330,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "archive":
 			m.notice = "archived workstream"
 		case "move":
+			m.organizerSource = ""
+			m.organizerSelected = workstreamRowKey(message.workstreamID)
 			m.notice = "moved session · " + shortID(message.sessionID)
 		case "adopt":
-			m.selected = "session:" + message.sessionID
+			m.organizerSource = ""
+			m.organizerSelected = workstreamRowKey(message.workstreamID)
 			m.notice = "adopted legacy runtime · " + shortID(message.sessionID)
 		case "root":
 			m.notice = "added workstream root"
@@ -319,7 +352,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 
 	case tea.PasteMsg:
-		if m.busy || m.settingsOpen {
+		if m.busy || m.settingsOpen || m.helpOpen {
 			return m, nil
 		}
 		if m.organizerOpen {
@@ -340,8 +373,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	stroke := key.String()
+	bindingStroke := key.Keystroke()
 	if stroke == "ctrl+c" {
 		return m, tea.Quit
+	}
+	if m.helpOpen {
+		return m.handleHelpKey(stroke)
+	}
+	if stroke == "f1" || (stroke == "?" && !m.settingsOpen && !m.organizerOpen && m.inputValue() == "") ||
+		(stroke == "?" && (m.settingsOpen || (m.organizerOpen && m.organizerEdit == ""))) {
+		m.helpOpen = true
+		m.helpOffset = 0
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
+		m.notice, m.errorText = "", ""
+		return m, nil
 	}
 	if m.settingsOpen {
 		return m.handleSettingsKey(stroke)
@@ -356,11 +401,43 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.errorText = ""
 	if stroke != "ctrl+x" {
 		m.confirmStop = ""
+		m.confirmDelete = ""
+	}
+	prompt := strings.TrimSpace(m.inputValue())
+	if prompt != "" {
+		switch bindingStroke {
+		case m.settings.NewSessionKey():
+			m.busy = true
+			m.notice = "starting " + string(m.backend) + "…"
+			return m, m.startCmd(prompt)
+		case m.settings.SendMessageKey():
+			selected, ok := m.selectedSession()
+			if !ok || !selected.Alive() {
+				m.errorText = "select a live session before sending"
+				return m, nil
+			}
+			m.busy = true
+			m.notice = "sending to " + shortID(selected.ID) + "…"
+			return m, m.sendCmd(selected.ID, m.inputValue())
+		}
+	} else {
+		switch bindingStroke {
+		case m.settings.CycleRunnerKey():
+			m.backend = m.backend.Next()
+			m.notice = "new sessions use " + string(m.backend)
+			return m, nil
+		case m.settings.CycleRootKey():
+			if m.cycleSelectedRoot(1) {
+				m.notice = "launch root · " + compactPath(m.launchRoot())
+			}
+			return m, nil
+		}
 	}
 
 	switch stroke {
 	case "ctrl+s", "f2":
 		m.settingsOpen = true
+		m.settingsOffset = 0
 		m.notice, m.errorText = "", ""
 		return m, nil
 
@@ -441,35 +518,9 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notice = "new sessions use " + string(m.backend)
 		return m, nil
 
-	case "shift+tab":
-		if strings.TrimSpace(m.inputValue()) == "" {
-			if m.cycleSelectedRoot(1) {
-				m.notice = "launch root · " + compactPath(m.launchRoot())
-			}
-			return m, nil
-		}
-
-	case "tab":
-		if strings.TrimSpace(m.inputValue()) == "" {
-			m.backend = m.backend.Next()
-			m.notice = "new sessions use " + string(m.backend)
-			return m, nil
-		}
-		selected, ok := m.selectedSession()
-		if !ok || !selected.Alive() {
-			m.errorText = "select a live session before sending"
-			return m, nil
-		}
-		m.busy = true
-		m.notice = "sending to " + shortID(selected.ID) + "…"
-		return m, m.sendCmd(selected.ID, m.inputValue())
-
 	case "enter":
-		prompt := strings.TrimSpace(m.inputValue())
 		if prompt != "" {
-			m.busy = true
-			m.notice = "starting " + string(m.backend) + "…"
-			return m, m.startCmd(prompt)
+			return m, nil
 		}
 		row, ok := m.selectedRow()
 		if ok && (row.kind == rowWorkstream || row.kind == rowOrphanHeader) {
@@ -491,18 +542,11 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+x":
 		selected, ok := m.selectedSession()
-		if !ok || !selected.Available() {
-			m.errorText = "select an available runtime to stop"
+		if !ok {
+			m.errorText = "select a session to stop or delete"
 			return m, nil
 		}
-		if m.confirmStop != selected.ID {
-			m.confirmStop = selected.ID
-			m.notice = "Ctrl-X again to stop " + shortID(selected.ID)
-			return m, nil
-		}
-		m.busy = true
-		m.notice = "stopping " + shortID(selected.ID) + "…"
-		return m, m.stopCmd(selected.ID)
+		return m.handleSessionLifecycle(selected)
 	}
 	blockedModifiers := tea.ModCtrl | tea.ModAlt | tea.ModMeta | tea.ModHyper | tea.ModSuper
 	if key.Text != "" && key.Mod&blockedModifiers == 0 {
@@ -526,6 +570,28 @@ func (m Model) handleSettingsKey(stroke string) (tea.Model, tea.Cmd) {
 		m.busy = true
 		m.notice = "reloading settings…"
 		return m, m.loadSettingsCmd()
+	case "up":
+		m.settingsOffset--
+		m.clampSettingsOffset()
+		return m, nil
+	case "down":
+		m.settingsOffset++
+		m.clampSettingsOffset()
+		return m, nil
+	case "pgup":
+		m.settingsOffset -= max(1, m.settingsViewportHeight()-1)
+		m.clampSettingsOffset()
+		return m, nil
+	case "pgdown":
+		m.settingsOffset += max(1, m.settingsViewportHeight()-1)
+		m.clampSettingsOffset()
+		return m, nil
+	case "home":
+		m.settingsOffset = 0
+		return m, nil
+	case "end":
+		m.settingsOffset = m.settingsMaxOffset()
+		return m, nil
 	case "e":
 		if err := m.store.Ensure(); err != nil {
 			m.errorText = err.Error()
@@ -541,6 +607,33 @@ func (m Model) handleSettingsKey(stroke string) (tea.Model, tea.Cmd) {
 		return m, tea.ExecProcess(command, func(err error) tea.Msg { return settingsEditorMsg{err: err} })
 	}
 	return m, nil
+}
+
+func (m Model) handleSessionLifecycle(selected control.Session) (tea.Model, tea.Cmd) {
+	if selected.Available() {
+		m.confirmDelete = ""
+		if m.confirmStop != selected.ID {
+			m.confirmStop = selected.ID
+			m.notice = "Ctrl-X again to stop runtime " + shortID(selected.ID) + " (record stays)"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "stopping " + shortID(selected.ID) + "…"
+		return m, m.stopCmd(selected.ID)
+	}
+	if !selected.Durable || selected.Orphaned {
+		m.errorText = "this orphan has no durable session record to delete"
+		return m, nil
+	}
+	m.confirmStop = ""
+	if m.confirmDelete != selected.ID {
+		m.confirmDelete = selected.ID
+		m.notice = "Ctrl-X again to permanently delete record " + shortID(selected.ID)
+		return m, nil
+	}
+	m.busy = true
+	m.notice = "deleting record " + shortID(selected.ID) + "…"
+	return m, m.deleteSessionCmd(selected.ID)
 }
 
 func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -561,23 +654,23 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.errorText = "a value is required"
 				return m, nil
 			}
-			item, ok := m.selectedOrganizerItem()
+			row, ok := m.selectedOrganizerRow()
 			m.busy = true
 			switch m.organizerEdit {
 			case "create":
 				return m, m.createWorkstreamCmd(value)
 			case "rename":
-				if !ok || item.id == "" {
+				if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
 					m.busy = false
 					return m, nil
 				}
-				return m, m.renameWorkstreamCmd(item.id, value)
+				return m, m.renameWorkstreamCmd(row.workstreamID, value)
 			case "root":
-				if !ok || item.id == "" {
+				if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
 					m.busy = false
 					return m, nil
 				}
-				return m, m.addRootCmd(item.id, value)
+				return m, m.addRootCmd(row.workstreamID, value)
 			}
 		case "left":
 			if m.organizerInputCursor > 0 {
@@ -617,78 +710,153 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if stroke != "a" {
 		m.confirmArchive = ""
 	}
-	items := m.organizerItems()
+	if stroke != "ctrl+x" {
+		m.confirmStop, m.confirmDelete = "", ""
+	}
+	rows := m.organizerRows()
 	switch stroke {
 	case "esc", "f3":
 		m.organizerOpen = false
+		m.organizerSource = ""
 		m.notice = "workstreams closed"
 		return m, nil
 	case "up":
 		m.organizerCursor = max(0, m.organizerCursor-1)
+		m.syncOrganizerSelection(rows)
 		return m, nil
 	case "down":
-		m.organizerCursor = min(max(0, len(items)-1), m.organizerCursor+1)
+		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+1)
+		m.syncOrganizerSelection(rows)
 		return m, nil
-	case "enter":
-		item, ok := m.selectedOrganizerItem()
+	case "pgup":
+		m.organizerCursor = max(0, m.organizerCursor-max(1, m.organizerViewportHeight()-1))
+		m.syncOrganizerSelection(rows)
+		return m, nil
+	case "pgdown":
+		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+max(1, m.organizerViewportHeight()-1))
+		m.syncOrganizerSelection(rows)
+		return m, nil
+	case "left":
+		row, ok := m.selectedOrganizerRow()
 		if !ok {
 			return m, nil
 		}
-		m.selected = workstreamRowKey(item.id)
+		if organizerGroup(row) {
+			m.organizerCollapsed[row.key] = true
+			m.restoreOrganizerSelection()
+			return m, nil
+		}
+		m.selectOrganizerKey(organizerParentKey(row))
+		return m, nil
+	case "right":
+		row, ok := m.selectedOrganizerRow()
+		if ok && organizerGroup(row) {
+			m.organizerCollapsed[row.key] = false
+			m.restoreOrganizerSelection()
+		}
+		return m, nil
+	case "enter":
+		row, ok := m.selectedOrganizerRow()
+		if !ok {
+			return m, nil
+		}
+		if organizerDestination(row) && m.organizerSource != "" {
+			return m.moveOrganizerSource(row.workstreamID)
+		}
+		if organizerGroup(row) {
+			m.organizerCollapsed[row.key] = !m.organizerCollapsed[row.key]
+			m.restoreOrganizerSelection()
+			return m, nil
+		}
+		m.organizerSource = row.sessionID
+		m.notice = "move source · " + shortID(row.sessionID) + " · choose a workstream and press Enter"
+		return m, nil
+	case "u", " ", "space":
+		row, ok := m.selectedOrganizerRow()
+		if !ok {
+			return m, nil
+		}
+		if row.kind == rowSession || row.kind == rowOrphan {
+			m.collapsed[organizerParentKey(row)] = false
+		}
+		m.selected = row.key
 		m.organizerOpen = false
+		m.organizerSource = ""
 		m.restoreSelection()
-		m.notice = "launch target · " + item.name
+		m.alignRootToSelection()
+		m.notice = "dashboard selection · " + m.organizerRowName(row)
 		return m, nil
 	case "n":
 		m.beginOrganizerEdit("create", "")
 		return m, nil
 	case "r":
-		item, ok := m.selectedOrganizerItem()
-		if ok && item.id != "" {
-			m.beginOrganizerEdit("rename", item.name)
+		row, ok := m.selectedOrganizerRow()
+		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
+			m.beginOrganizerEdit("rename", m.organizerRowName(row))
 		}
 		return m, nil
 	case "p":
-		item, ok := m.selectedOrganizerItem()
-		if ok && item.id != "" {
+		row, ok := m.selectedOrganizerRow()
+		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
 			m.beginOrganizerEdit("root", m.root)
 		}
 		return m, nil
 	case "tab":
-		item, ok := m.selectedOrganizerItem()
-		if ok && item.id != "" {
-			m.cycleRoot(item.id, 1)
+		row, ok := m.selectedOrganizerRow()
+		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
+			m.cycleRoot(row.workstreamID, 1)
 		}
 		return m, nil
 	case "m":
-		item, ok := m.selectedOrganizerItem()
-		if !ok || m.organizerSource == "" {
-			m.errorText = "open Workstreams while a durable session is selected to move it"
+		row, ok := m.selectedOrganizerRow()
+		if !ok {
 			return m, nil
 		}
-		m.busy = true
-		if source, found := m.session(m.organizerSource); found && source.Orphaned {
-			return m, m.adoptSessionCmd(m.organizerSource, item.id)
+		if row.kind == rowSession || row.kind == rowOrphan {
+			if m.organizerSource == row.sessionID {
+				m.organizerSource = ""
+				m.notice = "move canceled"
+			} else {
+				m.organizerSource = row.sessionID
+				m.notice = "move source · " + shortID(row.sessionID) + " · choose a workstream and press Enter"
+			}
+			return m, nil
 		}
-		return m, m.moveSessionCmd(m.organizerSource, item.id)
+		if !organizerDestination(row) || m.organizerSource == "" {
+			m.errorText = "select a session with m, then select its destination"
+			return m, nil
+		}
+		return m.moveOrganizerSource(row.workstreamID)
+	case "ctrl+x":
+		row, ok := m.selectedOrganizerRow()
+		if !ok || (row.kind != rowSession && row.kind != rowOrphan) {
+			m.errorText = "select a session to stop or delete"
+			return m, nil
+		}
+		selected, ok := m.session(row.sessionID)
+		if !ok {
+			m.errorText = "session is no longer available"
+			return m, nil
+		}
+		return m.handleSessionLifecycle(selected)
 	case "a":
-		item, ok := m.selectedOrganizerItem()
-		if !ok || item.id == "" {
+		row, ok := m.selectedOrganizerRow()
+		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
 			return m, nil
 		}
-		if m.confirmArchive != item.id {
-			m.confirmArchive = item.id
-			m.notice = "press a again to archive " + item.name + " (sessions become ungrouped)"
+		if m.confirmArchive != row.workstreamID {
+			m.confirmArchive = row.workstreamID
+			m.notice = "press a again to archive " + m.organizerRowName(row) + " (sessions become ungrouped)"
 			return m, nil
 		}
 		m.busy = true
-		return m, m.archiveWorkstreamCmd(item.id)
+		return m, m.archiveWorkstreamCmd(row.workstreamID)
 	case "e", "o":
-		item, ok := m.selectedOrganizerItem()
-		if !ok || item.id == "" {
+		row, ok := m.selectedOrganizerRow()
+		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
 			return m, nil
 		}
-		container, ok := m.workstream(item.id)
+		container, ok := m.workstream(row.workstreamID)
 		if !ok {
 			return m, nil
 		}
@@ -717,6 +885,12 @@ func (m Model) View() tea.View {
 		view.AltScreen = true
 		return view
 	}
+	if m.helpOpen {
+		view := tea.NewView(textStyle.MaxWidth(m.width).Render(m.renderHelp()))
+		view.AltScreen = true
+		view.WindowTitle = "heikou · help"
+		return view
+	}
 	if m.settingsOpen {
 		view := tea.NewView(textStyle.MaxWidth(m.width).Render(m.renderSettings()))
 		view.AltScreen = true
@@ -730,7 +904,8 @@ func (m Model) View() tea.View {
 		return view
 	}
 	sections := []string{m.renderHeader(), m.renderRule(), m.renderWorkstreams(), m.renderDetails(), m.renderComposer()}
-	view := tea.NewView(textStyle.MaxWidth(m.width).Render(strings.Join(sections, "\n")))
+	content := textStyle.MaxWidth(m.width).Render(strings.Join(sections, "\n"))
+	view := tea.NewView(clipPane(content, m.width, m.height))
 	view.AltScreen = true
 	view.WindowTitle = "heikou · parallel agents"
 	return view
@@ -1011,7 +1186,9 @@ func (m Model) renderComposer() string {
 	prefix := backendStyle(m.backend).Bold(true).Render(prefixText)
 	inputWidth := max(1, m.width-lipgloss.Width(prefix))
 	composer := padANSI(truncateANSI(prefix+m.renderInput(inputWidth), m.width), m.width)
-	help := "↑↓ select · Enter new/attach/collapse · Tab send/runner · ⇧Tab root · F3 workstreams · F2 settings · Ctrl-X stop"
+	help := fmt.Sprintf("%s new · %s send · %s runner · %s root · ↑↓ select · F3 workstreams · ? help · Ctrl-X stop/delete",
+		helpKeyLabel(m.settings.NewSessionKey()), helpKeyLabel(m.settings.SendMessageKey()),
+		helpKeyLabel(m.settings.CycleRunnerKey()), helpKeyLabel(m.settings.CycleRootKey()))
 	message := help
 	style := mutedStyle
 	if m.errorText != "" {
@@ -1023,6 +1200,10 @@ func (m Model) renderComposer() string {
 }
 
 func (m Model) renderSettings() string {
+	return m.fitPane(m.settingsLines(), "e edit JSON · r reload · ↑↓/PgUp/PgDn scroll · ? help · Esc / Ctrl-S dashboard")
+}
+
+func (m Model) settingsLines() []string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou")
 	state := "not created yet"
 	if m.store.Exists() {
@@ -1034,6 +1215,9 @@ func (m Model) renderSettings() string {
 		mutedStyle.Render(" state    ") + state,
 		mutedStyle.Render(" app data ") + truncatePlain(oneLine(compactPath(m.snapshot.StatePath)), max(1, m.width-10)),
 		mutedStyle.Render(" startup default  ") + backendStyle(m.settings.DefaultRunner).Render(string(m.settings.DefaultRunner)),
+		"", lipgloss.NewStyle().Bold(true).Render(" composer keys"),
+		mutedStyle.Render(" text   ") + helpKeyLabel(m.settings.NewSessionKey()) + " new session · " + helpKeyLabel(m.settings.SendMessageKey()) + " send message",
+		mutedStyle.Render(" empty  ") + helpKeyLabel(m.settings.CycleRunnerKey()) + " cycle runner · " + helpKeyLabel(m.settings.CycleRootKey()) + " cycle root",
 		"", lipgloss.NewStyle().Bold(true).Render(" launch commands"),
 	}
 	for _, backend := range []heikou.Backend{heikou.BackendCodex, heikou.BackendClaude} {
@@ -1046,52 +1230,112 @@ func (m Model) renderSettings() string {
 		}
 		lines = append(lines, mutedStyle.Render("   resolved ")+truncatePlain(resolution, max(1, m.width-12)))
 	}
-	lines = append(lines, " "+padPlain(string(heikou.BackendNoAgent), 9)+"tmux default shell", "", mutedStyle.Render(" Commands are JSON argv arrays; changes affect new sessions only."))
-	return m.fitPane(lines, "e edit JSON · r reload · Esc / Ctrl-S dashboard")
+	lines = append(lines, " "+padPlain(string(heikou.BackendNoAgent), 9)+"tmux default shell", "", mutedStyle.Render(" Commands are JSON argv arrays. Composer bindings apply after reload."))
+	return lines
 }
 
 func (m Model) renderOrganizer() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou") + mutedStyle.Render(" workstreams")
 	lines := []string{title, m.renderRule()}
-	items := m.organizerItems()
-	for index, item := range items {
-		container, hasContainer := m.workstream(item.id)
-		root := compactPath(m.root)
-		if hasContainer && len(container.Roots) > 0 {
-			root = compactPath(container.Roots[m.rootPosition(item.id, len(container.Roots))])
-		}
-		count, live := 0, 0
-		for _, session := range m.snapshot.Sessions {
-			if session.WorkstreamID == item.id {
-				count++
-				if session.Alive() {
-					live++
-				}
-			}
-		}
-		row := fmt.Sprintf("  %s  %d/%d live  %s", item.name, live, count, root)
-		row = padANSI(truncateANSI(row, m.width), m.width)
-		if index == m.organizerCursor {
-			row = selectedStyle.Render("›" + ansi.Strip(row[1:]))
-		}
-		lines = append(lines, row)
+	rows := m.organizerRows()
+	height := m.organizerViewportHeight()
+	start := 0
+	if m.organizerCursor >= height {
+		start = m.organizerCursor - height + 1
 	}
-	if len(items) == 0 {
-		lines = append(lines, mutedStyle.Render("  No active workstreams."))
+	if start+height > len(rows) {
+		start = max(0, len(rows)-height)
 	}
-	if m.organizerSource != "" {
-		lines = append(lines, "", mutedStyle.Render(" move source  ")+shortID(m.organizerSource))
+	end := min(len(rows), start+height)
+	for index := start; index < end; index++ {
+		row := rows[index]
+		if organizerGroup(row) {
+			lines = append(lines, m.renderOrganizerGroupRow(row, index == m.organizerCursor))
+		} else if session, ok := m.session(row.sessionID); ok {
+			lines = append(lines, m.renderOrganizerSessionRow(session, index == m.organizerCursor, session.ID == m.organizerSource))
+		}
+	}
+	for len(lines) < 2+height {
+		lines = append(lines, "")
 	}
 	if m.organizerEdit != "" {
 		label := map[string]string{"create": "new name", "rename": "rename", "root": "add root"}[m.organizerEdit]
 		prefix := noticeStyle.Render(label + " › ")
-		lines = append(lines, "", prefix+m.renderTextInput(m.organizerInput, m.organizerInputCursor, max(1, m.width-lipgloss.Width(prefix))))
+		lines = append(lines, prefix+m.renderTextInput(m.organizerInput, m.organizerInputCursor, max(1, m.width-lipgloss.Width(prefix))))
 	}
-	help := "↑↓ select · Enter use · n new · r rename · p add root · Tab root · m move/adopt · e notes · o files · a archive · Esc"
+	message := m.notice
+	style := noticeStyle
+	if m.errorText != "" {
+		message, style = "error: "+m.errorText, failedStyle
+	} else if message == "" && m.organizerSource != "" {
+		message = "move source · " + shortID(m.organizerSource) + " · choose a workstream and press Enter"
+	}
+	help := "↑↓ navigate · ←→/Enter expand · m mark/move · u use/open · Ctrl-X stop/delete · n/r/p edit · e/o files · a archive · ? help · Esc"
 	if m.organizerEdit != "" {
 		help = "Enter save · Esc cancel"
 	}
-	return m.fitPane(lines, help)
+	lines = append(lines, m.renderRule(), style.Render(truncatePlain(oneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width)))
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+	for index := range lines {
+		lines[index] = truncateANSI(lines[index], m.width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderOrganizerGroupRow(row listRow, selected bool) string {
+	name := m.organizerRowName(row)
+	sessions := m.sessionsForRow(row)
+	live := 0
+	for _, session := range sessions {
+		if session.Alive() {
+			live++
+		}
+	}
+	twist := "▾"
+	if m.organizerCollapsed[row.key] {
+		twist = "▸"
+	}
+	root := m.rootSummary(row)
+	plain := fmt.Sprintf("  %s %s  %d/%d live", twist, name, live, len(sessions))
+	if root != "" {
+		plain += "  " + root
+	}
+	plain = padPlain(truncatePlain(plain, m.width), m.width)
+	if selected {
+		return selectedStyle.Render("›" + plain[1:])
+	}
+	return "  " + faintStyle.Render(twist) + " " + lipgloss.NewStyle().Bold(true).Render(name) +
+		mutedStyle.Render(truncatePlain(strings.TrimPrefix(plain, "  "+twist+" "+name), max(0, m.width-lipgloss.Width("  "+twist+" "+name))))
+}
+
+func (m Model) renderOrganizerSessionRow(session control.Session, selected, source bool) string {
+	icon, status := statusLabel(session)
+	iconStyle := mutedStyle
+	if session.Alive() {
+		iconStyle = liveStyle
+	} else if code, ok := session.ExitCode(); (ok && code != 0) || session.Status == control.StatusStartFailed {
+		iconStyle = failedStyle
+	}
+	sourceMark := " "
+	if source {
+		sourceMark = "◆"
+	}
+	fixed := 35
+	task := truncatePlain(oneLine(session.Prompt), max(1, m.width-fixed))
+	plain := "    " + sourceMark + " " + icon + " " + padPlain(string(session.Backend), 8) + " " +
+		padPlain(shortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
+	plain = padPlain(truncatePlain(plain, m.width), m.width)
+	if selected {
+		return selectedStyle.Render("›" + plain[1:])
+	}
+	return "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
+		backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " " +
+		padPlain(shortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
 }
 
 func (m Model) fitPane(lines []string, help string) string {
@@ -1104,17 +1348,31 @@ func (m Model) fitPane(lines []string, help string) string {
 	}
 	footer := []string{m.renderRule(), style.Render(truncatePlain(oneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width))}
 	available := max(0, m.height-len(footer))
+	offset := min(max(0, m.settingsOffset), max(0, len(lines)-available))
 	if len(lines) > available {
-		lines = lines[:available]
+		lines = lines[offset:min(len(lines), offset+available)]
 	}
 	for len(lines) < available {
 		lines = append(lines, "")
 	}
 	lines = append(lines, footer...)
+	if len(lines) > m.height {
+		lines = lines[:max(0, m.height)]
+	}
 	for index := range lines {
 		lines[index] = truncateANSI(lines[index], m.width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) settingsViewportHeight() int { return max(0, m.height-3) }
+
+func (m Model) settingsMaxOffset() int {
+	return max(0, len(m.settingsLines())-m.settingsViewportHeight())
+}
+
+func (m *Model) clampSettingsOffset() {
+	m.settingsOffset = min(max(0, m.settingsOffset), m.settingsMaxOffset())
 }
 
 func (m Model) rows() []listRow {
@@ -1352,46 +1610,164 @@ func (m *Model) openOrganizer() {
 	m.organizerInput, m.organizerInputCursor = nil, 0
 	m.notice, m.errorText = "", ""
 	m.organizerSource = ""
+	m.organizerSelected = m.selected
 	if session, ok := m.selectedSession(); ok {
 		m.organizerSource = session.ID
+		m.organizerCollapsed[organizerSessionParentKey(session)] = false
 	}
-	id := m.launchWorkstreamID()
-	for index, item := range m.organizerItems() {
-		if item.id == id {
-			m.organizerCursor = index
-			break
+	m.restoreOrganizerSelection()
+}
+
+func (m Model) organizerRows() []listRow {
+	var rows []listRow
+	for _, item := range m.snapshot.Workstreams {
+		key := workstreamRowKey(item.ID)
+		rows = append(rows, listRow{key: key, kind: rowWorkstream, workstreamID: item.ID})
+		if !m.organizerCollapsed[key] {
+			for _, session := range m.snapshot.Sessions {
+				if session.WorkstreamID == item.ID {
+					rows = append(rows, listRow{key: sessionRowKey(session), kind: rowSession, workstreamID: item.ID, sessionID: session.ID})
+				}
+			}
 		}
 	}
+	rows = append(rows, listRow{key: ungroupedKey, kind: rowWorkstream})
+	if !m.organizerCollapsed[ungroupedKey] {
+		for _, session := range m.snapshot.Sessions {
+			if session.WorkstreamID == "" {
+				rows = append(rows, listRow{key: sessionRowKey(session), kind: rowSession, sessionID: session.ID})
+			}
+		}
+	}
+	if len(m.snapshot.Orphans) > 0 {
+		rows = append(rows, listRow{key: orphanedKey, kind: rowOrphanHeader})
+		if !m.organizerCollapsed[orphanedKey] {
+			for _, session := range m.snapshot.Orphans {
+				rows = append(rows, listRow{key: sessionRowKey(session), kind: rowOrphan, sessionID: session.ID})
+			}
+		}
+	}
+	return rows
 }
 
-func (m Model) organizerItems() []organizerItem {
-	items := []organizerItem{{name: "Ungrouped"}}
-	for _, item := range m.snapshot.Workstreams {
-		items = append(items, organizerItem{id: item.ID, name: item.Name})
+func (m Model) selectedOrganizerRow() (listRow, bool) {
+	rows := m.organizerRows()
+	if m.organizerCursor < 0 || m.organizerCursor >= len(rows) {
+		return listRow{}, false
 	}
-	return items
-}
-
-func (m Model) selectedOrganizerItem() (organizerItem, bool) {
-	items := m.organizerItems()
-	if m.organizerCursor < 0 || m.organizerCursor >= len(items) {
-		return organizerItem{}, false
-	}
-	return items[m.organizerCursor], true
+	return rows[m.organizerCursor], true
 }
 
 func (m *Model) restoreOrganizerSelection() {
-	items := m.organizerItems()
+	rows := m.organizerRows()
+	if len(rows) == 0 {
+		m.organizerCursor, m.organizerSelected = 0, ""
+		return
+	}
 	if m.pendingWorkstream != "" {
-		for index, item := range items {
-			if item.id == m.pendingWorkstream {
+		m.organizerSelected = workstreamRowKey(m.pendingWorkstream)
+		m.pendingWorkstream = ""
+	}
+	if m.organizerSelected != "" {
+		for index, row := range rows {
+			if row.key == m.organizerSelected {
 				m.organizerCursor = index
-				m.pendingWorkstream = ""
 				return
 			}
 		}
 	}
-	m.organizerCursor = min(max(0, m.organizerCursor), max(0, len(items)-1))
+	m.organizerCursor = min(max(0, m.organizerCursor), len(rows)-1)
+	m.organizerSelected = rows[m.organizerCursor].key
+}
+
+func (m *Model) syncOrganizerSelection(rows []listRow) {
+	if len(rows) == 0 {
+		m.organizerCursor, m.organizerSelected = 0, ""
+		return
+	}
+	m.organizerCursor = min(max(0, m.organizerCursor), len(rows)-1)
+	m.organizerSelected = rows[m.organizerCursor].key
+}
+
+func (m *Model) selectOrganizerKey(key string) {
+	if key == "" {
+		return
+	}
+	m.organizerSelected = key
+	m.restoreOrganizerSelection()
+}
+
+func (m Model) organizerRowName(row listRow) string {
+	if row.kind == rowOrphanHeader {
+		return "Orphaned tmux"
+	}
+	if row.kind == rowSession || row.kind == rowOrphan {
+		if session, ok := m.session(row.sessionID); ok {
+			return string(session.Backend) + " " + shortID(session.ID)
+		}
+	}
+	if row.workstreamID == "" {
+		return "Ungrouped"
+	}
+	if item, ok := m.workstream(row.workstreamID); ok {
+		return item.Name
+	}
+	return "Unavailable workstream"
+}
+
+func (m Model) organizerViewportHeight() int {
+	reserved := 5 // title, rule, status rule, message, key help
+	if m.organizerEdit != "" {
+		reserved++
+	}
+	return max(0, m.height-reserved)
+}
+
+func (m Model) moveOrganizerSource(workstreamID string) (tea.Model, tea.Cmd) {
+	if m.organizerSource == "" {
+		m.errorText = "select a session to move"
+		return m, nil
+	}
+	source, found := m.session(m.organizerSource)
+	if !found {
+		m.errorText = "move source is no longer available"
+		m.organizerSource = ""
+		return m, nil
+	}
+	if !source.Orphaned && source.WorkstreamID == workstreamID {
+		m.errorText = "session is already in " + m.workstreamName(workstreamID)
+		return m, nil
+	}
+	m.busy = true
+	m.organizerSelected = workstreamRowKey(workstreamID)
+	m.notice = "moving " + shortID(source.ID) + "…"
+	if source.Orphaned {
+		return m, m.adoptSessionCmd(source.ID, workstreamID)
+	}
+	return m, m.moveSessionCmd(source.ID, workstreamID)
+}
+
+func organizerGroup(row listRow) bool {
+	return row.kind == rowWorkstream || row.kind == rowOrphanHeader
+}
+
+func organizerDestination(row listRow) bool { return row.kind == rowWorkstream }
+
+func organizerParentKey(row listRow) string {
+	if row.kind == rowOrphan {
+		return orphanedKey
+	}
+	if row.kind == rowSession {
+		return workstreamRowKey(row.workstreamID)
+	}
+	return ""
+}
+
+func organizerSessionParentKey(session control.Session) string {
+	if session.Orphaned {
+		return orphanedKey
+	}
+	return workstreamRowKey(session.WorkstreamID)
 }
 
 func (m *Model) beginOrganizerEdit(mode, value string) {
@@ -1552,6 +1928,14 @@ func (m Model) stopCmd(id string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
 		return stopMsg{id: id, err: m.controller.Stop(ctx, id)}
+	}
+}
+
+func (m Model) deleteSessionCmd(id string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		return deleteMsg{id: id, err: m.controller.DeleteSession(ctx, id)}
 	}
 }
 
@@ -1795,6 +2179,21 @@ func truncatePlain(value string, width int) string {
 }
 
 func truncateANSI(value string, width int) string { return ansi.Truncate(value, max(0, width), "") }
+
+func clipPane(value string, width, height int) string {
+	if height <= 0 {
+		return ""
+	}
+	lines := strings.Split(value, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for index := range lines {
+		lines[index] = truncateANSI(lines[index], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func padPlain(value string, width int) string {
 	return value + strings.Repeat(" ", max(0, width-lipgloss.Width(value)))
 }

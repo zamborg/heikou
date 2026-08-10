@@ -16,7 +16,7 @@ Requirements: macOS, Linux, or WSL; Go 1.25+; tmux 3.3+; and at least one of
 `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.0
+go install github.com/zamborg/heikou/cmd/h@v0.3.1
 h doctor
 ```
 
@@ -49,18 +49,20 @@ The composer is always ready:
 | Type a message, then `Tab` | Send it to the selected live session |
 | `Tab` with an empty composer | Cycle Codex → Claude → `no-agent` |
 | `Shift-Tab` with an empty composer | Cycle the selected workstream's explicit roots |
+| `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
-| `F3` | Open the workstream organizer |
+| `F3` | Open the expandable workstream/session organizer |
 | `Up` / `Down` | Select a workstream or session |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
-| `Ctrl-X` twice | Stop/remove the tmux runtime; keep its durable session record |
+| `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Clear the composer; press again to leave the dashboard |
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
-the durable session record and its workstream history.
+the durable session record and its workstream history; deletion is offered only
+after no tmux pane remains.
 
 The same primitives are available without the TUI:
 
@@ -83,13 +85,16 @@ followed by two honest system groups:
   original raw-session workflow.
 - **Orphaned tmux** contains panes carrying a Heikou ID that is unknown to the
   durable store. They remain attachable and steerable but are never silently
-  adopted into a workstream. Selecting one before opening `F3`, then using `m`,
-  explicitly adopts it into the highlighted destination.
+  adopted into a workstream; the organizer workflow below makes adoption
+  explicit.
 
-Press `F3` to create or rename a workstream, add an explicit root, cycle its
-selected root, move (or explicitly adopt) the session that was selected when
-the organizer opened, edit `notes.md`, open the artifact directory, or archive
-the workstream.
+Press `F3` for an expandable tree of named workstreams, Ungrouped, Orphaned,
+and all of their sessions. Press `m` on any session to mark it as the move
+source, then highlight a workstream (or Ungrouped) and press `Enter` or `m` to move it;
+the same action explicitly adopts an orphan. Press `u` or `Space` to use a
+highlighted workstream as the launch target, or return to the dashboard with a
+highlighted session selected. The organizer also creates or renames
+workstreams, manages explicit roots, opens notes/artifacts, and archives.
 Archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
@@ -114,16 +119,26 @@ there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
   "commands": {
     "codex": ["codex"],
     "claude": ["claude", "--dangerously-skip-permissions"]
+  },
+  "composer_keys": {
+    "new_session": "enter",
+    "send_message": "tab",
+    "cycle_runner": "tab",
+    "cycle_root": "shift+tab"
   }
 }
 ```
 
 Commands are argv arrays, not shell strings. Fixed flags are placed before the
-task arguments Heikou adds. Command changes affect new sessions; a changed
-`default_runner` applies the next time the dashboard opens. `no-agent` is not
-configurable: it deliberately asks tmux to start its default interactive shell
-without injecting the composer label. Follow-up messages sent with `Tab` are
-then ordinary input to that shell, which makes it a cheap transport test pane.
+task arguments Heikou adds. The four `composer_keys` fields may be omitted to
+keep the defaults shown above; `new_session` and `send_message` apply when the
+composer has text, while `cycle_runner` and `cycle_root` apply when it is empty.
+The settings pane displays the active bindings and reloads JSON changes with
+`r`. Command changes affect new sessions; a changed `default_runner` applies
+the next time the dashboard opens. `no-agent` is not configurable: it asks tmux
+to start its default interactive shell without injecting the composer label.
+Follow-up messages are then ordinary input to that shell, which makes it a
+cheap transport test pane.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
