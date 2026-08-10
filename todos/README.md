@@ -7,6 +7,7 @@ not become an undifferentiated backlog.
 | Idea | Status |
 | --- | --- |
 | [Composable composer modules](composer-modules.md) | Proposed |
+| [Session status, titles, and recency](session-status-titles.md) | Proposed |
 
 An idea should move into `docs/DESIGN.md` only when it becomes part of the
 committed architecture or an active implementation.

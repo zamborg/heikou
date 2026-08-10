@@ -9,6 +9,23 @@ Tmux remains the runtime supervisor and the coding-agent CLIs remain the native
 runners. Heikou adds a small durable organization layer without introducing a
 daemon, manager agent, task graph, or replacement execution engine.
 
+## Nouns
+
+- **Workstream** — a durable named grouping for roots, sessions, notes, and
+  artifacts; it provides organization, not autonomy.
+- **Session** — a durable launch identity with its initial task, root, runner,
+  and outcome; it persists beyond its runtime.
+- **Runtime** — the tmux pane associated with a session and the source of its
+  current process observations.
+- **Root** — an explicit launch working directory registered on a workstream.
+- **Runner** — the `codex`, `claude`, or `no-agent` command integration used to
+  launch a native agent or shell.
+- **Composer** — the dashboard input bar used to start sessions and send
+  follow-up messages.
+- **Ungrouped** — durable sessions with no active workstream membership.
+- **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
+  are never silently adopted.
+
 ## Install
 
 Requirements: macOS, Linux, or WSL; Go 1.25+; tmux 3.3+; and at least one of
@@ -59,6 +76,11 @@ The composer is always ready:
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Clear the composer; press again to leave the dashboard |
 
+Session rows show the most recent message successfully sent through Heikou for
+as long as the tmux runtime is retained, then fall back to the initial task.
+Text entered directly in an attached native terminal is not observable by this
+shim.
+
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
 the durable session record and its workstream history; deletion is offered only
@@ -94,7 +116,10 @@ source, then highlight a workstream (or Ungrouped) and press `Enter` or `m` to m
 the same action explicitly adopts an orphan. Press `u` or `Space` to use a
 highlighted workstream as the launch target, or return to the dashboard with a
 highlighted session selected. The organizer also creates or renames
-workstreams, manages explicit roots, opens notes/artifacts, and archives.
+workstreams, manages explicit roots, opens notes/artifacts, and archives. On a
+named workstream, `p` adds a root, `Shift-P` edits the root selected with `Tab`,
+and `d` twice removes that root without deleting files or changing historical
+session records. Every workstream keeps at least one root.
 Archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may

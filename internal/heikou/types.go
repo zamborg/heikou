@@ -49,15 +49,19 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Session is the runner-neutral projection of one tmux-owned agent process.
-// It intentionally contains process truth only; semantic states such as
-// "needs input" require a future runner-specific observer.
+// Session is the runner-neutral projection of one tmux-owned agent process and
+// its bounded tmux-scoped presentation metadata. Runtime fields contain process
+// truth only; semantic states such as "needs input" require a future
+// runner-specific observer.
 type Session struct {
-	ID              string
-	Name            string
-	PaneID          string
-	Backend         Backend
-	Prompt          string
+	ID      string
+	Name    string
+	PaneID  string
+	Backend Backend
+	Prompt  string
+	// LastUserMessage is a bounded preview of the most recent message routed
+	// through Heikou. Messages typed in an attached native TUI are not observed.
+	LastUserMessage string
 	Root            string
 	CurrentPath     string
 	CurrentCommand  string

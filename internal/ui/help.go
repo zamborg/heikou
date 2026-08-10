@@ -116,7 +116,7 @@ func (m Model) helpContentLines() []string {
 		description string
 	}{
 		{helpKeyLabel(m.settings.NewSessionKey()) + " + text", "Start a new session in the selected workstream and displayed root."},
-		{helpKeyLabel(m.settings.SendMessageKey()) + " + text", "Send a follow-up to the selected live session."},
+		{helpKeyLabel(m.settings.SendMessageKey()) + " + text", "Send a follow-up to the selected live session; its row then shows this newest Heikou-routed message."},
 		{helpKeyLabel(m.settings.CycleRunnerKey()) + " · empty", "Cycle Codex, Claude, and no-agent for the next launch."},
 		{helpKeyLabel(m.settings.CycleRootKey()) + " · empty", "Cycle the registered roots of the selected workstream."},
 		{"↑ / ↓", "Select a workstream or session."},
@@ -149,8 +149,10 @@ func (m Model) helpContentLines() []string {
 		{"← / →", "Collapse or expand a workstream. Enter also toggles it when no move source is active."},
 		{"m", "Mark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
 		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach/send."},
-		{"n / r / p", "Create, rename, or add an explicit root."},
-		{"Tab", "Cycle the highlighted workstream's roots."},
+		{"n / r", "Create or rename a workstream."},
+		{"p / Shift-P", "Add a root, or edit the currently selected root."},
+		{"d twice", "Remove the selected root without deleting files or historical sessions; every workstream keeps at least one root."},
+		{"Tab", "Cycle the highlighted workstream's selected launch root."},
 		{"Ctrl-X twice", "Stop or delete the highlighted session using the same safe lifecycle as the dashboard."},
 		{"e / o", "Edit notes or open the workstream artifact directory."},
 		{"a twice", "Archive the workstream; its durable sessions become Ungrouped."},

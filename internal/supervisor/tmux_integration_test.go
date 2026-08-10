@@ -101,6 +101,9 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	if finished.ExitCode != 7 || finished.EndedAt.IsZero() {
 		t.Fatalf("exit metadata = %#v", finished)
 	}
+	if finished.LastUserMessage != userMessagePreview(message) {
+		t.Fatalf("latest user message = %q, want %q", finished.LastUserMessage, userMessagePreview(message))
+	}
 	preview, err := manager.Capture(ctx, finished, 40)
 	if err != nil {
 		t.Fatal(err)

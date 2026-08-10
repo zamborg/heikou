@@ -121,7 +121,8 @@ func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
 		"#{pane_current_command}" + fieldSep +
 		"#{session_attached}" + fieldSep +
 		"#{pane_in_mode}" + fieldSep +
-		"#{pane_input_off}"
+		"#{pane_input_off}" + fieldSep +
+		"#{@heikou_last_user_message}"
 
 	output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -137,7 +138,7 @@ func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
 			continue
 		}
 		fields := strings.Split(line, fieldSep)
-		if len(fields) != 18 {
+		if len(fields) != 19 {
 			continue
 		}
 		if fields[2] == "" && strings.HasPrefix(fields[0], "h-") {
@@ -310,6 +311,11 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 	if _, err := t.run(ctx, nil, "send-keys", "-t", current.PaneID, "Enter"); err != nil {
 		return fmt.Errorf("submit message: %w", err)
 	}
+	// Delivery has already succeeded, so presentation metadata is best effort.
+	// Returning an error here could encourage the caller to resend the message.
+	if preview := userMessagePreview(message); preview != "" {
+		_, _ = t.run(ctx, nil, "set-option", "-t", current.Name, "@heikou_last_user_message", runner.Encode(preview))
+	}
 	return nil
 }
 
@@ -388,6 +394,9 @@ func parseSession(fields []string) (heikou.Session, error) {
 	if err != nil {
 		return heikou.Session{}, err
 	}
+	// This option is optional presentation metadata. A malformed value must not
+	// hide an otherwise valid runtime from discovery.
+	lastUserMessage, _ := decodeMetadata(fields[18])
 	exitCode, _ := strconv.Atoi(fields[10])
 	deadUnix, _ := strconv.ParseInt(fields[11], 10, 64)
 	activityUnix, _ := strconv.ParseInt(fields[12], 10, 64)
@@ -403,13 +412,29 @@ func parseSession(fields []string) (heikou.Session, error) {
 	}
 	return heikou.Session{
 		Name: fields[0], PaneID: fields[1], ID: fields[2], Backend: backend,
-		Prompt: prompt, Root: root, Status: status,
+		Prompt: prompt, LastUserMessage: lastUserMessage, Root: root, Status: status,
 		StartedAt: time.Unix(startedUnix, 0), EndedAt: unixTime(deadUnix),
 		LastActivityAt: unixTime(activityUnix), ExitCode: exitCode,
 		CurrentPath: fields[13], CurrentCommand: fields[14],
 		AttachedClients: attached, PaneInMode: paneModeCount != 0,
 		InputDisabled: fields[17] == "1",
 	}, nil
+}
+
+func userMessagePreview(message string) string {
+	message = ansi.Strip(message)
+	message = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, message)
+	message = strings.Join(strings.Fields(message), " ")
+	runes := []rune(message)
+	if len(runes) > 280 {
+		message = string(runes[:280])
+	}
+	return message
 }
 
 func decodeMetadata(value string) (string, error) {

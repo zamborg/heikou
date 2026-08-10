@@ -281,8 +281,10 @@ Orphaned, and their session rows. `m` marks any session as a move source;
 `Enter` or `m` on a workstream or Ungrouped moves a durable session or explicitly
 adopts an orphan. `u` or `Space` returns to the dashboard with the highlighted
 workstream as launch target or the highlighted session selected. The organizer
-also supports create, rename, add-root, notes/files, archive, and the same safe
-stop/delete lifecycle as the dashboard.
+also supports create, rename, add/edit/remove-root, notes/files, archive, and
+the same safe stop/delete lifecycle as the dashboard. Root edits affect future
+launch choices only; they never rewrite historical session roots or touch the
+filesystem.
 
 This makes the two most common actions one keystroke after typing while keeping
 their consequences distinct. A selected session's preview is always open, so
@@ -291,7 +293,10 @@ content is collapsed to a single line; follow-up transport itself remains
 capable of arbitrary UTF-8.
 
 Rows stay intentionally sparse: process mark, runner, short ID, truthful state,
-initial task, optional root basename, and runtime. Detailed path, activity, and
+most recent Heikou-routed user message (falling back to the initial task),
+optional root basename, and runtime. The recent-message preview is bounded tmux
+metadata for the lifetime of the retained runtime; Heikou does not claim to see
+text entered directly in an attached native TUI. Detailed path, activity, and
 the exact terminal tail sit below the list.
 
 `F1`, or `?` when the composer is empty, opens a scrollable, viewport-safe help
@@ -349,6 +354,7 @@ The automated suite covers:
 - durable-before-launch ordering and failed-launch retention;
 - conservative reconciliation, staged stop/delete cleanup, and orphan
   separation;
+- atomic workstream root replacement/removal without rewriting session history;
 - bracketed tmux paste delivery;
 - immediate/nonzero process exits and frozen runtimes; and
 - cleanup against random private tmux sockets.

@@ -27,17 +27,29 @@ const (
 )
 
 type Session struct {
-	ID           string
-	Backend      heikou.Backend
-	Prompt       string
-	Root         string
-	CreatedAt    time.Time
-	WorkstreamID string
-	Status       Status
-	Durable      bool
-	Orphaned     bool
-	Record       workstream.SessionRecord
-	Runtime      *heikou.Session
+	ID      string
+	Backend heikou.Backend
+	Prompt  string
+	// LastUserMessage is the latest bounded preview observed from the tmux
+	// runtime. It covers sends through Heikou, not typing in an attached TUI.
+	LastUserMessage string
+	Root            string
+	CreatedAt       time.Time
+	WorkstreamID    string
+	Status          Status
+	Durable         bool
+	Orphaned        bool
+	Record          workstream.SessionRecord
+	Runtime         *heikou.Session
+}
+
+// DisplayMessage returns the most recent user message Heikou can honestly
+// observe, falling back to the immutable launch prompt.
+func (s Session) DisplayMessage() string {
+	if strings.TrimSpace(s.LastUserMessage) != "" {
+		return s.LastUserMessage
+	}
+	return s.Prompt
 }
 
 func (s Session) Alive() bool {
@@ -111,6 +123,8 @@ type Service interface {
 	MoveSession(context.Context, string, string) error
 	AdoptSession(context.Context, string, string) (Session, error)
 	AddRoot(context.Context, string, string) error
+	ReplaceRoot(context.Context, string, string, string) error
+	RemoveRoot(context.Context, string, string) error
 }
 
 type Controller struct {
@@ -646,6 +660,71 @@ func (c *Controller) AddRoot(ctx context.Context, workstreamID, value string) er
 	return err
 }
 
+func (c *Controller) ReplaceRoot(ctx context.Context, workstreamID, currentValue, replacementValue string) error {
+	current, err := workstream.NormalizeRoot(currentValue)
+	if err != nil {
+		return err
+	}
+	replacement, err := validateRoot(replacementValue)
+	if err != nil {
+		return err
+	}
+	now := c.now()
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Workstreams {
+			item := &state.Workstreams[index]
+			if item.ID != workstreamID || item.ArchivedAt != nil {
+				continue
+			}
+			rootIndex := rootIndex(item.Roots, current)
+			if rootIndex < 0 {
+				return false, fmt.Errorf("root %q is not registered in workstream %q", current, item.Name)
+			}
+			if filepath.Clean(current) == filepath.Clean(replacement) {
+				return false, nil
+			}
+			if containsRoot(item.Roots, replacement) {
+				return false, fmt.Errorf("root %q is already registered in workstream %q", replacement, item.Name)
+			}
+			item.Roots[rootIndex] = replacement
+			item.Revision++
+			item.UpdatedAt = now
+			return true, nil
+		}
+		return false, fmt.Errorf("active workstream %q not found", workstreamID)
+	})
+	return err
+}
+
+func (c *Controller) RemoveRoot(ctx context.Context, workstreamID, value string) error {
+	root, err := workstream.NormalizeRoot(value)
+	if err != nil {
+		return err
+	}
+	now := c.now()
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Workstreams {
+			item := &state.Workstreams[index]
+			if item.ID != workstreamID || item.ArchivedAt != nil {
+				continue
+			}
+			rootIndex := rootIndex(item.Roots, root)
+			if rootIndex < 0 {
+				return false, fmt.Errorf("root %q is not registered in workstream %q", root, item.Name)
+			}
+			if len(item.Roots) == 1 {
+				return false, errors.New("a workstream must keep at least one root; edit it instead")
+			}
+			item.Roots = append(item.Roots[:rootIndex], item.Roots[rootIndex+1:]...)
+			item.Revision++
+			item.UpdatedAt = now
+			return true, nil
+		}
+		return false, fmt.Errorf("active workstream %q not found", workstreamID)
+	})
+	return err
+}
+
 func project(state workstream.State, runtimes []heikou.Session, path string) Snapshot {
 	runtimeByID := make(map[string]heikou.Session, len(runtimes))
 	for _, runtime := range runtimes {
@@ -676,7 +755,8 @@ func project(state workstream.State, runtimes []heikou.Session, path string) Sna
 			status = StatusLive
 		}
 		snapshot.Orphans = append(snapshot.Orphans, Session{
-			ID: runtime.ID, Backend: runtime.Backend, Prompt: runtime.Prompt, Root: runtime.Root,
+			ID: runtime.ID, Backend: runtime.Backend, Prompt: runtime.Prompt,
+			LastUserMessage: runtime.LastUserMessage, Root: runtime.Root,
 			CreatedAt: runtime.StartedAt, Status: status, Orphaned: true, Runtime: &copy,
 		})
 	}
@@ -707,9 +787,14 @@ func projectOne(state workstream.State, record workstream.SessionRecord, runtime
 			status = StatusStartFailed
 		}
 	}
+	lastUserMessage := ""
+	if runtime != nil {
+		lastUserMessage = runtime.LastUserMessage
+	}
 	return Session{
 		ID: record.ID, Backend: record.Backend, Prompt: record.InitialPrompt,
-		Root: record.InitialRoot, CreatedAt: record.CreatedAt,
+		LastUserMessage: lastUserMessage,
+		Root:            record.InitialRoot, CreatedAt: record.CreatedAt,
 		WorkstreamID: state.WorkstreamForSession(record.ID), Status: status,
 		Durable: true, Record: record, Runtime: runtime,
 	}
@@ -746,13 +831,17 @@ func validateRoot(value string) (string, error) {
 }
 
 func containsRoot(roots []string, query string) bool {
+	return rootIndex(roots, query) >= 0
+}
+
+func rootIndex(roots []string, query string) int {
 	query = filepath.Clean(query)
-	for _, root := range roots {
+	for index, root := range roots {
 		if filepath.Clean(root) == query {
-			return true
+			return index
 		}
 	}
-	return false
+	return -1
 }
 
 func cleanName(value string) string {

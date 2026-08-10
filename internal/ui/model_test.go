@@ -16,16 +16,21 @@ import (
 )
 
 type fakeController struct {
-	snapshot     control.Snapshot
-	startRequest control.StartRequest
-	adoptSession string
-	adoptTarget  string
-	stopped      string
-	deleted      string
-	movedSession string
-	movedTarget  string
-	sentSession  string
-	sentText     string
+	snapshot               control.Snapshot
+	startRequest           control.StartRequest
+	adoptSession           string
+	adoptTarget            string
+	stopped                string
+	deleted                string
+	movedSession           string
+	movedTarget            string
+	sentSession            string
+	sentText               string
+	replacedRootWorkstream string
+	replacedRootCurrent    string
+	replacedRootValue      string
+	removedRootWorkstream  string
+	removedRootValue       string
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
@@ -69,6 +74,14 @@ func (f *fakeController) AdoptSession(_ context.Context, sessionID, workstreamID
 	return control.Session{}, nil
 }
 func (f *fakeController) AddRoot(context.Context, string, string) error { return nil }
+func (f *fakeController) ReplaceRoot(_ context.Context, workstreamID, current, replacement string) error {
+	f.replacedRootWorkstream, f.replacedRootCurrent, f.replacedRootValue = workstreamID, current, replacement
+	return nil
+}
+func (f *fakeController) RemoveRoot(_ context.Context, workstreamID, root string) error {
+	f.removedRootWorkstream, f.removedRootValue = workstreamID, root
+	return nil
+}
 
 func TestViewStaysWithinTerminalAtCommonSizes(t *testing.T) {
 	now := time.Now()
@@ -122,6 +135,30 @@ func TestSelectedRowHasExplicitMarkerAndContinuousWidth(t *testing.T) {
 	}
 	if width := ansi.StringWidth(selected); width != 80 {
 		t.Fatalf("selected row width = %d, want 80", width)
+	}
+}
+
+func TestSessionViewsPreferLatestMessageSentThroughHeikou(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+	session := testDurableSession("018f0000-0000-4000-8000-000000000005", "", heikou.BackendCodex, "initial task", "/tmp", time.Now())
+	session.LastUserMessage = "most recent follow-up"
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	model.previewID = session.ID
+
+	row := ansi.Strip(model.renderSessionRow(session, false))
+	if !strings.Contains(row, "most recent follow-up") || strings.Contains(row, "initial task") {
+		t.Fatalf("dashboard row did not prefer latest message: %q", row)
+	}
+	details := ansi.Strip(model.renderDetails())
+	if !strings.Contains(details, "you") || !strings.Contains(details, "most recent follow-up") {
+		t.Fatalf("details did not label latest user message: %q", details)
+	}
+	organizer := ansi.Strip(model.renderOrganizerSessionRow(session, false, false))
+	if !strings.Contains(organizer, "most recent follow-up") {
+		t.Fatalf("organizer row did not prefer latest message: %q", organizer)
 	}
 }
 
@@ -283,6 +320,99 @@ func TestOrganizerShowsExpandableSessionTree(t *testing.T) {
 	model = updated.(Model)
 	if _, found := findOrganizerRow(model.organizerRows(), sessionRowKey(member)); !found {
 		t.Fatal("expanded organizer group did not restore its session")
+	}
+}
+
+func TestOrganizerEditsAndRemovesSelectedRoot(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000033", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.rootIndex[container.ID] = 1
+	model.openOrganizer()
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'P', Text: "P", Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd != nil || model.organizerEdit != "root_replace" || model.organizerRootTarget != "/tmp/web" {
+		t.Fatalf("Shift-P did not edit selected root: mode=%q target=%q", model.organizerEdit, model.organizerRootTarget)
+	}
+	model.organizerInput = splitGraphemes("/tmp/frontend")
+	model.organizerInputCursor = len(model.organizerInput)
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("root edit did not produce a command")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.replacedRootWorkstream != container.ID || controller.replacedRootCurrent != "/tmp/web" || controller.replacedRootValue != "/tmp/frontend" {
+		t.Fatalf("root edit = workstream %q current %q replacement %q", controller.replacedRootWorkstream, controller.replacedRootCurrent, controller.replacedRootValue)
+	}
+
+	model, controller = newTestModel("/tmp", heikou.BackendCodex)
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.rootIndex[container.ID] = 1
+	model.openOrganizer()
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	if cmd != nil || model.confirmRootRemoval == "" {
+		t.Fatal("first d did not arm root removal")
+	}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	if cmd == nil {
+		t.Fatal("second d did not produce root removal command")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.removedRootWorkstream != container.ID || controller.removedRootValue != "/tmp/web" {
+		t.Fatalf("root removal = workstream %q root %q", controller.removedRootWorkstream, controller.removedRootValue)
+	}
+}
+
+func TestOrganizerRootRemovalConfirmationTracksSelectedRoot(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000032", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.openOrganizer()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	if cmd != nil || controller.removedRootValue != "" {
+		t.Fatal("a confirmation armed for another root removed the newly selected root")
+	}
+	if !strings.Contains(model.notice, "root web") {
+		t.Fatalf("new root was not armed explicitly: %q", model.notice)
+	}
+}
+
+func TestOrganizerHelpClearsRootRemovalConfirmation(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000031", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.openOrganizer()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	if model.confirmRootRemoval == "" {
+		t.Fatal("first d did not arm root removal")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
+	model = updated.(Model)
+	if !model.helpOpen || model.confirmRootRemoval != "" {
+		t.Fatalf("help did not clear root confirmation: help=%v confirmation=%q", model.helpOpen, model.confirmRootRemoval)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	if cmd != nil || model.confirmRootRemoval == "" || controller.removedRootValue != "" {
+		t.Fatal("root removal executed without a fresh post-help confirmation")
 	}
 }
 

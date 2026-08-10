@@ -106,9 +106,11 @@ type Model struct {
 	organizerCollapsed   map[string]bool
 	organizerSource      string
 	organizerEdit        string
+	organizerRootTarget  string
 	organizerInput       []string
 	organizerInputCursor int
 	confirmArchive       string
+	confirmRootRemoval   string
 	pendingWorkstream    string
 }
 
@@ -319,8 +321,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.organizerEdit = ""
+		m.organizerRootTarget = ""
 		m.organizerInput, m.organizerInputCursor = nil, 0
 		m.confirmArchive = ""
+		m.confirmRootRemoval = ""
 		switch message.action {
 		case "create":
 			m.pendingWorkstream = message.item.ID
@@ -339,6 +343,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "adopted legacy runtime · " + shortID(message.sessionID)
 		case "root":
 			m.notice = "added workstream root"
+		case "root_replace":
+			m.notice = "updated workstream root"
+		case "root_remove":
+			m.notice = "removed workstream root"
 		}
 		return m, m.refreshCmd()
 
@@ -385,6 +393,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.helpOpen = true
 		m.helpOffset = 0
 		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
+		m.confirmRootRemoval = ""
 		m.notice, m.errorText = "", ""
 		return m, nil
 	}
@@ -646,6 +655,7 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch stroke {
 		case "esc":
 			m.organizerEdit = ""
+			m.organizerRootTarget = ""
 			m.organizerInput, m.organizerInputCursor = nil, 0
 			return m, nil
 		case "enter":
@@ -671,6 +681,12 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, m.addRootCmd(row.workstreamID, value)
+			case "root_replace":
+				if !ok || row.kind != rowWorkstream || row.workstreamID == "" || m.organizerRootTarget == "" {
+					m.busy = false
+					return m, nil
+				}
+				return m, m.replaceRootCmd(row.workstreamID, m.organizerRootTarget, value)
 			}
 		case "left":
 			if m.organizerInputCursor > 0 {
@@ -710,6 +726,9 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if stroke != "a" {
 		m.confirmArchive = ""
 	}
+	if stroke != "d" {
+		m.confirmRootRemoval = ""
+	}
 	if stroke != "ctrl+x" {
 		m.confirmStop, m.confirmDelete = "", ""
 	}
@@ -718,6 +737,7 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc", "f3":
 		m.organizerOpen = false
 		m.organizerSource = ""
+		m.confirmRootRemoval = ""
 		m.notice = "workstreams closed"
 		return m, nil
 	case "up":
@@ -801,10 +821,43 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.beginOrganizerEdit("root", m.root)
 		}
 		return m, nil
+	case "P":
+		row, ok := m.selectedOrganizerRow()
+		root, found := m.selectedOrganizerRoot(row)
+		if ok && found {
+			m.organizerRootTarget = root
+			m.beginOrganizerEdit("root_replace", root)
+		}
+		return m, nil
+	case "d":
+		row, ok := m.selectedOrganizerRow()
+		root, found := m.selectedOrganizerRoot(row)
+		if !ok || !found {
+			m.errorText = "select a named workstream to remove its current root"
+			return m, nil
+		}
+		container, _ := m.workstream(row.workstreamID)
+		if len(container.Roots) <= 1 {
+			m.errorText = "a workstream must keep one root; edit it with Shift-P"
+			return m, nil
+		}
+		confirmation := row.workstreamID + "\x00" + root
+		if m.confirmRootRemoval != confirmation {
+			m.confirmRootRemoval = confirmation
+			m.notice = "remove root " + filepath.Base(root) + " · press d again (files and sessions stay)"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "removing root · " + compactPath(root)
+		return m, m.removeRootCmd(row.workstreamID, root)
 	case "tab":
 		row, ok := m.selectedOrganizerRow()
 		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
-			m.cycleRoot(row.workstreamID, 1)
+			if m.cycleRoot(row.workstreamID, 1) {
+				if root, found := m.selectedOrganizerRoot(row); found {
+					m.notice = "launch root · " + compactPath(root)
+				}
+			}
 		}
 		return m, nil
 	case "m":
@@ -1044,7 +1097,7 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 		fixedWidth += 18
 	}
 	taskWidth := max(1, m.width-fixedWidth)
-	task := truncatePlain(oneLine(session.Prompt), taskWidth)
+	task := truncatePlain(oneLine(session.DisplayMessage()), taskWidth)
 	marker := " "
 	if selected {
 		marker = "›"
@@ -1088,7 +1141,11 @@ func (m Model) renderDetails() string {
 		"  " + mutedStyle.Render(formatDuration(selected.RuntimeDuration(time.Now())))
 	lines := []string{truncateANSI(header, m.width)}
 	if height > 1 {
-		lines = append(lines, mutedStyle.Render(" task  ")+truncatePlain(oneLine(selected.Prompt), max(8, width-7)))
+		label := " task  "
+		if strings.TrimSpace(selected.LastUserMessage) != "" {
+			label = " you   "
+		}
+		lines = append(lines, mutedStyle.Render(label)+truncatePlain(oneLine(selected.DisplayMessage()), max(8, width-7)))
 	}
 	if height > 2 {
 		path := selected.Root
@@ -1259,7 +1316,7 @@ func (m Model) renderOrganizer() string {
 		lines = append(lines, "")
 	}
 	if m.organizerEdit != "" {
-		label := map[string]string{"create": "new name", "rename": "rename", "root": "add root"}[m.organizerEdit]
+		label := map[string]string{"create": "new name", "rename": "rename", "root": "add root", "root_replace": "edit root"}[m.organizerEdit]
 		prefix := noticeStyle.Render(label + " › ")
 		lines = append(lines, prefix+m.renderTextInput(m.organizerInput, m.organizerInputCursor, max(1, m.width-lipgloss.Width(prefix))))
 	}
@@ -1270,7 +1327,7 @@ func (m Model) renderOrganizer() string {
 	} else if message == "" && m.organizerSource != "" {
 		message = "move source · " + shortID(m.organizerSource) + " · choose a workstream and press Enter"
 	}
-	help := "↑↓ navigate · ←→/Enter expand · m mark/move · u use/open · Ctrl-X stop/delete · n/r/p edit · e/o files · a archive · ? help · Esc"
+	help := "p/P/d roots · Tab cycle · ↑↓ navigate · ←→/Enter expand · m move · u use · Ctrl-X sessions · ? help · Esc"
 	if m.organizerEdit != "" {
 		help = "Enter save · Esc cancel"
 	}
@@ -1326,7 +1383,7 @@ func (m Model) renderOrganizerSessionRow(session control.Session, selected, sour
 		sourceMark = "◆"
 	}
 	fixed := 35
-	task := truncatePlain(oneLine(session.Prompt), max(1, m.width-fixed))
+	task := truncatePlain(oneLine(session.DisplayMessage()), max(1, m.width-fixed))
 	plain := "    " + sourceMark + " " + icon + " " + padPlain(string(session.Backend), 8) + " " +
 		padPlain(shortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
 	plain = padPlain(truncatePlain(plain, m.width), m.width)
@@ -1604,12 +1661,25 @@ func (m Model) rootSummary(row listRow) string {
 	return name
 }
 
+func (m Model) selectedOrganizerRoot(row listRow) (string, bool) {
+	if row.kind != rowWorkstream || row.workstreamID == "" {
+		return "", false
+	}
+	item, ok := m.workstream(row.workstreamID)
+	if !ok || len(item.Roots) == 0 {
+		return "", false
+	}
+	return item.Roots[m.rootPosition(item.ID, len(item.Roots))], true
+}
+
 func (m *Model) openOrganizer() {
 	m.organizerOpen = true
 	m.organizerEdit = ""
+	m.organizerRootTarget = ""
 	m.organizerInput, m.organizerInputCursor = nil, 0
 	m.notice, m.errorText = "", ""
 	m.organizerSource = ""
+	m.confirmRootRemoval = ""
 	m.organizerSelected = m.selected
 	if session, ok := m.selectedSession(); ok {
 		m.organizerSource = session.ID
@@ -2006,6 +2076,24 @@ func (m Model) addRootCmd(workstreamID, root string) tea.Cmd {
 		defer cancel()
 		err := m.controller.AddRoot(ctx, workstreamID, root)
 		return workstreamMsg{action: "root", workstreamID: workstreamID, err: err}
+	}
+}
+
+func (m Model) replaceRootCmd(workstreamID, current, replacement string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.ReplaceRoot(ctx, workstreamID, current, replacement)
+		return workstreamMsg{action: "root_replace", workstreamID: workstreamID, err: err}
+	}
+}
+
+func (m Model) removeRootCmd(workstreamID, root string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.RemoveRoot(ctx, workstreamID, root)
+		return workstreamMsg{action: "root_remove", workstreamID: workstreamID, err: err}
 	}
 }
 

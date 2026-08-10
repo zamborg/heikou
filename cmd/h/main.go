@@ -212,7 +212,7 @@ func runList(args []string) error {
 	for _, session := range all {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			shortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
-			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), oneLine(session.Prompt))
+			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), oneLine(session.DisplayMessage()))
 	}
 	return writer.Flush()
 }
