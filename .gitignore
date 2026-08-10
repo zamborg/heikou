@@ -1,0 +1,5 @@
+/bin/
+/dist/
+.claude/
+.DS_Store
+*.log
