@@ -6,6 +6,7 @@ not become an undifferentiated backlog.
 
 | Idea | Status |
 | --- | --- |
+| [Code-quality and reliability audit](code-quality-audit.md) | Active backlog |
 | [Composable composer modules](composer-modules.md) | Proposed |
 | [Session status, titles, and recency](session-status-titles.md) | Proposed |
 

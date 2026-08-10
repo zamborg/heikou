@@ -1,12 +1,58 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/workstream"
 )
+
+func TestRouteGlobalCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		handled bool
+		want    string
+	}{
+		{name: "help", args: []string{"help"}, handled: true, want: "heikou — a fast dashboard"},
+		{name: "short help", args: []string{"-h"}, handled: true, want: "heikou — a fast dashboard"},
+		{name: "long help", args: []string{"--help"}, handled: true, want: "heikou — a fast dashboard"},
+		{name: "version", args: []string{"version"}, handled: true, want: "heikou " + version + "\n"},
+		{name: "long version", args: []string{"--version"}, handled: true, want: "heikou " + version + "\n"},
+		{name: "dashboard", handled: false},
+		{name: "dashboard flag", args: []string{"--runner", "no-agent"}, handled: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			handled := routeGlobalCommand(test.args, &output)
+			if handled != test.handled {
+				t.Fatalf("routeGlobalCommand() handled = %v, want %v", handled, test.handled)
+			}
+			if test.want == "" {
+				if output.Len() != 0 {
+					t.Fatalf("routeGlobalCommand() output = %q, want empty", output.String())
+				}
+				return
+			}
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("routeGlobalCommand() output = %q, want substring %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestRunRoutesLongVersionBeforeDashboardFlags(t *testing.T) {
+	var output bytes.Buffer
+	if err := runWithGlobalOutput([]string{"--version"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "heikou "+version+"\n"; got != want {
+		t.Fatalf("runWithGlobalOutput() = %q, want %q", got, want)
+	}
+}
 
 func TestSupportedTmuxVersion(t *testing.T) {
 	tests := []struct {

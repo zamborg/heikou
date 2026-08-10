@@ -48,16 +48,17 @@ func main() {
 }
 
 func run(args []string) error {
+	return runWithGlobalOutput(args, os.Stdout)
+}
+
+func runWithGlobalOutput(args []string, writer io.Writer) error {
+	if routeGlobalCommand(args, writer) {
+		return nil
+	}
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return runDashboard(args)
 	}
 	switch args[0] {
-	case "help", "-h", "--help":
-		printHelp(os.Stdout)
-		return nil
-	case "version", "--version":
-		fmt.Println("heikou", version)
-		return nil
 	case "doctor":
 		return runDoctor(args[1:])
 	case "list", "ls":
@@ -72,6 +73,22 @@ func run(args []string) error {
 		return runStop(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q; run h help", args[0])
+	}
+}
+
+func routeGlobalCommand(args []string, writer io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "help", "-h", "--help":
+		printHelp(writer)
+		return true
+	case "version", "--version":
+		fmt.Fprintln(writer, "heikou", version)
+		return true
+	default:
+		return false
 	}
 }
 

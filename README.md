@@ -87,7 +87,9 @@ shim.
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
 the durable session record and its workstream history; deletion is offered only
-after no tmux pane remains.
+after no tmux pane remains. Deletion fails closed: it checks stable tmux identity
+without relying on rich pane metadata, refuses records bound to another socket,
+and retains an interrupted pending launch when its original socket is unknown.
 
 The same primitives are available without the TUI:
 

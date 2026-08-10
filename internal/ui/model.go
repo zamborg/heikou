@@ -92,6 +92,8 @@ type Model struct {
 	errorText     string
 	confirmStop   string
 	confirmDelete string
+	snapshotFetch snapshotFetchState
+	previewFetch  previewFetchState
 
 	input       []string
 	inputCursor int
@@ -124,18 +126,35 @@ func New(controller control.Service, root string, backend heikou.Backend, store 
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), tickCmd())
+	return tea.Batch(func() tea.Msg { return initialSnapshotMsg{} }, tickCmd())
 }
 
+type initialSnapshotMsg struct{}
+
 type snapshotMsg struct {
-	snapshot control.Snapshot
-	err      error
+	generation uint64
+	snapshot   control.Snapshot
+	err        error
 }
 
 type previewMsg struct {
-	id   string
-	text string
-	err  error
+	generation uint64
+	id         string
+	text       string
+	err        error
+}
+
+type snapshotFetchState struct {
+	generation       uint64
+	activeGeneration uint64
+	queued           bool
+}
+
+type previewFetchState struct {
+	generation       uint64
+	activeGeneration uint64
+	activeID         string
+	queuedID         string
 }
 
 type startMsg struct {
@@ -193,13 +212,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = message.Width, message.Height
 		return m, nil
 
+	case initialSnapshotMsg:
+		return m, m.requestSnapshot()
+
 	case tickMsg:
-		return m, tea.Batch(m.refreshCmd(), tickCmd())
+		return m, tea.Batch(m.requestSnapshot(), tickCmd())
 
 	case snapshotMsg:
+		accepted, queuedSnapshot := m.finishSnapshot(message.generation)
+		if !accepted {
+			return m, nil
+		}
 		if message.err != nil {
 			m.errorText = message.err.Error()
-			return m, nil
+			return m, queuedSnapshot
 		}
 		m.snapshot = message.snapshot
 		if m.organizerSource != "" {
@@ -210,21 +236,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.restoreSelection()
 		m.restoreOrganizerSelection()
 		if m.organizerOpen {
-			return m, m.organizerContextCmd(false)
+			return m, tea.Batch(queuedSnapshot, m.organizerContextCmd(false))
 		}
 		if selected, ok := m.selectedSession(); ok && selected.Available() {
-			return m, m.previewCmd(selected.ID)
+			return m, tea.Batch(queuedSnapshot, m.requestPreview(selected.ID))
 		}
+		m.previewFetch.queuedID = ""
 		m.preview, m.previewID = "", ""
-		return m, nil
+		return m, queuedSnapshot
 
 	case previewMsg:
-		selected, ok := m.selectedSession()
-		if !ok || message.id != selected.ID {
+		accepted, queuedID := m.finishPreview(message.generation, message.id)
+		if !accepted {
 			return m, nil
 		}
-		if message.err == nil {
+		selected, ok := m.selectedSession()
+		if ok && selected.Available() && message.id == selected.ID && message.err == nil {
 			m.preview, m.previewID = message.text, message.id
+		}
+		if queuedID != "" && ok && selected.Available() && queuedID == selected.ID {
+			return m, m.requestPreview(queuedID)
 		}
 		return m, nil
 
@@ -237,10 +268,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.err != nil {
 			m.errorText = message.err.Error()
-			return m, m.refreshCmd()
+			return m, m.requestSnapshot()
 		}
 		m.notice = fmt.Sprintf("started %s · %s", message.session.Backend, shortID(message.session.ID))
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case sendMsg:
 		m.busy = false
@@ -251,7 +282,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearInput()
 		m.notice = "message sent · " + shortID(message.id)
 		m.confirmStop, m.confirmDelete = "", ""
-		return m, tea.Batch(m.refreshCmd(), m.previewCmd(message.id))
+		return m, tea.Batch(m.requestSnapshot(), m.requestPreview(message.id))
 
 	case stopMsg:
 		m.busy = false
@@ -264,7 +295,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if source, ok := m.session(message.id); ok && source.Orphaned && m.organizerSource == message.id {
 			m.organizerSource = ""
 		}
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case deleteMsg:
 		m.busy = false
@@ -280,7 +311,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if selected, ok := m.selectedSession(); ok && selected.ID == message.id {
 			m.selected = ""
 		}
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case attachReadyMsg:
 		m.busy = false
@@ -297,7 +328,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = "detached back to heikou"
 		}
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case settingsMsg:
 		m.busy = false
@@ -353,7 +384,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "root_remove":
 			m.notice = "removed workstream root"
 		}
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case externalMsg:
 		m.busy = false
@@ -363,9 +394,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = message.label + " closed"
 		}
 		if m.organizerOpen {
-			return m, tea.Batch(m.refreshCmd(), m.organizerContextCmd(true))
+			return m, tea.Batch(m.requestSnapshot(), m.organizerContextCmd(true))
 		}
-		return m, m.refreshCmd()
+		return m, m.requestSnapshot()
 
 	case artifactContextMsg:
 		m.acceptArtifactContext(message)
@@ -1407,10 +1438,10 @@ func (m Model) renderOrganizerGroupRow(row listRow, selected bool) string {
 	if root != "" {
 		plain += "  " + root
 	}
-	plain = padPlain(truncatePlain(plain, m.width), m.width)
 	if selected {
-		return selectedStyle.Render("›" + plain[1:])
+		return renderSelectedOrganizerRow(plain, m.width)
 	}
+	plain = padPlain(truncatePlain(plain, m.width), m.width)
 	return "  " + faintStyle.Render(twist) + " " + lipgloss.NewStyle().Bold(true).Render(name) +
 		mutedStyle.Render(truncatePlain(strings.TrimPrefix(plain, "  "+twist+" "+name), max(0, m.width-lipgloss.Width("  "+twist+" "+name))))
 }
@@ -1431,13 +1462,22 @@ func (m Model) renderOrganizerSessionRow(session control.Session, selected, sour
 	task := truncatePlain(oneLine(session.DisplayMessage()), max(1, m.width-fixed))
 	plain := "    " + sourceMark + " " + icon + " " + padPlain(string(session.Backend), 8) + " " +
 		padPlain(shortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
-	plain = padPlain(truncatePlain(plain, m.width), m.width)
 	if selected {
-		return selectedStyle.Render("›" + plain[1:])
+		return renderSelectedOrganizerRow(plain, m.width)
 	}
+	plain = padPlain(truncatePlain(plain, m.width), m.width)
 	return "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
 		backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " " +
 		padPlain(shortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
+}
+
+func renderSelectedOrganizerRow(plain string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	body := strings.TrimPrefix(plain, " ")
+	line := "›" + truncatePlain(body, width-1)
+	return selectedStyle.Render(padPlain(line, width))
 }
 
 func (m Model) fitPane(lines []string, help string) string {
@@ -1562,8 +1602,9 @@ func (m Model) moveSelection(delta int) (tea.Model, tea.Cmd) {
 	m.previewID = ""
 	m.alignRootToSelection()
 	if selected, ok := m.selectedSession(); ok && selected.Available() {
-		return m, m.previewCmd(selected.ID)
+		return m, m.requestPreview(selected.ID)
 	}
+	m.previewFetch.queuedID = ""
 	m.preview = ""
 	return m, nil
 }
@@ -2037,21 +2078,71 @@ func (m Model) listHeight() int {
 
 func (m Model) detailHeight() int { return max(0, m.height-m.listHeight()-6) }
 
-func (m Model) refreshCmd() tea.Cmd {
+func (m *Model) requestSnapshot() tea.Cmd {
+	if m.snapshotFetch.activeGeneration != 0 {
+		m.snapshotFetch.queued = true
+		return nil
+	}
+	m.snapshotFetch.generation++
+	m.snapshotFetch.activeGeneration = m.snapshotFetch.generation
+	return m.fetchSnapshotCmd(m.snapshotFetch.activeGeneration)
+}
+
+func (m *Model) finishSnapshot(generation uint64) (bool, tea.Cmd) {
+	if generation == 0 || generation != m.snapshotFetch.activeGeneration {
+		return false, nil
+	}
+	m.snapshotFetch.activeGeneration = 0
+	queued := m.snapshotFetch.queued
+	m.snapshotFetch.queued = false
+	if queued {
+		return true, m.requestSnapshot()
+	}
+	return true, nil
+}
+
+func (m Model) fetchSnapshotCmd(generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
 		snapshot, err := m.controller.Snapshot(ctx)
-		return snapshotMsg{snapshot: snapshot, err: err}
+		return snapshotMsg{generation: generation, snapshot: snapshot, err: err}
 	}
 }
 
-func (m Model) previewCmd(id string) tea.Cmd {
+func (m *Model) requestPreview(id string) tea.Cmd {
+	if id == "" {
+		m.previewFetch.queuedID = ""
+		return nil
+	}
+	if m.previewFetch.activeGeneration != 0 {
+		m.previewFetch.queuedID = id
+		return nil
+	}
+	m.previewFetch.generation++
+	m.previewFetch.activeGeneration = m.previewFetch.generation
+	m.previewFetch.activeID = id
+	m.previewFetch.queuedID = ""
+	return m.capturePreviewCmd(m.previewFetch.activeGeneration, id)
+}
+
+func (m *Model) finishPreview(generation uint64, id string) (bool, string) {
+	if generation == 0 || generation != m.previewFetch.activeGeneration || id != m.previewFetch.activeID {
+		return false, ""
+	}
+	m.previewFetch.activeGeneration = 0
+	m.previewFetch.activeID = ""
+	queuedID := m.previewFetch.queuedID
+	m.previewFetch.queuedID = ""
+	return true, queuedID
+}
+
+func (m Model) capturePreviewCmd(generation uint64, id string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
 		preview, err := m.controller.Capture(ctx, id, 120)
-		return previewMsg{id: id, text: preview, err: err}
+		return previewMsg{generation: generation, id: id, text: preview, err: err}
 	}
 }
 

@@ -109,6 +109,10 @@ type Supervisor interface {
 	Bootstrap(context.Context) error
 	Sessions(context.Context) ([]Session, error)
 	Find(context.Context, string) (Session, error)
+	// RuntimeExists is the fail-closed lifecycle check for a caller-owned ID.
+	// Implementations must use the durable ID and, when supplied, its bound
+	// runtime name without depending on optional presentation metadata.
+	RuntimeExists(context.Context, string, string) (bool, error)
 	Start(context.Context, StartRequest) (Session, error)
 	Send(context.Context, Session, string) error
 	Capture(context.Context, Session, int) (string, error)

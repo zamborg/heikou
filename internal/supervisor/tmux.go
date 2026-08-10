@@ -194,6 +194,54 @@ func (t *Tmux) Find(ctx context.Context, query string) (heikou.Session, error) {
 	return matches[0], nil
 }
 
+// RuntimeExists deliberately uses only the durable identity and stable tmux
+// name. Sessions() is a rich projection and may omit a pane whose optional or
+// partially-written metadata cannot be decoded; lifecycle deletion must not
+// mistake that omission for proof that the tmux runtime is absent.
+func (t *Tmux) RuntimeExists(ctx context.Context, id, boundName string) (bool, error) {
+	id = strings.TrimSpace(id)
+	boundName = strings.TrimSpace(boundName)
+	if id == "" && boundName == "" {
+		return false, errors.New("runtime id or bound name is required")
+	}
+
+	const format = "#{session_name}" + fieldSep + "#{@heikou_id}"
+	output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+	if err != nil {
+		if isMissingServer(err) || strings.Contains(err.Error(), "no current target") {
+			return false, nil
+		}
+		return false, fmt.Errorf("check tmux runtime existence: %w", err)
+	}
+
+	defaultName := ""
+	if id != "" {
+		defaultName = "h-" + id
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, fieldSep, 2)
+		if len(fields) == 2 {
+			if (boundName != "" && fields[0] == boundName) ||
+				(defaultName != "" && fields[0] == defaultName) ||
+				(id != "" && fields[1] == id) {
+				return true, nil
+			}
+			continue
+		}
+		// The two-field format itself should be stable. If tmux nevertheless
+		// returns a malformed row containing the durable token, fail closed.
+		if (boundName != "" && strings.Contains(line, boundName)) ||
+			(defaultName != "" && strings.Contains(line, defaultName)) ||
+			(id != "" && strings.Contains(line, id)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (t *Tmux) Start(ctx context.Context, request heikou.StartRequest) (heikou.Session, error) {
 	if !validSessionID(request.ID) {
 		return heikou.Session{}, fmt.Errorf("invalid caller-supplied session id %q", request.ID)

@@ -402,14 +402,24 @@ func (c *Controller) DeleteSession(ctx context.Context, id string) error {
 }
 
 func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
-	runtimes, err := c.supervisor.Sessions(ctx)
+	state, err := c.store.Load(ctx)
 	if err != nil {
-		return fmt.Errorf("list runtime sessions before delete: %w", err)
+		return err
 	}
-	for _, runtime := range runtimes {
-		if runtime.ID == id {
-			return fmt.Errorf("cannot delete session %q while its tmux runtime exists", id)
-		}
+	record, ok := state.Session(id)
+	if !ok {
+		return fmt.Errorf("durable session %q not found", id)
+	}
+	boundName, err := c.deleteRuntimeName(record)
+	if err != nil {
+		return err
+	}
+	exists, err := c.supervisor.RuntimeExists(ctx, id, boundName)
+	if err != nil {
+		return fmt.Errorf("check runtime before deleting session %q: %w", id, err)
+	}
+	if exists {
+		return fmt.Errorf("cannot delete session %q while its tmux runtime exists", id)
 	}
 
 	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
@@ -423,6 +433,9 @@ func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
 		if index == -1 {
 			return false, fmt.Errorf("durable session %q not found", id)
 		}
+		if _, err := c.deleteRuntimeName(state.Sessions[index]); err != nil {
+			return false, err
+		}
 
 		state.Sessions = append(state.Sessions[:index], state.Sessions[index+1:]...)
 		memberships := state.Memberships[:0]
@@ -435,6 +448,26 @@ func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
 		return true, nil
 	})
 	return err
+}
+
+func (c *Controller) deleteRuntimeName(record workstream.SessionRecord) (string, error) {
+	if record.Launch.Binding == nil {
+		if record.Launch.Status == workstream.LaunchPending && record.Outcome == nil {
+			return "", fmt.Errorf(
+				"cannot safely delete session %q: its pending launch has no runtime binding or terminal outcome, so the tmux socket is unknown",
+				record.ID,
+			)
+		}
+		return "h-" + record.ID, nil
+	}
+	binding := record.Launch.Binding
+	if binding.Socket != c.socket {
+		return "", fmt.Errorf(
+			"cannot delete session %q from tmux socket %q; it is bound to socket %q (retry with --socket %q)",
+			record.ID, c.socket, binding.Socket, binding.Socket,
+		)
+	}
+	return binding.SessionName, nil
 }
 
 func (c *Controller) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {

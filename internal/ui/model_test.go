@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -28,6 +29,7 @@ type fakeController struct {
 	movedTarget            string
 	sentSession            string
 	sentText               string
+	captureText            string
 	replacedRootWorkstream string
 	replacedRootCurrent    string
 	replacedRootValue      string
@@ -48,7 +50,7 @@ func (f *fakeController) Send(_ context.Context, id, message string) error {
 	return nil
 }
 func (f *fakeController) Capture(context.Context, string, int) (string, error) {
-	return "", nil
+	return f.captureText, nil
 }
 func (f *fakeController) Stop(_ context.Context, id string) error {
 	f.stopped = id
@@ -491,7 +493,7 @@ func TestOrganizerMoveExplicitlyAdoptsSelectedOrphan(t *testing.T) {
 }
 
 func TestSettingsAndOrganizerViewsStayWithinTerminal(t *testing.T) {
-	for _, size := range []struct{ width, height int }{{40, 15}, {80, 24}, {120, 40}} {
+	for _, size := range []struct{ width, height int }{{1, 12}, {2, 12}, {8, 12}, {20, 12}, {40, 15}, {80, 24}, {120, 40}} {
 		model, _ := newTestModel("/tmp", heikou.BackendCodex)
 		model.width, model.height = size.width, size.height
 		model.settingsOpen = true
@@ -500,6 +502,26 @@ func TestSettingsAndOrganizerViewsStayWithinTerminal(t *testing.T) {
 		assertViewFits(t, model.View().Content, size.width, size.height)
 		model.organizerOpen, model.helpOpen = false, true
 		assertViewFits(t, model.View().Content, size.width, size.height)
+	}
+}
+
+func TestSelectedOrganizerRowsRemainValidAtNarrowWidths(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-000000000053", "Narrow", []string{"/tmp"}, now)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000054", container.ID, heikou.BackendCodex, "narrow row", "/tmp", now)
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.height = 12
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	for width := 1; width <= 20; width++ {
+		model.width = width
+		model.selectOrganizerKey(workstreamRowKey(container.ID))
+		assertViewFits(t, model.View().Content, width, model.height)
+		model.selectOrganizerKey(sessionRowKey(session))
+		assertViewFits(t, model.View().Content, width, model.height)
 	}
 }
 
@@ -614,6 +636,181 @@ func TestOrganizerContextIgnoresStaleSelectionRead(t *testing.T) {
 	model = updated.(Model)
 	if model.organizerContext.snapshot.WorkstreamID != second.ID {
 		t.Fatalf("current context = %q, want %q", model.organizerContext.snapshot.WorkstreamID, second.ID)
+	}
+}
+
+func TestOrganizerContextRetriesSelectionWhoseStaleReadCompletedElsewhere(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	first := testWorkstream("018f0000-0000-4000-8000-00000000005a", "First", []string{"/tmp"}, time.Now())
+	first.ArtifactDir = t.TempDir()
+	second := testWorkstream("018f0000-0000-4000-8000-00000000005b", "Second", []string{"/tmp"}, time.Now())
+	second.ArtifactDir = t.TempDir()
+	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.selected = workstreamRowKey(first.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	firstCmd := model.organizerContextCmd(true)
+	updated, _ := model.Update(firstCmd())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.WorkstreamID != first.ID {
+		t.Fatalf("cached context = %q, want %q", model.organizerContext.snapshot.WorkstreamID, first.ID)
+	}
+
+	model.selectOrganizerKey(workstreamRowKey(second.ID))
+	staleSecondCmd := model.organizerContextCmd(false)
+	if staleSecondCmd == nil {
+		t.Fatal("selecting the second workstream did not begin a context read")
+	}
+	model.selectOrganizerKey(workstreamRowKey(first.ID))
+	if cmd := model.organizerContextCmd(false); cmd != nil {
+		t.Fatal("returning to cached first context unexpectedly re-read it")
+	}
+	if model.organizerContext.loadingKey != "" {
+		t.Fatalf("abandoned second read remains marked loading: %q", model.organizerContext.loadingKey)
+	}
+
+	updated, _ = model.Update(staleSecondCmd())
+	model = updated.(Model)
+	model.selectOrganizerKey(workstreamRowKey(second.ID))
+	retryCmd := model.organizerContextCmd(false)
+	if retryCmd == nil {
+		t.Fatal("stale second completion permanently suppressed its retry")
+	}
+	updated, _ = model.Update(retryCmd())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.WorkstreamID != second.ID {
+		t.Fatalf("retried context = %q, want %q", model.organizerContext.snapshot.WorkstreamID, second.ID)
+	}
+}
+
+func TestSnapshotFetchesAreSingleFlightAndRejectLateOlderCompletion(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	firstCmd := model.requestSnapshot()
+	if firstCmd == nil {
+		t.Fatal("first snapshot request did not start")
+	}
+	firstGeneration := model.snapshotFetch.activeGeneration
+	if cmd := model.requestSnapshot(); cmd != nil || !model.snapshotFetch.queued {
+		t.Fatalf("overlapping snapshot request was not coalesced: cmd=%v queued=%v", cmd != nil, model.snapshotFetch.queued)
+	}
+
+	controller.snapshot = control.Snapshot{StatePath: "older"}
+	firstResult := firstCmd()
+	firstMessage, ok := firstResult.(snapshotMsg)
+	if !ok {
+		t.Fatalf("first snapshot command returned %T", firstResult)
+	}
+	updated, secondCmd := model.Update(firstMessage)
+	model = updated.(Model)
+	if secondCmd == nil || model.snapshotFetch.activeGeneration <= firstGeneration {
+		t.Fatalf("queued snapshot did not start: generation=%d first=%d", model.snapshotFetch.activeGeneration, firstGeneration)
+	}
+
+	controller.snapshot = control.Snapshot{StatePath: "newer"}
+	secondResult := secondCmd()
+	secondMessage, ok := secondResult.(snapshotMsg)
+	if !ok {
+		t.Fatalf("second snapshot command returned %T", secondResult)
+	}
+	updated, _ = model.Update(secondMessage)
+	model = updated.(Model)
+	if model.snapshot.StatePath != "newer" {
+		t.Fatalf("current snapshot = %q, want newer", model.snapshot.StatePath)
+	}
+
+	firstMessage.snapshot.StatePath = "late older"
+	updated, _ = model.Update(firstMessage)
+	model = updated.(Model)
+	if model.snapshot.StatePath != "newer" {
+		t.Fatalf("late older snapshot replaced newer state: %q", model.snapshot.StatePath)
+	}
+}
+
+func TestPreviewFetchesAreSingleFlightAndRejectLateOlderCompletion(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-00000000005c", "", heikou.BackendCodex, "preview", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	controller.captureText = "older preview"
+	firstCmd := model.requestPreview(session.ID)
+	if firstCmd == nil {
+		t.Fatal("first preview request did not start")
+	}
+	firstGeneration := model.previewFetch.activeGeneration
+	if cmd := model.requestPreview(session.ID); cmd != nil || model.previewFetch.queuedID != session.ID {
+		t.Fatalf("overlapping preview request was not coalesced: cmd=%v queued=%q", cmd != nil, model.previewFetch.queuedID)
+	}
+	firstResult := firstCmd()
+	firstMessage, ok := firstResult.(previewMsg)
+	if !ok {
+		t.Fatalf("first preview command returned %T", firstResult)
+	}
+	updated, secondCmd := model.Update(firstMessage)
+	model = updated.(Model)
+	if secondCmd == nil || model.previewFetch.activeGeneration <= firstGeneration {
+		t.Fatalf("queued preview did not start: generation=%d first=%d", model.previewFetch.activeGeneration, firstGeneration)
+	}
+
+	controller.captureText = "newer preview"
+	secondResult := secondCmd()
+	secondMessage, ok := secondResult.(previewMsg)
+	if !ok {
+		t.Fatalf("second preview command returned %T", secondResult)
+	}
+	updated, _ = model.Update(secondMessage)
+	model = updated.(Model)
+	if model.preview != "newer preview" {
+		t.Fatalf("current preview = %q, want newer preview", model.preview)
+	}
+
+	firstMessage.text = "late older preview"
+	updated, _ = model.Update(firstMessage)
+	model = updated.(Model)
+	if model.preview != "newer preview" {
+		t.Fatalf("late older preview replaced newer output: %q", model.preview)
+	}
+}
+
+func TestPreviewCompletionDoesNotReviveOutputForUnavailableSession(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-00000000005d", "", heikou.BackendCodex, "preview", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	controller.captureText = "stale live output"
+	previewCmd := model.requestPreview(session.ID)
+	if previewCmd == nil {
+		t.Fatal("live session preview did not start")
+	}
+
+	unavailable := session
+	unavailable.Runtime = nil
+	unavailable.Status = control.StatusStopped
+	controller.snapshot = control.Snapshot{Sessions: []control.Session{unavailable}}
+	snapshotCmd := model.requestSnapshot()
+	snapshotResult := snapshotCmd()
+	snapshotMessage, ok := snapshotResult.(snapshotMsg)
+	if !ok {
+		t.Fatalf("snapshot command returned %T", snapshotResult)
+	}
+	updated, _ := model.Update(snapshotMessage)
+	model = updated.(Model)
+	if model.preview != "" || model.previewID != "" {
+		t.Fatalf("unavailable snapshot retained preview %q for %q", model.preview, model.previewID)
+	}
+
+	previewResult := previewCmd()
+	previewMessage, ok := previewResult.(previewMsg)
+	if !ok {
+		t.Fatalf("preview command returned %T", previewResult)
+	}
+	updated, _ = model.Update(previewMessage)
+	model = updated.(Model)
+	if model.preview != "" || model.previewID != "" {
+		t.Fatalf("late preview revived unavailable output %q for %q", model.preview, model.previewID)
 	}
 }
 
@@ -853,7 +1050,9 @@ func TestSettingsErrorsSurviveSnapshotRefresh(t *testing.T) {
 	model.width, model.height, model.settingsOpen = 80, 24, true
 	updated, _ := model.Update(settingsMsg{err: context.DeadlineExceeded})
 	model = updated.(Model)
-	updated, _ = model.Update(snapshotMsg{snapshot: control.Snapshot{}})
+	model.snapshotFetch.generation = 1
+	model.snapshotFetch.activeGeneration = 1
+	updated, _ = model.Update(snapshotMsg{generation: 1, snapshot: control.Snapshot{}})
 	model = updated.(Model)
 	if !strings.Contains(model.errorText, "deadline exceeded") {
 		t.Fatalf("settings error was cleared by refresh: %q", model.errorText)
@@ -924,6 +1123,9 @@ func findOrganizerRow(rows []listRow, key string) (listRow, bool) {
 
 func assertViewFits(t *testing.T, content string, width, height int) {
 	t.Helper()
+	if !utf8.ValidString(content) {
+		t.Fatalf("view contains invalid UTF-8 at %dx%d: %q", width, height, content)
+	}
 	lines := strings.Split(content, "\n")
 	if len(lines) > height {
 		t.Fatalf("view has %d lines, terminal height %d\n%s", len(lines), height, ansi.Strip(content))

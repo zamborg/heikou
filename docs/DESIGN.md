@@ -235,9 +235,14 @@ Lifecycle cleanup is deliberately staged. Two presses of `Ctrl-X` stop and
 remove a present runtime while retaining its durable record. Only after no pane
 remains can another confirmed `Ctrl-X` delete that record and membership; the
 controller refuses deletion whenever it still observes a live or dead retained
-pane. Deletion never doubles as an implicit stop. A separate advisory lifecycle
-lock spans each launch and deletion, preventing concurrent dashboard or CLI
-processes from deleting a pending identity while its tmux runtime is created.
+pane. This lifecycle check uses only stable ID/session-name evidence, so malformed
+optional pane metadata cannot turn a retained runtime into apparent absence. A
+record bound to another socket must be deleted through that socket, while an
+outcome-less pending launch with no binding is retained because its socket cannot
+be proven. Deletion never doubles as an implicit stop. A separate advisory
+lifecycle lock spans each launch and deletion, preventing concurrent dashboard
+or CLI processes from deleting a pending identity while its tmux runtime is
+created.
 
 ### Follow-up messages
 

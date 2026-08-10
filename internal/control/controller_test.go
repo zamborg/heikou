@@ -63,6 +63,7 @@ type fakeSupervisor struct {
 	mu       sync.Mutex
 	sessions []heikou.Session
 	start    func(heikou.StartRequest) (heikou.Session, error)
+	exists   func(string, string) (bool, error)
 	stopErr  error
 }
 
@@ -81,6 +82,19 @@ func (f *fakeSupervisor) Find(_ context.Context, query string) (heikou.Session, 
 		}
 	}
 	return heikou.Session{}, errors.New("not found")
+}
+func (f *fakeSupervisor) RuntimeExists(_ context.Context, id, boundName string) (bool, error) {
+	if f.exists != nil {
+		return f.exists(id, boundName)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, session := range f.sessions {
+		if session.ID == id || session.Name == boundName || session.Name == "h-"+id {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeSupervisor) Start(_ context.Context, request heikou.StartRequest) (heikou.Session, error) {
 	if f.start != nil {
@@ -289,7 +303,12 @@ func TestDeleteSessionRefusesAnyRetainedRuntime(t *testing.T) {
 			_, err = repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
 				state.Sessions = append(state.Sessions, workstream.SessionRecord{
 					ID: id, Backend: heikou.BackendCodex, InitialPrompt: "keep me", InitialRoot: root,
-					CreatedAt: now, Launch: workstream.LaunchIntent{Status: workstream.LaunchPending},
+					CreatedAt: now, Launch: workstream.LaunchIntent{
+						Status: workstream.LaunchStarted,
+						Binding: &workstream.RuntimeBinding{
+							Driver: "tmux", Socket: "heikou-test", SessionName: "h-" + id, BoundAt: now,
+						},
+					},
 				})
 				state.Memberships = append(state.Memberships, workstream.Membership{
 					WorkstreamID: container.ID, SessionID: id, JoinedAt: now,
@@ -317,14 +336,15 @@ func TestDeleteSessionRefusesAnyRetainedRuntime(t *testing.T) {
 func TestDeleteSessionRemovesAbsentRuntimeRecordAndMembership(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
+	exitCode := 0
 
 	for index, test := range []struct {
 		name    string
 		outcome *workstream.Outcome
 	}{
 		{name: "stopped", outcome: &workstream.Outcome{Kind: workstream.OutcomeStopped, RecordedAt: now}},
-		{name: "unavailable"},
 		{name: "start failed", outcome: &workstream.Outcome{Kind: workstream.OutcomeStartFailed, Error: "runner missing", RecordedAt: now}},
+		{name: "exited", outcome: &workstream.Outcome{Kind: workstream.OutcomeExited, ExitCode: &exitCode, RecordedAt: now}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository := newMemoryRepository(root)
@@ -367,6 +387,42 @@ func TestDeleteSessionRemovesAbsentRuntimeRecordAndMembership(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionRefusesUnboundPendingLaunchWithUnknownSocket(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	id := "018f0000-0000-4000-8000-000000000055"
+	repository := newMemoryRepository(root)
+	before, err := repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+		state.Sessions = append(state.Sessions, workstream.SessionRecord{
+			ID: id, Backend: heikou.BackendCodex, InitialPrompt: "ambiguous launch", InitialRoot: root,
+			CreatedAt: now, Launch: workstream.LaunchIntent{Status: workstream.LaunchPending},
+		})
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &fakeSupervisor{exists: func(_, _ string) (bool, error) {
+		t.Fatal("an unbound pending launch must be rejected before checking only the current socket")
+		return false, nil
+	}}
+	controller := New(supervisor, repository, "socket-b")
+	err = controller.DeleteSession(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), "tmux socket is unknown") {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+	after, loadErr := repository.Load(context.Background())
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, ok := after.Session(id); !ok {
+		t.Fatal("ambiguous pending-launch delete removed the durable record")
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("refused delete advanced revision from %d to %d", before.Revision, after.Revision)
+	}
+}
+
 func TestDeleteSessionRejectsUnknownID(t *testing.T) {
 	repository := newMemoryRepository(t.TempDir())
 	controller := New(&fakeSupervisor{}, repository, "heikou-test")
@@ -384,6 +440,81 @@ func TestDeleteSessionRejectsUnknownID(t *testing.T) {
 	}
 	if after.Revision != before.Revision {
 		t.Fatalf("unknown delete changed revision from %d to %d", before.Revision, after.Revision)
+	}
+}
+
+func TestDeleteSessionFailsClosedForPlausibleUnprojectableRuntime(t *testing.T) {
+	root := t.TempDir()
+	id := "018f0000-0000-4000-8000-000000000053"
+	now := time.Now().UTC()
+	repository := newMemoryRepository(root)
+	_, err := repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+		state.Sessions = append(state.Sessions, workstream.SessionRecord{
+			ID: id, Backend: heikou.BackendCodex, InitialPrompt: "keep partial runtime", InitialRoot: root,
+			CreatedAt: now, Launch: workstream.LaunchIntent{
+				Status: workstream.LaunchStarted,
+				Binding: &workstream.RuntimeBinding{
+					Driver: "tmux", Socket: "heikou-test", SessionName: "h-" + id, BoundAt: now,
+				},
+			},
+		})
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &fakeSupervisor{exists: func(gotID, gotName string) (bool, error) {
+		if gotID != id || gotName != "h-"+id {
+			t.Fatalf("RuntimeExists(%q, %q)", gotID, gotName)
+		}
+		return true, nil
+	}}
+	controller := New(supervisor, repository, "heikou-test")
+	if err := controller.DeleteSession(context.Background(), id); err == nil || !strings.Contains(err.Error(), "runtime exists") {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Session(id); !ok {
+		t.Fatal("fail-closed delete removed the durable record")
+	}
+}
+
+func TestDeleteSessionRefusesDifferentBoundSocket(t *testing.T) {
+	root := t.TempDir()
+	id := "018f0000-0000-4000-8000-000000000054"
+	now := time.Now().UTC()
+	repository := newMemoryRepository(root)
+	_, err := repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+		state.Sessions = append(state.Sessions, workstream.SessionRecord{
+			ID: id, Backend: heikou.BackendClaude, InitialPrompt: "bound elsewhere", InitialRoot: root,
+			CreatedAt: now,
+			Launch: workstream.LaunchIntent{Status: workstream.LaunchStarted, Binding: &workstream.RuntimeBinding{
+				Driver: "tmux", Socket: "socket-a", SessionName: "h-" + id, BoundAt: now,
+			}},
+		})
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &fakeSupervisor{exists: func(_, _ string) (bool, error) {
+		t.Fatal("a mismatched binding must be rejected before querying the current socket")
+		return false, nil
+	}}
+	controller := New(supervisor, repository, "socket-b")
+	err = controller.DeleteSession(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), `--socket "socket-a"`) {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+	state, loadErr := repository.Load(context.Background())
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, ok := state.Session(id); !ok {
+		t.Fatal("socket-mismatch delete removed the durable record")
 	}
 }
 

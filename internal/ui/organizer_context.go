@@ -42,8 +42,20 @@ func (m *Model) organizerContextCmd(force bool) tea.Cmd {
 	}
 	key := artifactContextKey(item)
 	loadedKey := m.organizerContext.snapshot.WorkstreamID + "\x00" + m.organizerContext.snapshot.ArtifactDir
-	if !force && (loadedKey == key || m.organizerContext.loadingKey == key) {
-		return nil
+	if !force {
+		if loadedKey == key {
+			// Returning to a cached selection abandons any read for the selection
+			// we just left. Otherwise that stale result can be rejected below while
+			// leaving loadingKey behind, permanently suppressing a future retry.
+			if m.organizerContext.loadingKey != "" && m.organizerContext.loadingKey != key {
+				m.organizerContext.generation++
+				m.organizerContext.loadingKey = ""
+			}
+			return nil
+		}
+		if m.organizerContext.loadingKey == key {
+			return nil
+		}
 	}
 	m.organizerContext.generation++
 	generation := m.organizerContext.generation
