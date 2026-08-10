@@ -101,6 +101,44 @@ func TestValidSessionIDIsStrict(t *testing.T) {
 	}
 }
 
+func TestParsePaneFieldsPreservesControlCharactersAndNewlines(t *testing.T) {
+	const (
+		fieldMarker  = "__heikou_field_testnonce__"
+		recordMarker = "__heikou_record_testnonce__"
+	)
+	want := [][]string{
+		{"h-one", "%1", "/tmp/control\x1fchar\nand newline"},
+		{"h-two", "%2", "plain"},
+	}
+	output := strings.Join(want[0], fieldMarker) + recordMarker + "\n" +
+		strings.Join(want[1], fieldMarker) + recordMarker + "\n"
+	got, err := parsePaneFields([]byte(output), fieldMarker, recordMarker, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsePaneFields() returned %d rows, want %d", len(got), len(want))
+	}
+	for row := range want {
+		for field := range want[row] {
+			if got[row][field] != want[row][field] {
+				t.Fatalf("row %d field %d = %q, want %q", row, field, got[row][field], want[row][field])
+			}
+		}
+	}
+}
+
+func TestParsePaneFieldsRejectsSentinelCollision(t *testing.T) {
+	const (
+		fieldMarker  = "__heikou_field_testnonce__"
+		recordMarker = "__heikou_record_testnonce__"
+	)
+	output := "h-one" + fieldMarker + "value " + recordMarker + " collision" + recordMarker + "\n"
+	if _, err := parsePaneFields([]byte(output), fieldMarker, recordMarker, 2); err == nil {
+		t.Fatal("parsePaneFields() accepted a record sentinel collision")
+	}
+}
+
 func TestEnvironmentNamesExcludeNestedTmux(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/socket")
 	t.Setenv("HEIKOU_TEST_TOKEN", "secret")

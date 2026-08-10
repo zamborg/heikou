@@ -24,8 +24,8 @@ import (
 
 const (
 	DefaultSocket    = "heikou"
-	fieldSep         = "\x1f"
 	bootstrapVersion = "1"
+	framingAttempts  = 3
 )
 
 type Tmux struct {
@@ -104,27 +104,29 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 }
 
 func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
-	const format = "#{session_name}" + fieldSep +
-		"#{pane_id}" + fieldSep +
-		"#{@heikou_id}" + fieldSep +
-		"#{@heikou_pane}" + fieldSep +
-		"#{@heikou_canonical}" + fieldSep +
-		"#{@heikou_backend}" + fieldSep +
-		"#{@heikou_started}" + fieldSep +
-		"#{@heikou_prompt}" + fieldSep +
-		"#{@heikou_root}" + fieldSep +
-		"#{pane_dead}" + fieldSep +
-		"#{pane_dead_status}" + fieldSep +
-		"#{pane_dead_time}" + fieldSep +
-		"#{window_activity}" + fieldSep +
-		"#{pane_current_path}" + fieldSep +
-		"#{pane_current_command}" + fieldSep +
-		"#{session_attached}" + fieldSep +
-		"#{pane_in_mode}" + fieldSep +
-		"#{pane_input_off}" + fieldSep +
-		"#{@heikou_last_user_message}"
+	formatFields := []string{
+		"#{session_name}",
+		"#{pane_id}",
+		"#{@heikou_id}",
+		"#{@heikou_pane}",
+		"#{@heikou_canonical}",
+		"#{@heikou_backend}",
+		"#{@heikou_started}",
+		"#{@heikou_prompt}",
+		"#{@heikou_root}",
+		"#{pane_dead}",
+		"#{pane_dead_status}",
+		"#{pane_dead_time}",
+		"#{window_activity}",
+		"#{pane_current_path}",
+		"#{pane_current_command}",
+		"#{session_attached}",
+		"#{pane_in_mode}",
+		"#{pane_input_off}",
+		"#{@heikou_last_user_message}",
+	}
 
-	output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+	rows, err := t.listPaneFields(ctx, formatFields)
 	if err != nil {
 		if isMissingServer(err) || strings.Contains(err.Error(), "no current target") {
 			return nil, nil
@@ -133,14 +135,7 @@ func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
 	}
 
 	var sessions []heikou.Session
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		fields := strings.Split(line, fieldSep)
-		if len(fields) != 19 {
-			continue
-		}
+	for _, fields := range rows {
 		if fields[2] == "" && strings.HasPrefix(fields[0], "h-") {
 			candidate := strings.TrimPrefix(fields[0], "h-")
 			if validSessionID(candidate) {
@@ -205,8 +200,7 @@ func (t *Tmux) RuntimeExists(ctx context.Context, id, boundName string) (bool, e
 		return false, errors.New("runtime id or bound name is required")
 	}
 
-	const format = "#{session_name}" + fieldSep + "#{@heikou_id}"
-	output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+	rows, err := t.listPaneFields(ctx, []string{"#{session_name}", "#{@heikou_id}"})
 	if err != nil {
 		if isMissingServer(err) || strings.Contains(err.Error(), "no current target") {
 			return false, nil
@@ -218,28 +212,81 @@ func (t *Tmux) RuntimeExists(ctx context.Context, id, boundName string) (bool, e
 	if id != "" {
 		defaultName = "h-" + id
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if line == "" {
-			continue
-		}
-		fields := strings.SplitN(line, fieldSep, 2)
-		if len(fields) == 2 {
-			if (boundName != "" && fields[0] == boundName) ||
-				(defaultName != "" && fields[0] == defaultName) ||
-				(id != "" && fields[1] == id) {
-				return true, nil
-			}
-			continue
-		}
-		// The two-field format itself should be stable. If tmux nevertheless
-		// returns a malformed row containing the durable token, fail closed.
-		if (boundName != "" && strings.Contains(line, boundName)) ||
-			(defaultName != "" && strings.Contains(line, defaultName)) ||
-			(id != "" && strings.Contains(line, id)) {
+	for _, fields := range rows {
+		if (boundName != "" && fields[0] == boundName) ||
+			(defaultName != "" && fields[0] == defaultName) ||
+			(id != "" && fields[1] == id) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// listPaneFields frames tmux's formatted output with printable, per-call
+// sentinels. tmux 3.5 and older escape C0 control bytes in list-panes output,
+// so a control character cannot safely delimit fields across supported tmux
+// versions. A fresh nonce also keeps user-controlled paths from becoming
+// ambiguous framing. Malformed output is retried with new sentinels.
+func (t *Tmux) listPaneFields(ctx context.Context, formatFields []string) ([][]string, error) {
+	if len(formatFields) == 0 {
+		return nil, errors.New("at least one tmux format field is required")
+	}
+	var parseErr error
+	for attempt := 0; attempt < framingAttempts; attempt++ {
+		token, err := randomToken()
+		if err != nil {
+			return nil, err
+		}
+		fieldMarker := "__heikou_field_" + token + "__"
+		recordMarker := "__heikou_record_" + token + "__"
+		format := strings.Join(formatFields, fieldMarker) + recordMarker
+		output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := parsePaneFields(output, fieldMarker, recordMarker, len(formatFields))
+		if err == nil {
+			return rows, nil
+		}
+		parseErr = err
+	}
+	return nil, fmt.Errorf("decode tmux pane list after %d attempts: %w", framingAttempts, parseErr)
+}
+
+func parsePaneFields(output []byte, fieldMarker, recordMarker string, fieldCount int) ([][]string, error) {
+	remaining := string(output)
+	if remaining == "" {
+		return nil, nil
+	}
+
+	var rows [][]string
+	for remaining != "" {
+		if len(rows) > 0 {
+			switch {
+			case strings.HasPrefix(remaining, "\r\n"):
+				remaining = strings.TrimPrefix(remaining, "\r\n")
+			case strings.HasPrefix(remaining, "\n"):
+				remaining = strings.TrimPrefix(remaining, "\n")
+			default:
+				return nil, errors.New("tmux pane record is missing its line ending")
+			}
+			if remaining == "" {
+				break
+			}
+		}
+
+		record, rest, found := strings.Cut(remaining, recordMarker)
+		if !found {
+			return nil, errors.New("tmux pane record is missing its sentinel")
+		}
+		fields := strings.Split(record, fieldMarker)
+		if len(fields) != fieldCount {
+			return nil, fmt.Errorf("tmux pane record has %d fields, want %d", len(fields), fieldCount)
+		}
+		rows = append(rows, fields)
+		remaining = rest
+	}
+	return rows, nil
 }
 
 func (t *Tmux) Start(ctx context.Context, request heikou.StartRequest) (heikou.Session, error) {
