@@ -234,8 +234,8 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (Session, 
 }
 
 func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Session, error) {
-	prompt := strings.TrimSpace(request.Prompt)
-	if prompt == "" {
+	prompt := request.Prompt
+	if strings.TrimSpace(prompt) == "" {
 		return Session{}, errors.New("prompt cannot be empty")
 	}
 	if _, err := heikou.ParseBackend(string(request.Backend)); err != nil {

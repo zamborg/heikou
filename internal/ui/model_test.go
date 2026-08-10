@@ -1059,12 +1059,143 @@ func TestSettingsErrorsSurviveSnapshotRefresh(t *testing.T) {
 	}
 }
 
-func TestPasteNormalizesMultilineComposer(t *testing.T) {
+func TestPastePreservesMultilineComposer(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	updated, _ := model.Update(tea.PasteMsg{Content: "first line\r\nsecond\tline\nthird"})
-	if got := updated.(Model).inputValue(); got != "first line second line third" {
+	if got := updated.(Model).inputValue(); got != "first line\nsecond\tline\nthird" {
 		t.Fatalf("input = %q", got)
 	}
+}
+
+func TestShiftEnterCreatesMultilineLaunch(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	model.insertText("\tfirst line")
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd != nil || model.inputValue() != "\tfirst line\n" {
+		t.Fatalf("Shift-Enter = input %q, command %v", model.inputValue(), cmd != nil)
+	}
+	model.insertText("second line")
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'j', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if cmd != nil || model.inputValue() != "\tfirst line\nsecond line\n" {
+		t.Fatalf("Ctrl-J = input %q, command %v", model.inputValue(), cmd != nil)
+	}
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("Enter did not launch the multiline prompt")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.startRequest.Prompt != "\tfirst line\nsecond line\n" {
+		t.Fatalf("launch prompt = %q", controller.startRequest.Prompt)
+	}
+}
+
+func TestMacComposerNavigation(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.insertText("alpha beta\ngamma delta")
+	secondLine := len(splitGraphemes("alpha beta\n"))
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft, Mod: tea.ModSuper}))
+	model = updated.(Model)
+	if model.inputCursor != secondLine {
+		t.Fatalf("Command-Left cursor = %d, want %d", model.inputCursor, secondLine)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModAlt}))
+	model = updated.(Model)
+	if model.inputCursor != secondLine+len(splitGraphemes("gamma")) {
+		t.Fatalf("Option-Right cursor = %d", model.inputCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModAlt}))
+	model = updated.(Model)
+	if model.inputCursor != secondLine {
+		t.Fatalf("legacy Option-Left cursor = %d, want %d", model.inputCursor, secondLine)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModMeta}))
+	model = updated.(Model)
+	if model.inputCursor != secondLine+len(splitGraphemes("gamma")) {
+		t.Fatalf("Meta Option-Right cursor = %d", model.inputCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModSuper}))
+	model = updated.(Model)
+	if model.inputCursor != len(model.input) {
+		t.Fatalf("Command-Right cursor = %d, want %d", model.inputCursor, len(model.input))
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModSuper}))
+	model = updated.(Model)
+	if model.inputCursor != 0 {
+		t.Fatalf("Command-Up cursor = %d", model.inputCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModSuper}))
+	if updated.(Model).inputCursor != len(model.input) {
+		t.Fatalf("Command-Down cursor = %d, want %d", updated.(Model).inputCursor, len(model.input))
+	}
+}
+
+func TestMacComposerDeletionUsesLogicalLines(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.insertText("alpha beta\ngamma delta")
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace, Mod: tea.ModSuper}))
+	model = updated.(Model)
+	if got := model.inputValue(); got != "alpha beta\n" {
+		t.Fatalf("Command-Delete input = %q", got)
+	}
+
+	model.clearInput()
+	model.insertText("alpha beta\ngamma delta")
+	model.inputCursor = len(splitGraphemes("alpha beta\ngamma "))
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if got := model.inputValue(); got != "alpha beta\ndelta" {
+		t.Fatalf("Ctrl-U input = %q", got)
+	}
+
+	model.clearInput()
+	model.insertText("alpha beta")
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace, Mod: tea.ModAlt}))
+	if got := updated.(Model).inputValue(); got != "alpha " {
+		t.Fatalf("Option-Delete input = %q", got)
+	}
+
+	model.clearInput()
+	model.insertText("first\nsecond")
+	model.inputCursor = len(splitGraphemes("first"))
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'k', Mod: tea.ModCtrl}))
+	if got := updated.(Model).inputValue(); got != "firstsecond" {
+		t.Fatalf("Ctrl-K at line end input = %q", got)
+	}
+}
+
+func TestMultilineArrowsKeepPreferredColumnAndSelection(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.insertText("abcd\nx\nwxyz")
+	model.inputCursor = len(splitGraphemes("abcd"))
+	selected := model.selected
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	model = updated.(Model)
+	if model.inputCursor != len(splitGraphemes("abcd\nx")) {
+		t.Fatalf("first Down cursor = %d", model.inputCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	model = updated.(Model)
+	if model.inputCursor != len(model.input) {
+		t.Fatalf("second Down cursor = %d, want %d", model.inputCursor, len(model.input))
+	}
+	if model.selected != selected {
+		t.Fatalf("multiline navigation changed dashboard selection from %q to %q", selected, model.selected)
+	}
+}
+
+func TestMultilineComposerViewportFollowsCursor(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 60, 12
+	model.insertText("line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7")
+	plain := ansi.Strip(model.View().Content)
+	if !strings.Contains(plain, "  7 │ line 7") || strings.Contains(plain, "  2 │ line 2") {
+		t.Fatalf("composer viewport did not follow the cursor:\n%s", plain)
+	}
+	assertViewFits(t, model.View().Content, model.width, model.height)
 }
 
 func TestComposerKeepsSpacesAndGraphemeClusters(t *testing.T) {

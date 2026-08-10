@@ -28,12 +28,13 @@ daemon, manager agent, task graph, or replacement execution engine.
 
 ## Install
 
-Requirements: macOS, Linux, or WSL; Go 1.25+; tmux 3.3+; and at least one of
-`codex` or `claude`. Runner commands can be configured when they are not on
-`PATH`; Heikou also discovers Codex inside the macOS ChatGPT app bundle.
+Heikou currently targets macOS. Requirements: Go 1.25+, tmux 3.3+, and at
+least one of `codex` or `claude`. Runner commands can be configured when they
+are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
+bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.1
+go install github.com/zamborg/heikou/cmd/h@v0.3.2
 h doctor
 ```
 
@@ -64,17 +65,26 @@ The composer is always ready:
 | --- | --- |
 | Type a task or label, then `Enter` | Start the chosen Codex, Claude, or `no-agent` session |
 | Type a message, then `Tab` | Send it to the selected live session |
+| `Shift-Enter` | Insert a newline; `Ctrl-J` is the fallback for terminals that cannot distinguish shifted Enter |
+| `Option-Left` / `Option-Right` | Move by word; `Option-Delete` deletes the previous word |
+| `Command-Left` / `Command-Right` | Move to the start or end of the logical line |
+| `Command-Up` / `Command-Down` | Move to the start or end of the whole draft |
 | `Tab` with an empty composer | Cycle Codex → Claude → `no-agent` |
 | `Shift-Tab` with an empty composer | Cycle the selected workstream's explicit roots |
 | `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
 | `F3` | Open the expandable workstream/session organizer |
-| `Up` / `Down` | Select a workstream or session |
+| `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Clear the composer; press again to leave the dashboard |
+
+The terminal application decides whether macOS modifier chords reach a TUI.
+Heikou accepts enhanced Option/Command events plus common Alt, Home/End, and
+Ctrl-key fallbacks. If a terminal reports `Shift-Enter` as ordinary Enter, use
+`Ctrl-J` for a newline.
 
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Workstream Organizer**, **Settings**, or **Help**.
@@ -169,6 +179,8 @@ Commands are argv arrays, not shell strings. Fixed flags are placed before the
 task arguments Heikou adds. The four `composer_keys` fields may be omitted to
 keep the defaults shown above; `new_session` and `send_message` apply when the
 composer has text, while `cycle_runner` and `cycle_root` apply when it is empty.
+`Shift-Enter` inserts a newline unless it is explicitly assigned to one of
+those actions.
 The settings pane displays the active bindings and reloads JSON changes with
 `r`. Command changes affect new sessions; a changed `default_runner` applies
 the next time the dashboard opens. `no-agent` is not configurable: it asks tmux

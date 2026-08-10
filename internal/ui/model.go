@@ -95,8 +95,10 @@ type Model struct {
 	snapshotFetch snapshotFetchState
 	previewFetch  previewFetchState
 
-	input       []string
-	inputCursor int
+	input          []string
+	inputCursor    int
+	inputColumn    int
+	inputColumnSet bool
 
 	settingsOpen   bool
 	settingsOffset int
@@ -408,11 +410,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.organizerOpen {
 			if m.organizerEdit != "" {
-				m.insertOrganizerText(normalizePaste(message.Content))
+				m.insertOrganizerText(normalizeInlinePaste(message.Content))
 			}
 			return m, nil
 		}
-		m.insertText(normalizePaste(message.Content))
+		m.insertText(normalizeComposerPaste(message.Content))
 		m.notice = ""
 		return m, nil
 
@@ -455,13 +457,14 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.confirmStop = ""
 		m.confirmDelete = ""
 	}
-	prompt := strings.TrimSpace(m.inputValue())
+	draft := m.inputValue()
+	prompt := strings.TrimSpace(draft)
 	if prompt != "" {
 		switch bindingStroke {
 		case m.settings.NewSessionKey():
 			m.busy = true
 			m.notice = "starting " + string(m.backend) + "…"
-			return m, m.startCmd(prompt)
+			return m, m.startCmd(draft)
 		case m.settings.SendMessageKey():
 			selected, ok := m.selectedSession()
 			if !ok || !selected.Alive() {
@@ -485,6 +488,10 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.handleComposerShortcut(bindingStroke) {
+		m.notice = ""
+		return m, nil
+	}
 
 	switch stroke {
 	case "ctrl+s", "f2":
@@ -506,9 +513,17 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "up":
+		if m.hasMultilineInput() {
+			m.moveInputVertical(-1)
+			return m, nil
+		}
 		return m.moveSelection(-1)
 
 	case "down":
+		if m.hasMultilineInput() {
+			m.moveInputVertical(1)
+			return m, nil
+		}
 		return m.moveSelection(1)
 
 	case "pgup":
@@ -523,6 +538,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.inputCursor > 0 {
 			m.inputCursor--
+			m.resetInputColumn()
 		}
 		return m, nil
 
@@ -532,33 +548,28 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.inputCursor < len(m.input) {
 			m.inputCursor++
+			m.resetInputColumn()
 		}
 		return m, nil
 
 	case "home", "ctrl+a":
-		m.inputCursor = 0
+		m.moveInputLineBoundary(-1)
 		return m, nil
 
 	case "end", "ctrl+e":
-		m.inputCursor = len(m.input)
+		m.moveInputLineBoundary(1)
 		return m, nil
 
 	case "backspace", "ctrl+h":
-		if m.inputCursor > 0 {
-			m.input = append(m.input[:m.inputCursor-1], m.input[m.inputCursor:]...)
-			m.inputCursor--
-		}
+		m.deleteInputBackward()
 		return m, nil
 
 	case "delete":
-		if m.inputCursor < len(m.input) {
-			m.input = append(m.input[:m.inputCursor], m.input[m.inputCursor+1:]...)
-		}
+		m.deleteInputForward()
 		return m, nil
 
 	case "ctrl+u":
-		m.input = append([]string(nil), m.input[m.inputCursor:]...)
-		m.inputCursor = 0
+		m.deleteInputToLineStart()
 		return m, nil
 
 	case "ctrl+w":
@@ -1293,9 +1304,8 @@ func (m Model) renderComposer() string {
 		prefixText = string(m.backend) + " · " + contextLabel + " › "
 	}
 	prefix := backendStyle(m.backend).Bold(true).Render(prefixText)
-	inputWidth := max(1, m.width-lipgloss.Width(prefix))
-	composer := padANSI(truncateANSI(prefix+m.renderInput(inputWidth), m.width), m.width)
-	help := fmt.Sprintf("%s new · %s send · %s runner · %s root · ↑↓ select · F3 workstreams · ? help · Ctrl-X stop/delete",
+	composer := strings.Join(m.renderComposerInput(prefix), "\n")
+	help := fmt.Sprintf("%s new · %s send · Shift-Enter newline · %s runner · %s root · Option/Cmd arrows edit · ? help",
 		helpKeyLabel(m.settings.NewSessionKey()), helpKeyLabel(m.settings.SendMessageKey()),
 		helpKeyLabel(m.settings.CycleRunnerKey()), helpKeyLabel(m.settings.CycleRootKey()))
 	message := help
@@ -1971,7 +1981,7 @@ func (m *Model) beginOrganizerEdit(mode, value string) {
 }
 
 func (m *Model) insertText(value string) {
-	inserted := splitGraphemes(inlineSafeText(value))
+	inserted := splitGraphemes(composerSafeText(value))
 	if len(inserted) == 0 {
 		return
 	}
@@ -1979,6 +1989,7 @@ func (m *Model) insertText(value string) {
 	m.input = append(m.input[:m.inputCursor], inserted...)
 	m.input = append(m.input, tail...)
 	m.inputCursor += len(inserted)
+	m.resetInputColumn()
 }
 
 func (m *Model) insertOrganizerText(value string) {
@@ -1993,23 +2004,19 @@ func (m *Model) insertOrganizerText(value string) {
 }
 
 func (m *Model) deletePreviousWord() {
-	if m.inputCursor == 0 {
+	start := previousWordBoundary(m.input, m.inputCursor)
+	if start == m.inputCursor {
 		return
-	}
-	start := m.inputCursor
-	for start > 0 && clusterIsSpace(m.input[start-1]) {
-		start--
-	}
-	for start > 0 && !clusterIsSpace(m.input[start-1]) {
-		start--
 	}
 	m.input = append(m.input[:start], m.input[m.inputCursor:]...)
 	m.inputCursor = start
+	m.resetInputColumn()
 }
 
 func (m *Model) clearInput() {
 	m.input = nil
 	m.inputCursor = 0
+	m.resetInputColumn()
 }
 
 func (m Model) inputValue() string     { return strings.Join(m.input, "") }
@@ -2070,13 +2077,16 @@ func (m Model) renderTextInput(clusters []string, cursor, width int) string {
 }
 
 func (m Model) listHeight() int {
-	if m.height < 18 {
-		return max(2, m.height-9)
+	effectiveHeight := m.height - (m.composerInputHeight() - 1)
+	if effectiveHeight < 18 {
+		return max(2, effectiveHeight-9)
 	}
-	return max(5, min(14, (m.height-8)/2))
+	return max(5, min(14, (effectiveHeight-8)/2))
 }
 
-func (m Model) detailHeight() int { return max(0, m.height-m.listHeight()-6) }
+func (m Model) detailHeight() int {
+	return max(0, m.height-m.listHeight()-m.composerInputHeight()-5)
+}
 
 func (m *Model) requestSnapshot() tea.Cmd {
 	if m.snapshotFetch.activeGeneration != 0 {
@@ -2398,7 +2408,24 @@ func inlineSafeText(value string) string {
 	}, value)
 }
 
-func normalizePaste(value string) string {
+func composerSafeText(value string) string {
+	value = ansi.Strip(value)
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, value)
+}
+
+func normalizeComposerPaste(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	return strings.ReplaceAll(value, "\r", "\n")
+}
+
+func normalizeInlinePaste(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\r", "\n")
 	return strings.Join(strings.Fields(value), " ")

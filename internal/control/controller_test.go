@@ -133,6 +133,7 @@ func TestStartPersistsPendingIdentityBeforeSupervisorAndBindsSuccess(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	prompt := "\tbuild it\n  exactly\n"
 	supervisor.start = func(request heikou.StartRequest) (heikou.Session, error) {
 		state, loadErr := repository.Load(context.Background())
 		if loadErr != nil {
@@ -145,16 +146,22 @@ func TestStartPersistsPendingIdentityBeforeSupervisorAndBindsSuccess(t *testing.
 		if got := state.WorkstreamForSession(request.ID); got != container.ID {
 			t.Fatalf("membership = %q, want %q", got, container.ID)
 		}
+		if request.Prompt != prompt || record.InitialPrompt != prompt {
+			t.Fatalf("prompt was not preserved: request=%q record=%q", request.Prompt, record.InitialPrompt)
+		}
 		runtime := heikou.Session{ID: request.ID, Name: "h-" + request.ID, PaneID: "%1", Backend: request.Backend, Prompt: request.Prompt, Root: request.Root, Status: heikou.StatusLive, StartedAt: controller.now()}
 		supervisor.sessions = append(supervisor.sessions, runtime)
 		return runtime, nil
 	}
-	session, err := controller.Start(context.Background(), StartRequest{Backend: heikou.BackendCodex, Prompt: "build it", Root: root, WorkstreamID: container.ID})
+	session, err := controller.Start(context.Background(), StartRequest{Backend: heikou.BackendCodex, Prompt: prompt, Root: root, WorkstreamID: container.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !session.Alive() || session.Record.Launch.Binding == nil || session.Record.Launch.Binding.Socket != "heikou-test" {
 		t.Fatalf("successful projection = %#v", session)
+	}
+	if session.Prompt != prompt || session.Record.InitialPrompt != prompt {
+		t.Fatalf("projected prompt was not preserved: session=%q record=%q", session.Prompt, session.Record.InitialPrompt)
 	}
 }
 

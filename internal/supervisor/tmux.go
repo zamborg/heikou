@@ -399,7 +399,9 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 	if _, err := t.run(ctx, []byte(message), "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("load message buffer: %w", err)
 	}
-	if _, err := t.run(ctx, nil, "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", current.PaneID); err != nil {
+	// Use tmux's terminal-native LF-to-CR conversion so every logical newline
+	// is accepted by the pane line discipline, including on tmux 3.4.
+	if _, err := t.run(ctx, nil, "paste-buffer", "-d", "-p", "-b", bufferName, "-t", current.PaneID); err != nil {
 		_, _ = t.run(context.Background(), nil, "delete-buffer", "-b", bufferName)
 		return fmt.Errorf("paste message: %w", err)
 	}
