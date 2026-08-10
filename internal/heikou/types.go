@@ -49,15 +49,19 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Session is the runner-neutral projection of one tmux-owned agent process.
-// It intentionally contains process truth only; semantic states such as
-// "needs input" require a future runner-specific observer.
+// Session is the runner-neutral projection of one tmux-owned agent process and
+// its bounded tmux-scoped presentation metadata. Runtime fields contain process
+// truth only; semantic states such as "needs input" require a future
+// runner-specific observer.
 type Session struct {
-	ID              string
-	Name            string
-	PaneID          string
-	Backend         Backend
-	Prompt          string
+	ID      string
+	Name    string
+	PaneID  string
+	Backend Backend
+	Prompt  string
+	// LastUserMessage is a bounded preview of the most recent message routed
+	// through Heikou. Messages typed in an attached native TUI are not observed.
+	LastUserMessage string
 	Root            string
 	CurrentPath     string
 	CurrentCommand  string
@@ -105,6 +109,10 @@ type Supervisor interface {
 	Bootstrap(context.Context) error
 	Sessions(context.Context) ([]Session, error)
 	Find(context.Context, string) (Session, error)
+	// RuntimeExists is the fail-closed lifecycle check for a caller-owned ID.
+	// Implementations must use the durable ID and, when supplied, its bound
+	// runtime name without depending on optional presentation metadata.
+	RuntimeExists(context.Context, string, string) (bool, error)
 	Start(context.Context, StartRequest) (Session, error)
 	Send(context.Context, Session, string) error
 	Capture(context.Context, Session, int) (string, error)

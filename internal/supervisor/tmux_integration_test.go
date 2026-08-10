@@ -101,6 +101,9 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	if finished.ExitCode != 7 || finished.EndedAt.IsZero() {
 		t.Fatalf("exit metadata = %#v", finished)
 	}
+	if finished.LastUserMessage != userMessagePreview(message) {
+		t.Fatalf("latest user message = %q, want %q", finished.LastUserMessage, userMessagePreview(message))
+	}
 	preview, err := manager.Capture(ctx, finished, 40)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +121,50 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Fatalf("Sessions() after Stop = %d, want 0", len(after))
+	}
+}
+
+func TestRuntimeExistsFindsPaneWithMalformedProjectionMetadata(t *testing.T) {
+	tmuxBinary, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	token, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Tmux{
+		binary: tmuxBinary, socket: fmt.Sprintf("heikou-test-%d-%s", os.Getpid(), token), executable: "/bin/true",
+	}
+	t.Cleanup(func() { cleanupTestTmux(manager) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id := "018f0000-0000-4000-8000-000000000002"
+	session, err := manager.Start(ctx, heikou.StartRequest{
+		ID: id, Backend: heikou.BackendNoAgent, Prompt: "partial metadata", Root: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.run(ctx, nil, "set-option", "-t", session.Name, "@heikou_prompt", "%%%not-base64%%%"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.run(ctx, nil, "set-option", "-u", "-t", session.Name, "@heikou_id"); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := manager.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("malformed pane unexpectedly remained projectable: %#v", sessions)
+	}
+	exists, err := manager.RuntimeExists(ctx, id, session.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("RuntimeExists lost a pane whose rich metadata could not be parsed")
 	}
 }
 

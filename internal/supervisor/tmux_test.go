@@ -12,7 +12,7 @@ func TestParseSessionTreatsPaneModeAsCount(t *testing.T) {
 	fields := []string{
 		"h-test", "%1", "018f0000-0000-4000-8000-000000000000", "%1",
 		"", "codex", "1000", runner.Encode("task"), runner.Encode("/tmp/root"),
-		"0", "", "", "1001", "/tmp/root", "codex", "0", "2", "1",
+		"0", "", "", "1001", "/tmp/root", "codex", "0", "2", "1", runner.Encode("follow up"),
 	}
 	session, err := parseSession(fields)
 	if err != nil {
@@ -23,6 +23,9 @@ func TestParseSessionTreatsPaneModeAsCount(t *testing.T) {
 	}
 	if !session.InputDisabled {
 		t.Fatal("InputDisabled = false for pane_input_off 1")
+	}
+	if session.LastUserMessage != "follow up" {
+		t.Fatalf("LastUserMessage = %q", session.LastUserMessage)
 	}
 }
 
@@ -47,7 +50,7 @@ func TestRuntimeMetadataParsesExitTime(t *testing.T) {
 	fields := []string{
 		"h-test", "%1", "018f0000-0000-4000-8000-000000000000", "%1",
 		"", "claude", "1000", runner.Encode("task"), runner.Encode("/tmp/root"),
-		"1", "7", "1042", "1042", "/tmp/root", "claude", "0", "0", "0",
+		"1", "7", "1042", "1042", "/tmp/root", "claude", "0", "0", "0", "",
 	}
 	session, err := parseSession(fields)
 	if err != nil {
@@ -61,6 +64,32 @@ func TestRuntimeMetadataParsesExitTime(t *testing.T) {
 	}
 }
 
+func TestParseSessionIgnoresMalformedOptionalUserMessage(t *testing.T) {
+	fields := []string{
+		"h-test", "%1", "018f0000-0000-4000-8000-000000000000", "%1",
+		"", "codex", "1000", runner.Encode("task"), runner.Encode("/tmp/root"),
+		"0", "", "", "1001", "/tmp/root", "codex", "0", "0", "0", "%%%",
+	}
+	session, err := parseSession(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.LastUserMessage != "" || session.Prompt != "task" {
+		t.Fatalf("malformed optional metadata changed session: %#v", session)
+	}
+}
+
+func TestUserMessagePreviewIsBoundedAndSafe(t *testing.T) {
+	input := "  first\nsecond\t\x1b]52;c;c2VjcmV0\x07 " + strings.Repeat("界", 300)
+	got := userMessagePreview(input)
+	if strings.Contains(got, "\n") || strings.Contains(got, "\x1b") || strings.Contains(got, "c2VjcmV0") {
+		t.Fatalf("preview retained unsafe content: %q", got)
+	}
+	if len([]rune(got)) != 280 {
+		t.Fatalf("preview has %d runes, want 280", len([]rune(got)))
+	}
+}
+
 func TestValidSessionIDIsStrict(t *testing.T) {
 	if !validSessionID("018f0000-0000-4000-8000-000000000000") {
 		t.Fatal("valid UUID was rejected")
@@ -69,6 +98,44 @@ func TestValidSessionIDIsStrict(t *testing.T) {
 		if validSessionID(value) {
 			t.Fatalf("invalid id %q was accepted", value)
 		}
+	}
+}
+
+func TestParsePaneFieldsPreservesControlCharactersAndNewlines(t *testing.T) {
+	const (
+		fieldMarker  = "__heikou_field_testnonce__"
+		recordMarker = "__heikou_record_testnonce__"
+	)
+	want := [][]string{
+		{"h-one", "%1", "/tmp/control\x1fchar\nand newline"},
+		{"h-two", "%2", "plain"},
+	}
+	output := strings.Join(want[0], fieldMarker) + recordMarker + "\n" +
+		strings.Join(want[1], fieldMarker) + recordMarker + "\n"
+	got, err := parsePaneFields([]byte(output), fieldMarker, recordMarker, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsePaneFields() returned %d rows, want %d", len(got), len(want))
+	}
+	for row := range want {
+		for field := range want[row] {
+			if got[row][field] != want[row][field] {
+				t.Fatalf("row %d field %d = %q, want %q", row, field, got[row][field], want[row][field])
+			}
+		}
+	}
+}
+
+func TestParsePaneFieldsRejectsSentinelCollision(t *testing.T) {
+	const (
+		fieldMarker  = "__heikou_field_testnonce__"
+		recordMarker = "__heikou_record_testnonce__"
+	)
+	output := "h-one" + fieldMarker + "value " + recordMarker + " collision" + recordMarker + "\n"
+	if _, err := parsePaneFields([]byte(output), fieldMarker, recordMarker, 2); err == nil {
+		t.Fatal("parsePaneFields() accepted a record sentinel collision")
 	}
 }
 

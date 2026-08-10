@@ -27,17 +27,29 @@ const (
 )
 
 type Session struct {
-	ID           string
-	Backend      heikou.Backend
-	Prompt       string
-	Root         string
-	CreatedAt    time.Time
-	WorkstreamID string
-	Status       Status
-	Durable      bool
-	Orphaned     bool
-	Record       workstream.SessionRecord
-	Runtime      *heikou.Session
+	ID      string
+	Backend heikou.Backend
+	Prompt  string
+	// LastUserMessage is the latest bounded preview observed from the tmux
+	// runtime. It covers sends through Heikou, not typing in an attached TUI.
+	LastUserMessage string
+	Root            string
+	CreatedAt       time.Time
+	WorkstreamID    string
+	Status          Status
+	Durable         bool
+	Orphaned        bool
+	Record          workstream.SessionRecord
+	Runtime         *heikou.Session
+}
+
+// DisplayMessage returns the most recent user message Heikou can honestly
+// observe, falling back to the immutable launch prompt.
+func (s Session) DisplayMessage() string {
+	if strings.TrimSpace(s.LastUserMessage) != "" {
+		return s.LastUserMessage
+	}
+	return s.Prompt
 }
 
 func (s Session) Alive() bool {
@@ -103,6 +115,7 @@ type Service interface {
 	Send(context.Context, string, string) error
 	Capture(context.Context, string, int) (string, error)
 	Stop(context.Context, string) error
+	DeleteSession(context.Context, string) error
 	AttachCommand(context.Context, string) (*exec.Cmd, error)
 	CreateWorkstream(context.Context, string, string, []string) (workstream.Workstream, error)
 	RenameWorkstream(context.Context, string, string) error
@@ -110,6 +123,8 @@ type Service interface {
 	MoveSession(context.Context, string, string) error
 	AdoptSession(context.Context, string, string) (Session, error)
 	AddRoot(context.Context, string, string) error
+	ReplaceRoot(context.Context, string, string, string) error
+	RemoveRoot(context.Context, string, string) error
 }
 
 type Controller struct {
@@ -207,6 +222,18 @@ func (c *Controller) Find(ctx context.Context, query string) (Session, error) {
 }
 
 func (c *Controller) Start(ctx context.Context, request StartRequest) (Session, error) {
+	var session Session
+	var startErr error
+	if err := c.store.WithLifecycleLock(ctx, func() error {
+		session, startErr = c.startLocked(ctx, request)
+		return nil
+	}); err != nil {
+		return Session{}, err
+	}
+	return session, startErr
+}
+
+func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Session, error) {
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
 		return Session{}, errors.New("prompt cannot be empty")
@@ -359,6 +386,88 @@ func (c *Controller) Stop(ctx context.Context, id string) error {
 		return fmt.Errorf("runtime stopped but durable outcome was not recorded: %w", err)
 	}
 	return nil
+}
+
+// DeleteSession removes durable organization only. It deliberately refuses to
+// remove a record while tmux still has a matching pane, even when that pane is
+// dead, and never stops a runtime as a side effect.
+func (c *Controller) DeleteSession(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("session id is required")
+	}
+	return c.store.WithLifecycleLock(ctx, func() error {
+		return c.deleteSessionLocked(ctx, id)
+	})
+}
+
+func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
+	state, err := c.store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	record, ok := state.Session(id)
+	if !ok {
+		return fmt.Errorf("durable session %q not found", id)
+	}
+	boundName, err := c.deleteRuntimeName(record)
+	if err != nil {
+		return err
+	}
+	exists, err := c.supervisor.RuntimeExists(ctx, id, boundName)
+	if err != nil {
+		return fmt.Errorf("check runtime before deleting session %q: %w", id, err)
+	}
+	if exists {
+		return fmt.Errorf("cannot delete session %q while its tmux runtime exists", id)
+	}
+
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		index := -1
+		for candidate := range state.Sessions {
+			if state.Sessions[candidate].ID == id {
+				index = candidate
+				break
+			}
+		}
+		if index == -1 {
+			return false, fmt.Errorf("durable session %q not found", id)
+		}
+		if _, err := c.deleteRuntimeName(state.Sessions[index]); err != nil {
+			return false, err
+		}
+
+		state.Sessions = append(state.Sessions[:index], state.Sessions[index+1:]...)
+		memberships := state.Memberships[:0]
+		for _, membership := range state.Memberships {
+			if membership.SessionID != id {
+				memberships = append(memberships, membership)
+			}
+		}
+		state.Memberships = memberships
+		return true, nil
+	})
+	return err
+}
+
+func (c *Controller) deleteRuntimeName(record workstream.SessionRecord) (string, error) {
+	if record.Launch.Binding == nil {
+		if record.Launch.Status == workstream.LaunchPending && record.Outcome == nil {
+			return "", fmt.Errorf(
+				"cannot safely delete session %q: its pending launch has no runtime binding or terminal outcome, so the tmux socket is unknown",
+				record.ID,
+			)
+		}
+		return "h-" + record.ID, nil
+	}
+	binding := record.Launch.Binding
+	if binding.Socket != c.socket {
+		return "", fmt.Errorf(
+			"cannot delete session %q from tmux socket %q; it is bound to socket %q (retry with --socket %q)",
+			record.ID, c.socket, binding.Socket, binding.Socket,
+		)
+	}
+	return binding.SessionName, nil
 }
 
 func (c *Controller) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
@@ -584,6 +693,71 @@ func (c *Controller) AddRoot(ctx context.Context, workstreamID, value string) er
 	return err
 }
 
+func (c *Controller) ReplaceRoot(ctx context.Context, workstreamID, currentValue, replacementValue string) error {
+	current, err := workstream.NormalizeRoot(currentValue)
+	if err != nil {
+		return err
+	}
+	replacement, err := validateRoot(replacementValue)
+	if err != nil {
+		return err
+	}
+	now := c.now()
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Workstreams {
+			item := &state.Workstreams[index]
+			if item.ID != workstreamID || item.ArchivedAt != nil {
+				continue
+			}
+			rootIndex := rootIndex(item.Roots, current)
+			if rootIndex < 0 {
+				return false, fmt.Errorf("root %q is not registered in workstream %q", current, item.Name)
+			}
+			if filepath.Clean(current) == filepath.Clean(replacement) {
+				return false, nil
+			}
+			if containsRoot(item.Roots, replacement) {
+				return false, fmt.Errorf("root %q is already registered in workstream %q", replacement, item.Name)
+			}
+			item.Roots[rootIndex] = replacement
+			item.Revision++
+			item.UpdatedAt = now
+			return true, nil
+		}
+		return false, fmt.Errorf("active workstream %q not found", workstreamID)
+	})
+	return err
+}
+
+func (c *Controller) RemoveRoot(ctx context.Context, workstreamID, value string) error {
+	root, err := workstream.NormalizeRoot(value)
+	if err != nil {
+		return err
+	}
+	now := c.now()
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Workstreams {
+			item := &state.Workstreams[index]
+			if item.ID != workstreamID || item.ArchivedAt != nil {
+				continue
+			}
+			rootIndex := rootIndex(item.Roots, root)
+			if rootIndex < 0 {
+				return false, fmt.Errorf("root %q is not registered in workstream %q", root, item.Name)
+			}
+			if len(item.Roots) == 1 {
+				return false, errors.New("a workstream must keep at least one root; edit it instead")
+			}
+			item.Roots = append(item.Roots[:rootIndex], item.Roots[rootIndex+1:]...)
+			item.Revision++
+			item.UpdatedAt = now
+			return true, nil
+		}
+		return false, fmt.Errorf("active workstream %q not found", workstreamID)
+	})
+	return err
+}
+
 func project(state workstream.State, runtimes []heikou.Session, path string) Snapshot {
 	runtimeByID := make(map[string]heikou.Session, len(runtimes))
 	for _, runtime := range runtimes {
@@ -614,7 +788,8 @@ func project(state workstream.State, runtimes []heikou.Session, path string) Sna
 			status = StatusLive
 		}
 		snapshot.Orphans = append(snapshot.Orphans, Session{
-			ID: runtime.ID, Backend: runtime.Backend, Prompt: runtime.Prompt, Root: runtime.Root,
+			ID: runtime.ID, Backend: runtime.Backend, Prompt: runtime.Prompt,
+			LastUserMessage: runtime.LastUserMessage, Root: runtime.Root,
 			CreatedAt: runtime.StartedAt, Status: status, Orphaned: true, Runtime: &copy,
 		})
 	}
@@ -645,9 +820,14 @@ func projectOne(state workstream.State, record workstream.SessionRecord, runtime
 			status = StatusStartFailed
 		}
 	}
+	lastUserMessage := ""
+	if runtime != nil {
+		lastUserMessage = runtime.LastUserMessage
+	}
 	return Session{
 		ID: record.ID, Backend: record.Backend, Prompt: record.InitialPrompt,
-		Root: record.InitialRoot, CreatedAt: record.CreatedAt,
+		LastUserMessage: lastUserMessage,
+		Root:            record.InitialRoot, CreatedAt: record.CreatedAt,
 		WorkstreamID: state.WorkstreamForSession(record.ID), Status: status,
 		Durable: true, Record: record, Runtime: runtime,
 	}
@@ -684,13 +864,17 @@ func validateRoot(value string) (string, error) {
 }
 
 func containsRoot(roots []string, query string) bool {
+	return rootIndex(roots, query) >= 0
+}
+
+func rootIndex(roots []string, query string) int {
 	query = filepath.Clean(query)
-	for _, root := range roots {
+	for index, root := range roots {
 		if filepath.Clean(root) == query {
-			return true
+			return index
 		}
 	}
-	return false
+	return -1
 }
 
 func cleanName(value string) string {

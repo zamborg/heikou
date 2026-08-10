@@ -24,8 +24,8 @@ import (
 
 const (
 	DefaultSocket    = "heikou"
-	fieldSep         = "\x1f"
 	bootstrapVersion = "1"
+	framingAttempts  = 3
 )
 
 type Tmux struct {
@@ -104,26 +104,29 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 }
 
 func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
-	const format = "#{session_name}" + fieldSep +
-		"#{pane_id}" + fieldSep +
-		"#{@heikou_id}" + fieldSep +
-		"#{@heikou_pane}" + fieldSep +
-		"#{@heikou_canonical}" + fieldSep +
-		"#{@heikou_backend}" + fieldSep +
-		"#{@heikou_started}" + fieldSep +
-		"#{@heikou_prompt}" + fieldSep +
-		"#{@heikou_root}" + fieldSep +
-		"#{pane_dead}" + fieldSep +
-		"#{pane_dead_status}" + fieldSep +
-		"#{pane_dead_time}" + fieldSep +
-		"#{window_activity}" + fieldSep +
-		"#{pane_current_path}" + fieldSep +
-		"#{pane_current_command}" + fieldSep +
-		"#{session_attached}" + fieldSep +
-		"#{pane_in_mode}" + fieldSep +
-		"#{pane_input_off}"
+	formatFields := []string{
+		"#{session_name}",
+		"#{pane_id}",
+		"#{@heikou_id}",
+		"#{@heikou_pane}",
+		"#{@heikou_canonical}",
+		"#{@heikou_backend}",
+		"#{@heikou_started}",
+		"#{@heikou_prompt}",
+		"#{@heikou_root}",
+		"#{pane_dead}",
+		"#{pane_dead_status}",
+		"#{pane_dead_time}",
+		"#{window_activity}",
+		"#{pane_current_path}",
+		"#{pane_current_command}",
+		"#{session_attached}",
+		"#{pane_in_mode}",
+		"#{pane_input_off}",
+		"#{@heikou_last_user_message}",
+	}
 
-	output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+	rows, err := t.listPaneFields(ctx, formatFields)
 	if err != nil {
 		if isMissingServer(err) || strings.Contains(err.Error(), "no current target") {
 			return nil, nil
@@ -132,14 +135,7 @@ func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {
 	}
 
 	var sessions []heikou.Session
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		fields := strings.Split(line, fieldSep)
-		if len(fields) != 18 {
-			continue
-		}
+	for _, fields := range rows {
 		if fields[2] == "" && strings.HasPrefix(fields[0], "h-") {
 			candidate := strings.TrimPrefix(fields[0], "h-")
 			if validSessionID(candidate) {
@@ -191,6 +187,106 @@ func (t *Tmux) Find(ctx context.Context, query string) (heikou.Session, error) {
 		return heikou.Session{}, fmt.Errorf("session prefix %q is ambiguous", query)
 	}
 	return matches[0], nil
+}
+
+// RuntimeExists deliberately uses only the durable identity and stable tmux
+// name. Sessions() is a rich projection and may omit a pane whose optional or
+// partially-written metadata cannot be decoded; lifecycle deletion must not
+// mistake that omission for proof that the tmux runtime is absent.
+func (t *Tmux) RuntimeExists(ctx context.Context, id, boundName string) (bool, error) {
+	id = strings.TrimSpace(id)
+	boundName = strings.TrimSpace(boundName)
+	if id == "" && boundName == "" {
+		return false, errors.New("runtime id or bound name is required")
+	}
+
+	rows, err := t.listPaneFields(ctx, []string{"#{session_name}", "#{@heikou_id}"})
+	if err != nil {
+		if isMissingServer(err) || strings.Contains(err.Error(), "no current target") {
+			return false, nil
+		}
+		return false, fmt.Errorf("check tmux runtime existence: %w", err)
+	}
+
+	defaultName := ""
+	if id != "" {
+		defaultName = "h-" + id
+	}
+	for _, fields := range rows {
+		if (boundName != "" && fields[0] == boundName) ||
+			(defaultName != "" && fields[0] == defaultName) ||
+			(id != "" && fields[1] == id) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// listPaneFields frames tmux's formatted output with printable, per-call
+// sentinels. tmux 3.5 and older escape C0 control bytes in list-panes output,
+// so a control character cannot safely delimit fields across supported tmux
+// versions. A fresh nonce also keeps user-controlled paths from becoming
+// ambiguous framing. Malformed output is retried with new sentinels.
+func (t *Tmux) listPaneFields(ctx context.Context, formatFields []string) ([][]string, error) {
+	if len(formatFields) == 0 {
+		return nil, errors.New("at least one tmux format field is required")
+	}
+	var parseErr error
+	for attempt := 0; attempt < framingAttempts; attempt++ {
+		token, err := randomToken()
+		if err != nil {
+			return nil, err
+		}
+		fieldMarker := "__heikou_field_" + token + "__"
+		recordMarker := "__heikou_record_" + token + "__"
+		format := strings.Join(formatFields, fieldMarker) + recordMarker
+		output, err := t.run(ctx, nil, "list-panes", "-a", "-F", format)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := parsePaneFields(output, fieldMarker, recordMarker, len(formatFields))
+		if err == nil {
+			return rows, nil
+		}
+		parseErr = err
+	}
+	return nil, fmt.Errorf("decode tmux pane list after %d attempts: %w", framingAttempts, parseErr)
+}
+
+func parsePaneFields(output []byte, fieldMarker, recordMarker string, fieldCount int) ([][]string, error) {
+	remaining := string(output)
+	if remaining == "" {
+		return nil, nil
+	}
+
+	var rows [][]string
+	for remaining != "" {
+		if len(rows) > 0 {
+			switch {
+			case strings.HasPrefix(remaining, "\r\n"):
+				remaining = strings.TrimPrefix(remaining, "\r\n")
+			case strings.HasPrefix(remaining, "\n"):
+				remaining = strings.TrimPrefix(remaining, "\n")
+			default:
+				return nil, errors.New("tmux pane record is missing its line ending")
+			}
+			if remaining == "" {
+				break
+			}
+		}
+
+		record, rest, found := strings.Cut(remaining, recordMarker)
+		if !found {
+			return nil, errors.New("tmux pane record is missing its sentinel")
+		}
+		fields := strings.Split(record, fieldMarker)
+		if len(fields) != fieldCount {
+			return nil, fmt.Errorf("tmux pane record has %d fields, want %d", len(fields), fieldCount)
+		}
+		rows = append(rows, fields)
+		remaining = rest
+	}
+	return rows, nil
 }
 
 func (t *Tmux) Start(ctx context.Context, request heikou.StartRequest) (heikou.Session, error) {
@@ -310,6 +406,11 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 	if _, err := t.run(ctx, nil, "send-keys", "-t", current.PaneID, "Enter"); err != nil {
 		return fmt.Errorf("submit message: %w", err)
 	}
+	// Delivery has already succeeded, so presentation metadata is best effort.
+	// Returning an error here could encourage the caller to resend the message.
+	if preview := userMessagePreview(message); preview != "" {
+		_, _ = t.run(ctx, nil, "set-option", "-t", current.Name, "@heikou_last_user_message", runner.Encode(preview))
+	}
 	return nil
 }
 
@@ -388,6 +489,9 @@ func parseSession(fields []string) (heikou.Session, error) {
 	if err != nil {
 		return heikou.Session{}, err
 	}
+	// This option is optional presentation metadata. A malformed value must not
+	// hide an otherwise valid runtime from discovery.
+	lastUserMessage, _ := decodeMetadata(fields[18])
 	exitCode, _ := strconv.Atoi(fields[10])
 	deadUnix, _ := strconv.ParseInt(fields[11], 10, 64)
 	activityUnix, _ := strconv.ParseInt(fields[12], 10, 64)
@@ -403,13 +507,29 @@ func parseSession(fields []string) (heikou.Session, error) {
 	}
 	return heikou.Session{
 		Name: fields[0], PaneID: fields[1], ID: fields[2], Backend: backend,
-		Prompt: prompt, Root: root, Status: status,
+		Prompt: prompt, LastUserMessage: lastUserMessage, Root: root, Status: status,
 		StartedAt: time.Unix(startedUnix, 0), EndedAt: unixTime(deadUnix),
 		LastActivityAt: unixTime(activityUnix), ExitCode: exitCode,
 		CurrentPath: fields[13], CurrentCommand: fields[14],
 		AttachedClients: attached, PaneInMode: paneModeCount != 0,
 		InputDisabled: fields[17] == "1",
 	}, nil
+}
+
+func userMessagePreview(message string) string {
+	message = ansi.Strip(message)
+	message = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, message)
+	message = strings.Join(strings.Fields(message), " ")
+	runes := []rune(message)
+	if len(runes) > 280 {
+		message = string(runes[:280])
+	}
+	return message
 }
 
 func decodeMetadata(value string) (string, error) {

@@ -9,6 +9,23 @@ Tmux remains the runtime supervisor and the coding-agent CLIs remain the native
 runners. Heikou adds a small durable organization layer without introducing a
 daemon, manager agent, task graph, or replacement execution engine.
 
+## Nouns
+
+- **Workstream** — a durable named grouping for roots, sessions, notes, and
+  artifacts; it provides organization, not autonomy.
+- **Session** — a durable launch identity with its initial task, root, runner,
+  and outcome; it persists beyond its runtime.
+- **Runtime** — the tmux pane associated with a session and the source of its
+  current process observations.
+- **Root** — an explicit launch working directory registered on a workstream.
+- **Runner** — the `codex`, `claude`, or `no-agent` command integration used to
+  launch a native agent or shell.
+- **Composer** — the dashboard input bar used to start sessions and send
+  follow-up messages.
+- **Ungrouped** — durable sessions with no active workstream membership.
+- **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
+  are never silently adopted.
+
 ## Install
 
 Requirements: macOS, Linux, or WSL; Go 1.25+; tmux 3.3+; and at least one of
@@ -16,7 +33,7 @@ Requirements: macOS, Linux, or WSL; Go 1.25+; tmux 3.3+; and at least one of
 `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.0
+go install github.com/zamborg/heikou/cmd/h@v0.3.1
 h doctor
 ```
 
@@ -49,18 +66,30 @@ The composer is always ready:
 | Type a message, then `Tab` | Send it to the selected live session |
 | `Tab` with an empty composer | Cycle Codex → Claude → `no-agent` |
 | `Shift-Tab` with an empty composer | Cycle the selected workstream's explicit roots |
+| `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
-| `F3` | Open the workstream organizer |
+| `F3` | Open the expandable workstream/session organizer |
 | `Up` / `Down` | Select a workstream or session |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
-| `Ctrl-X` twice | Stop/remove the tmux runtime; keep its durable session record |
+| `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Clear the composer; press again to leave the dashboard |
+
+Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
+**Workstream Organizer**, **Settings**, or **Help**.
+
+Session rows show the most recent message successfully sent through Heikou for
+as long as the tmux runtime is retained, then fall back to the initial task.
+Text entered directly in an attached native terminal is not observable by this
+shim.
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
-the durable session record and its workstream history.
+the durable session record and its workstream history; deletion is offered only
+after no tmux pane remains. Deletion fails closed: it checks stable tmux identity
+without relying on rich pane metadata, refuses records bound to another socket,
+and retains an interrupted pending launch when its original socket is unknown.
 
 The same primitives are available without the TUI:
 
@@ -83,13 +112,25 @@ followed by two honest system groups:
   original raw-session workflow.
 - **Orphaned tmux** contains panes carrying a Heikou ID that is unknown to the
   durable store. They remain attachable and steerable but are never silently
-  adopted into a workstream. Selecting one before opening `F3`, then using `m`,
-  explicitly adopts it into the highlighted destination.
+  adopted into a workstream; the organizer workflow below makes adoption
+  explicit.
 
-Press `F3` to create or rename a workstream, add an explicit root, cycle its
-selected root, move (or explicitly adopt) the session that was selected when
-the organizer opened, edit `notes.md`, open the artifact directory, or archive
-the workstream.
+Press `F3` for an upper tree of named workstreams, Ungrouped, Orphaned, and
+their sessions. On a workstream row, `Enter` expands/collapses it unless a move
+source is active, in which case it moves or adopts that session there. On a
+session row, `Enter` marks it as the move source; `m` also marks or completes a
+move. Press `u` or `Space` to return to the dashboard with the highlighted
+workstream or session selected.
+
+The organizer's lower, read-only context pane follows the selected workstream;
+selecting a session shows its parent workstream. It previews a bounded portion
+of `notes.md` and a shallow tree of that workstream's artifact directory only.
+Rendering context does not change domain state, inspect registered repository
+roots, or modify files. The organizer also creates or renames workstreams,
+opens notes/artifacts, and archives. On a named workstream, `p` adds a root,
+`Shift-P` edits the root selected with `Tab`, and `d` twice removes that root
+without deleting files or changing historical session records. Every
+workstream keeps at least one root.
 Archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
@@ -114,16 +155,26 @@ there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
   "commands": {
     "codex": ["codex"],
     "claude": ["claude", "--dangerously-skip-permissions"]
+  },
+  "composer_keys": {
+    "new_session": "enter",
+    "send_message": "tab",
+    "cycle_runner": "tab",
+    "cycle_root": "shift+tab"
   }
 }
 ```
 
 Commands are argv arrays, not shell strings. Fixed flags are placed before the
-task arguments Heikou adds. Command changes affect new sessions; a changed
-`default_runner` applies the next time the dashboard opens. `no-agent` is not
-configurable: it deliberately asks tmux to start its default interactive shell
-without injecting the composer label. Follow-up messages sent with `Tab` are
-then ordinary input to that shell, which makes it a cheap transport test pane.
+task arguments Heikou adds. The four `composer_keys` fields may be omitted to
+keep the defaults shown above; `new_session` and `send_message` apply when the
+composer has text, while `cycle_runner` and `cycle_root` apply when it is empty.
+The settings pane displays the active bindings and reloads JSON changes with
+`r`. Command changes affect new sessions; a changed `default_runner` applies
+the next time the dashboard opens. `no-agent` is not configurable: it asks tmux
+to start its default interactive shell without injecting the composer label.
+Follow-up messages are then ordinary input to that shell, which makes it a
+cheap transport test pane.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |

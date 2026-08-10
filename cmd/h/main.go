@@ -26,7 +26,7 @@ import (
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -48,16 +48,17 @@ func main() {
 }
 
 func run(args []string) error {
+	return runWithGlobalOutput(args, os.Stdout)
+}
+
+func runWithGlobalOutput(args []string, writer io.Writer) error {
+	if routeGlobalCommand(args, writer) {
+		return nil
+	}
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return runDashboard(args)
 	}
 	switch args[0] {
-	case "help", "-h", "--help":
-		printHelp(os.Stdout)
-		return nil
-	case "version", "--version":
-		fmt.Println("heikou", version)
-		return nil
 	case "doctor":
 		return runDoctor(args[1:])
 	case "list", "ls":
@@ -72,6 +73,22 @@ func run(args []string) error {
 		return runStop(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q; run h help", args[0])
+	}
+}
+
+func routeGlobalCommand(args []string, writer io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "help", "-h", "--help":
+		printHelp(writer)
+		return true
+	case "version", "--version":
+		fmt.Fprintln(writer, "heikou", version)
+		return true
+	default:
+		return false
 	}
 }
 
@@ -212,7 +229,7 @@ func runList(args []string) error {
 	for _, session := range all {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			shortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
-			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), oneLine(session.Prompt))
+			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), oneLine(session.DisplayMessage()))
 	}
 	return writer.Flush()
 }
@@ -407,19 +424,23 @@ Usage:
   h doctor                             check local dependencies
 
 Dashboard:
-  Type + Enter      start a new session
-  Type + Tab        send to the selected live session
-  Empty Tab         switch the new-session runner
-  Empty Shift-Tab   cycle roots in the selected workstream
+  Type + Enter      start a new session (default binding)
+  Type + Tab        send to the selected live session (default binding)
+  Empty Tab         switch the new-session runner (default binding)
+  Empty Shift-Tab   cycle workstream roots (default binding)
+  F1 / Empty ?      open scrollable help and the noun glossary
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
-  F3                organize workstreams, roots, membership, and notes
+  F3                open the expandable workstream/session organizer
   Up / Down         select a workstream or session
   Empty Enter       collapse a workstream or attach a session
+  Organizer m       mark a session; Enter/m on a workstream moves it
+  Organizer u/Space use a workstream or select a session and return
   Ctrl-b d          detach the native terminal back to heikou
   Ctrl-\            alternate one-chord detach shortcut
-  Ctrl-X twice      stop runtime; keep the durable record
+  Ctrl-X twice      stop runtime; repeat once pane-free to delete record
   Esc               clear the composer, then quit
 
+Composer bindings are configurable in JSON and shown in settings/help.
 Closing heikou never stops agents. Both h and H invoke the same binary.`)
 }
 
