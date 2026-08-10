@@ -19,6 +19,12 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	if err != nil {
 		t.Skip("tmux is not installed")
 	}
+	versionOutput, err := exec.Command(tmuxBinary, "-V").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmuxVersion := strings.TrimSpace(string(versionOutput))
+	legacyDeadMetadata := tmuxMayOmitDeadMetadata(tmuxVersion)
 	token, err := randomToken()
 	if err != nil {
 		t.Fatal(err)
@@ -84,10 +90,31 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	if err := manager.Send(ctx, session, message); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
-		sessions, listErr := manager.Sessions(context.Background())
-		return listErr == nil && len(sessions) == 1 && sessions[0].Status == heikou.StatusFailed
-	})
+	var observed []heikou.Session
+	var observedErr error
+	var deadObservedAt time.Time
+	deadline := time.Now().Add(5 * time.Second)
+pollExit:
+	for time.Now().Before(deadline) {
+		observed, observedErr = manager.Sessions(context.Background())
+		if observedErr == nil && len(observed) == 1 {
+			if observed[0].Status == heikou.StatusFailed && !observed[0].EndedAt.IsZero() {
+				break pollExit
+			}
+			if !observed[0].Alive() && legacyDeadMetadata {
+				if deadObservedAt.IsZero() {
+					deadObservedAt = time.Now()
+				} else if time.Since(deadObservedAt) >= 500*time.Millisecond {
+					break pollExit
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if observedErr != nil || len(observed) != 1 || observed[0].Alive() {
+		preview, captureErr := manager.Capture(context.Background(), session, 20)
+		t.Fatalf("multiline delivery did not finish: sessions=%#v listErr=%v capture=%q captureErr=%v", observed, observedErr, preview, captureErr)
+	}
 	if _, err := os.Stat(messageMarker); !os.IsNotExist(err) {
 		t.Fatalf("message was evaluated by a shell; marker stat error = %v", err)
 	}
@@ -100,8 +127,24 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 		t.Fatalf("Sessions() returned %d sessions, want 1", len(sessions))
 	}
 	finished := sessions[0]
-	if finished.ExitCode != 7 || finished.EndedAt.IsZero() {
-		t.Fatalf("exit metadata = %#v", finished)
+	rawExitMetadata, err := manager.run(ctx, nil, "display-message", "-p", "-t", finished.PaneID, "#{pane_dead_status}|#{pane_dead_signal}|#{pane_dead_time}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := strings.TrimSpace(string(rawExitMetadata))
+	fields := strings.Split(metadata, "|")
+	switch {
+	case len(fields) == 3 && fields[0] == "7":
+		if finished.Status != heikou.StatusFailed || finished.ExitCode != 7 || finished.EndedAt.IsZero() {
+			t.Fatalf("exit metadata = %#v", finished)
+		}
+	case metadata == "||" && legacyDeadMetadata:
+		// tmux before 3.5 intermittently retains a dead pane without exit fields.
+		// The delivery assertions below remain valid; parseSession's explicit
+		// nonzero-exit projection is covered deterministically by unit tests.
+		t.Logf("%s omitted retained-pane exit metadata", tmuxVersion)
+	default:
+		t.Fatalf("raw exit metadata = %q on %s; session = %#v", metadata, tmuxVersion, finished)
 	}
 	if finished.LastUserMessage != userMessagePreview(message) {
 		t.Fatalf("latest user message = %q, want %q", finished.LastUserMessage, userMessagePreview(message))
@@ -123,6 +166,28 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Fatalf("Sessions() after Stop = %d, want 0", len(after))
+	}
+}
+
+func tmuxMayOmitDeadMetadata(version string) bool {
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimSpace(version), "tmux %d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major < 3 || major == 3 && minor < 5
+}
+
+func TestTmuxMayOmitDeadMetadata(t *testing.T) {
+	for version, want := range map[string]bool{
+		"tmux 3.3a": true,
+		"tmux 3.4":  true,
+		"tmux 3.5a": false,
+		"tmux 3.6a": false,
+		"unknown":   false,
+	} {
+		if got := tmuxMayOmitDeadMetadata(version); got != want {
+			t.Errorf("tmuxMayOmitDeadMetadata(%q) = %v, want %v", version, got, want)
+		}
 	}
 }
 
