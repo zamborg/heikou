@@ -399,7 +399,9 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 	if _, err := t.run(ctx, []byte(message), "load-buffer", "-b", bufferName, "-"); err != nil {
 		return fmt.Errorf("load message buffer: %w", err)
 	}
-	if _, err := t.run(ctx, nil, "paste-buffer", "-d", "-p", "-r", "-b", bufferName, "-t", current.PaneID); err != nil {
+	// Keep tmux's default LF-to-CR conversion: panes consume Enter as CR, and
+	// tmux 3.4 does not reliably deliver raw LF as a submitted terminal line.
+	if _, err := t.run(ctx, nil, "paste-buffer", "-d", "-p", "-b", bufferName, "-t", current.PaneID); err != nil {
 		_, _ = t.run(context.Background(), nil, "delete-buffer", "-b", bufferName)
 		return fmt.Errorf("paste message: %w", err)
 	}
