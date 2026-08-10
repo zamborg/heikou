@@ -266,7 +266,9 @@ a fresh session/preview read.
 
 The primary dashboard is a grouped projection with selectable, collapsible
 workstream rows, member session rows, a synthetic Ungrouped inbox, and a
-separate Orphaned tmux section. The composer deliberately avoids modal focus:
+separate Orphaned tmux section. Dashboard, Workstream Organizer, Settings, and
+Help each render an unmistakable mode badge. The composer deliberately avoids
+modal focus:
 
 - non-empty `Enter` always creates a new session;
 - non-empty `Tab` sends to the selected session;
@@ -276,15 +278,22 @@ separate Orphaned tmux section. The composer deliberately avoids modal focus:
 When a workstream header is selected, empty `Enter` collapses/expands it instead
 of attaching. `Shift-Tab` cycles that workstream's explicit roots. The composer
 always renders the workstream and exact root that a typed `Enter` will use.
-`F3` opens an expandable tree containing named workstreams, Ungrouped,
-Orphaned, and their session rows. `m` marks any session as a move source;
-`Enter` or `m` on a workstream or Ungrouped moves a durable session or explicitly
-adopts an orphan. `u` or `Space` returns to the dashboard with the highlighted
-workstream as launch target or the highlighted session selected. The organizer
-also supports create, rename, add/edit/remove-root, notes/files, archive, and
-the same safe stop/delete lifecycle as the dashboard. Root edits affect future
-launch choices only; they never rewrite historical session roots or touch the
-filesystem.
+`F3` opens a two-pane organizer. Its upper pane is an expandable tree containing
+named workstreams, Ungrouped, Orphaned, and their session rows. `Enter` on a
+workstream expands/collapses it unless a move source is active, when it instead
+moves a durable session or explicitly adopts an orphan there. `Enter` on a
+session marks it as the move source; `m` also marks or completes a move. `u` or
+`Space` returns to the dashboard with the highlighted workstream as launch
+target or the highlighted session selected.
+
+The lower pane is read-only context for the selected workstream; a selected
+session resolves to its parent workstream. It renders a bounded `notes.md`
+preview and shallow artifact-directory tree. This UI-owned read never mutates
+domain state, modifies files, or inspects any registered repository root. The
+organizer also supports create, rename, add/edit/remove-root, notes/files,
+archive, and the same safe stop/delete lifecycle as the dashboard. Root edits
+affect future launch choices only; they never rewrite historical session roots
+or touch the filesystem.
 
 This makes the two most common actions one keystroke after typing while keeping
 their consequences distinct. A selected session's preview is always open, so

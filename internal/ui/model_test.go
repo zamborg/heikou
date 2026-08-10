@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +500,120 @@ func TestSettingsAndOrganizerViewsStayWithinTerminal(t *testing.T) {
 		assertViewFits(t, model.View().Content, size.width, size.height)
 		model.organizerOpen, model.helpOpen = false, true
 		assertViewFits(t, model.View().Content, size.width, size.height)
+	}
+}
+
+func TestTopBarNamesEveryView(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+
+	assertMode := func(name string, content string) {
+		t.Helper()
+		first := strings.Split(ansi.Strip(content), "\n")[0]
+		if !strings.Contains(first, name) {
+			t.Fatalf("top bar %q does not name mode %q", first, name)
+		}
+	}
+	assertMode("DASHBOARD", model.View().Content)
+	model.organizerOpen = true
+	assertMode("WORKSTREAM ORGANIZER", model.View().Content)
+	model.organizerOpen, model.settingsOpen = false, true
+	assertMode("SETTINGS", model.View().Content)
+	model.settingsOpen, model.helpOpen = false, true
+	assertMode("HELP", model.View().Content)
+}
+
+func TestOrganizerContextShowsWorkstreamNotesAndArtifactTree(t *testing.T) {
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "notes.md"), []byte("Ship the smallest useful version.\nThen dogfood it."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(artifactDir, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "docs", "plan.md"), []byte("plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+	container := testWorkstream("018f0000-0000-4000-8000-000000000054", "Payments", []string{"/tmp"}, time.Now())
+	container.ArtifactDir = artifactDir
+	session := testDurableSession("018f0000-0000-4000-8000-000000000055", container.ID, heikou.BackendCodex, "member", "/tmp", time.Now())
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	cmd := model.organizerContextCmd(true)
+	if cmd == nil {
+		t.Fatal("opening a named workstream did not request artifact context")
+	}
+	updated, _ := model.Update(cmd())
+	model = updated.(Model)
+	plain := ansi.Strip(model.renderOrganizer())
+	for _, want := range []string{"CONTEXT · Payments", "NOTES", "Ship the smallest useful version.", "FILES", "docs/", "plan.md"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("organizer context is missing %q:\n%s", want, plain)
+		}
+	}
+
+	model.selectOrganizerKey(sessionRowKey(session))
+	if cmd := model.organizerContextCmd(false); cmd != nil {
+		t.Fatal("moving to a session in the same workstream re-read artifact context")
+	}
+	assertViewFits(t, model.View().Content, model.width, model.height)
+}
+
+func TestOrganizerFooterExplainsEnterForSelectedNoun(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000056", "Core", []string{"/tmp"}, time.Now())
+	session := testDurableSession("018f0000-0000-4000-8000-000000000057", container.ID, heikou.BackendCodex, "member", "/tmp", time.Now())
+	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	if help := model.organizerHelp(); !strings.Contains(help, "Enter expand/collapse") {
+		t.Fatalf("workstream footer = %q", help)
+	}
+	model.selectOrganizerKey(sessionRowKey(session))
+	if help := model.organizerHelp(); !strings.Contains(help, "Enter mark for move") || !strings.Contains(help, "select on dashboard") {
+		t.Fatalf("session footer = %q", help)
+	}
+	model.organizerSource = session.ID
+	model.selectOrganizerKey(workstreamRowKey(container.ID))
+	if help := model.organizerHelp(); !strings.Contains(help, "Enter move here") {
+		t.Fatalf("move-destination footer = %q", help)
+	}
+}
+
+func TestOrganizerContextIgnoresStaleSelectionRead(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	first := testWorkstream("018f0000-0000-4000-8000-000000000058", "First", []string{"/tmp"}, time.Now())
+	first.ArtifactDir = t.TempDir()
+	second := testWorkstream("018f0000-0000-4000-8000-000000000059", "Second", []string{"/tmp"}, time.Now())
+	second.ArtifactDir = t.TempDir()
+	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.selected = workstreamRowKey(first.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	firstCmd := model.organizerContextCmd(true)
+	model.selectOrganizerKey(workstreamRowKey(second.ID))
+	secondCmd := model.organizerContextCmd(false)
+	if firstCmd == nil || secondCmd == nil {
+		t.Fatal("selection changes did not produce distinct artifact reads")
+	}
+	updated, _ := model.Update(firstCmd())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.WorkstreamID == first.ID {
+		t.Fatal("stale first-workstream context replaced the current selection")
+	}
+	updated, _ = model.Update(secondCmd())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.WorkstreamID != second.ID {
+		t.Fatalf("current context = %q, want %q", model.organizerContext.snapshot.WorkstreamID, second.ID)
 	}
 }
 

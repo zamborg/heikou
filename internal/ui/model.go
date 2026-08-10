@@ -48,6 +48,7 @@ var (
 	mutedStyle      = lipgloss.NewStyle().Foreground(colorMuted)
 	faintStyle      = lipgloss.NewStyle().Foreground(colorFaint)
 	selectedStyle   = lipgloss.NewStyle().Foreground(colorText).Background(colorSelection).Bold(true)
+	modeBadgeStyle  = lipgloss.NewStyle().Foreground(adaptive("#ffffff", "#0d1117")).Background(colorCodex).Bold(true).Padding(0, 1)
 	liveStyle       = lipgloss.NewStyle().Foreground(colorLive)
 	failedStyle     = lipgloss.NewStyle().Foreground(colorFailed)
 	noticeStyle     = lipgloss.NewStyle().Foreground(colorNotice)
@@ -112,6 +113,7 @@ type Model struct {
 	confirmArchive       string
 	confirmRootRemoval   string
 	pendingWorkstream    string
+	organizerContext     organizerContextState
 }
 
 func New(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config) Model {
@@ -207,6 +209,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.restoreSelection()
 		m.restoreOrganizerSelection()
+		if m.organizerOpen {
+			return m, m.organizerContextCmd(false)
+		}
 		if selected, ok := m.selectedSession(); ok && selected.Available() {
 			return m, m.previewCmd(selected.ID)
 		}
@@ -357,7 +362,14 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = message.label + " closed"
 		}
+		if m.organizerOpen {
+			return m, tea.Batch(m.refreshCmd(), m.organizerContextCmd(true))
+		}
 		return m, m.refreshCmd()
+
+	case artifactContextMsg:
+		m.acceptArtifactContext(message)
+		return m, nil
 
 	case tea.PasteMsg:
 		if m.busy || m.settingsOpen || m.helpOpen {
@@ -452,7 +464,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "f3":
 		m.openOrganizer()
-		return m, nil
+		return m, m.organizerContextCmd(true)
 
 	case "esc":
 		if len(m.input) > 0 {
@@ -743,19 +755,19 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		m.organizerCursor = max(0, m.organizerCursor-1)
 		m.syncOrganizerSelection(rows)
-		return m, nil
+		return m, m.organizerContextCmd(false)
 	case "down":
 		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+1)
 		m.syncOrganizerSelection(rows)
-		return m, nil
+		return m, m.organizerContextCmd(false)
 	case "pgup":
 		m.organizerCursor = max(0, m.organizerCursor-max(1, m.organizerViewportHeight()-1))
 		m.syncOrganizerSelection(rows)
-		return m, nil
+		return m, m.organizerContextCmd(false)
 	case "pgdown":
 		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+max(1, m.organizerViewportHeight()-1))
 		m.syncOrganizerSelection(rows)
-		return m, nil
+		return m, m.organizerContextCmd(false)
 	case "left":
 		row, ok := m.selectedOrganizerRow()
 		if !ok {
@@ -767,7 +779,7 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectOrganizerKey(organizerParentKey(row))
-		return m, nil
+		return m, m.organizerContextCmd(false)
 	case "right":
 		row, ok := m.selectedOrganizerRow()
 		if ok && organizerGroup(row) {
@@ -976,8 +988,6 @@ func (m Model) renderHeader() string {
 			finished++
 		}
 	}
-	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou")
-	subtitle := mutedStyle.Render(" workstreams")
 	counts := fmt.Sprintf("%d workstreams · %d live", len(m.snapshot.Workstreams), live)
 	if unavailable > 0 {
 		counts += fmt.Sprintf(" · %d unavailable", unavailable)
@@ -985,11 +995,22 @@ func (m Model) renderHeader() string {
 	if finished > 0 {
 		counts += fmt.Sprintf(" · %d finished", finished)
 	}
-	left := title + subtitle
-	right := mutedStyle.Render(counts)
+	return m.renderModeHeader("DASHBOARD", counts)
+}
+
+func (m Model) renderModeHeader(mode, context string) string {
+	mode = oneLine(sanitize(mode))
+	context = oneLine(sanitize(context))
+	brand := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou")
+	left := brand + "  " + modeBadgeStyle.Render(mode)
+	if context == "" {
+		return truncateANSI(left, m.width)
+	}
+	right := mutedStyle.Render(context)
 	space := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if space < 1 {
-		return truncateANSI(left+"  "+right, m.width)
+		// Mode is primary; counts and paths disappear before the mode label.
+		return truncateANSI(left, m.width)
 	}
 	return left + strings.Repeat(" ", space) + right
 }
@@ -1261,13 +1282,13 @@ func (m Model) renderSettings() string {
 }
 
 func (m Model) settingsLines() []string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou")
+	title := m.renderModeHeader("SETTINGS", "")
 	state := "not created yet"
 	if m.store.Exists() {
 		state = "JSON file"
 	}
 	lines := []string{
-		title + mutedStyle.Render(" settings"), m.renderRule(), "",
+		title, m.renderRule(), "",
 		mutedStyle.Render(" config   ") + truncatePlain(oneLine(compactPath(m.store.Path)), max(1, m.width-10)),
 		mutedStyle.Render(" state    ") + state,
 		mutedStyle.Render(" app data ") + truncatePlain(oneLine(compactPath(m.snapshot.StatePath)), max(1, m.width-10)),
@@ -1292,7 +1313,7 @@ func (m Model) settingsLines() []string {
 }
 
 func (m Model) renderOrganizer() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou") + mutedStyle.Render(" workstreams")
+	title := m.renderModeHeader("WORKSTREAM ORGANIZER", m.organizerContextLabel())
 	lines := []string{title, m.renderRule()}
 	rows := m.organizerRows()
 	height := m.organizerViewportHeight()
@@ -1315,6 +1336,7 @@ func (m Model) renderOrganizer() string {
 	for len(lines) < 2+height {
 		lines = append(lines, "")
 	}
+	lines = append(lines, m.renderOrganizerContext(m.organizerContextHeight())...)
 	if m.organizerEdit != "" {
 		label := map[string]string{"create": "new name", "rename": "rename", "root": "add root", "root_replace": "edit root"}[m.organizerEdit]
 		prefix := noticeStyle.Render(label + " › ")
@@ -1327,10 +1349,7 @@ func (m Model) renderOrganizer() string {
 	} else if message == "" && m.organizerSource != "" {
 		message = "move source · " + shortID(m.organizerSource) + " · choose a workstream and press Enter"
 	}
-	help := "p/P/d roots · Tab cycle · ↑↓ navigate · ←→/Enter expand · m move · u use · Ctrl-X sessions · ? help · Esc"
-	if m.organizerEdit != "" {
-		help = "Enter save · Esc cancel"
-	}
+	help := m.organizerHelp()
 	lines = append(lines, m.renderRule(), style.Render(truncatePlain(oneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width)))
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1342,6 +1361,32 @@ func (m Model) renderOrganizer() string {
 		lines[index] = truncateANSI(lines[index], m.width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) organizerHelp() string {
+	if m.organizerEdit != "" {
+		return "Enter save · Esc cancel"
+	}
+	row, ok := m.selectedOrganizerRow()
+	if !ok {
+		return "↑↓ navigate · n new workstream · ? help · Esc dashboard"
+	}
+	switch row.kind {
+	case rowSession, rowOrphan:
+		return "Enter mark for move · u/Space select on dashboard · Ctrl-X stop/delete · m mark/cancel · ? help"
+	case rowWorkstream:
+		if m.organizerSource != "" {
+			return "Enter move here · u/Space use on dashboard · m move here · ? help · Esc close"
+		}
+		if row.workstreamID != "" {
+			return "Enter expand/collapse · u/Space use on dashboard · p/P/d roots · Tab cycle · ? help"
+		}
+		return "Enter expand/collapse · u/Space use Ungrouped · ? help · Esc dashboard"
+	case rowOrphanHeader:
+		return "Enter expand/collapse · u/Space select on dashboard · ? help · Esc dashboard"
+	default:
+		return "↑↓ navigate · ? help · Esc dashboard"
+	}
 }
 
 func (m Model) renderOrganizerGroupRow(row listRow, selected bool) string {
@@ -1785,12 +1830,49 @@ func (m Model) organizerRowName(row listRow) string {
 	return "Unavailable workstream"
 }
 
+func (m Model) organizerContextLabel() string {
+	item, ok := m.selectedOrganizerWorkstream()
+	if !ok {
+		if row, found := m.selectedOrganizerRow(); found {
+			return m.organizerRowName(row)
+		}
+		return ""
+	}
+	return item.Name + " · " + compactPath(item.ArtifactDir)
+}
+
+func (m Model) selectedOrganizerWorkstream() (workstream.Workstream, bool) {
+	row, ok := m.selectedOrganizerRow()
+	if !ok || row.workstreamID == "" || row.kind == rowOrphan || row.kind == rowOrphanHeader {
+		return workstream.Workstream{}, false
+	}
+	return m.workstream(row.workstreamID)
+}
+
 func (m Model) organizerViewportHeight() int {
+	return max(0, m.organizerAvailableHeight()-m.organizerContextHeight())
+}
+
+func (m Model) organizerAvailableHeight() int {
 	reserved := 5 // title, rule, status rule, message, key help
 	if m.organizerEdit != "" {
 		reserved++
 	}
 	return max(0, m.height-reserved)
+}
+
+func (m Model) organizerContextHeight() int {
+	available := m.organizerAvailableHeight()
+	if available < 4 {
+		return 0
+	}
+	if m.height < 13 {
+		return 1
+	}
+	if m.height < 20 {
+		return min(5, max(2, available-6))
+	}
+	return min(12, max(5, available*45/100))
 }
 
 func (m Model) moveOrganizerSource(workstreamID string) (tea.Model, tea.Cmd) {

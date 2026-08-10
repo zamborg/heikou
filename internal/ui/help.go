@@ -42,7 +42,7 @@ func (m Model) renderHelp() string {
 		return ""
 	}
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou") + mutedStyle.Render(" help")
+	title := m.renderModeHeader("HELP", "")
 	if m.height == 1 {
 		return truncateANSI(title, m.width)
 	}
@@ -146,9 +146,12 @@ func (m Model) helpContentLines() []string {
 	}{
 		{"↑ / ↓", "Navigate workstreams, Ungrouped, Orphaned, and their expanded session rows."},
 		{"PgUp / PgDn", "Move through the organizer tree one viewport at a time."},
-		{"← / →", "Collapse or expand a workstream. Enter also toggles it when no move source is active."},
-		{"m", "Mark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
+		{"Enter · workstream", "Collapse or expand it; when a move source is active, move that session here instead."},
+		{"Enter · session", "Mark the session as a move source; it does not attach. Use u or Space to return with it selected on the dashboard."},
+		{"← / →", "Collapse or expand a workstream, or move from a session row to its parent."},
+		{"m", "Mark or unmark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
 		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach/send."},
+		{"Lower pane", "Preview the selected workstream's notes.md and shallow artifact-directory tree; a session shows its parent workstream context."},
 		{"n / r", "Create or rename a workstream."},
 		{"p / Shift-P", "Add a root, or edit the currently selected root."},
 		{"d twice", "Remove the selected root without deleting files or historical sessions; every workstream keeps at least one root."},

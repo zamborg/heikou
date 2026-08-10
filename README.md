@@ -76,6 +76,9 @@ The composer is always ready:
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Clear the composer; press again to leave the dashboard |
 
+Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
+**Workstream Organizer**, **Settings**, or **Help**.
+
 Session rows show the most recent message successfully sent through Heikou for
 as long as the tmux runtime is retained, then fall back to the initial task.
 Text entered directly in an attached native terminal is not observable by this
@@ -110,16 +113,22 @@ followed by two honest system groups:
   adopted into a workstream; the organizer workflow below makes adoption
   explicit.
 
-Press `F3` for an expandable tree of named workstreams, Ungrouped, Orphaned,
-and all of their sessions. Press `m` on any session to mark it as the move
-source, then highlight a workstream (or Ungrouped) and press `Enter` or `m` to move it;
-the same action explicitly adopts an orphan. Press `u` or `Space` to use a
-highlighted workstream as the launch target, or return to the dashboard with a
-highlighted session selected. The organizer also creates or renames
-workstreams, manages explicit roots, opens notes/artifacts, and archives. On a
-named workstream, `p` adds a root, `Shift-P` edits the root selected with `Tab`,
-and `d` twice removes that root without deleting files or changing historical
-session records. Every workstream keeps at least one root.
+Press `F3` for an upper tree of named workstreams, Ungrouped, Orphaned, and
+their sessions. On a workstream row, `Enter` expands/collapses it unless a move
+source is active, in which case it moves or adopts that session there. On a
+session row, `Enter` marks it as the move source; `m` also marks or completes a
+move. Press `u` or `Space` to return to the dashboard with the highlighted
+workstream or session selected.
+
+The organizer's lower, read-only context pane follows the selected workstream;
+selecting a session shows its parent workstream. It previews a bounded portion
+of `notes.md` and a shallow tree of that workstream's artifact directory only.
+Rendering context does not change domain state, inspect registered repository
+roots, or modify files. The organizer also creates or renames workstreams,
+opens notes/artifacts, and archives. On a named workstream, `p` adds a root,
+`Shift-P` edits the root selected with `Tab`, and `d` twice removes that root
+without deleting files or changing historical session records. Every
+workstream keeps at least one root.
 Archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
