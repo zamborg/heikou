@@ -119,6 +119,7 @@ type Service interface {
 	AttachCommand(context.Context, string) (*exec.Cmd, error)
 	CreateWorkstream(context.Context, string, string, []string) (workstream.Workstream, error)
 	RenameWorkstream(context.Context, string, string) error
+	ReorderWorkstream(context.Context, string, int) (bool, error)
 	ArchiveWorkstream(context.Context, string) error
 	MoveSession(context.Context, string, string) error
 	AdoptSession(context.Context, string, string) (Session, error)
@@ -548,6 +549,41 @@ func (c *Controller) RenameWorkstream(ctx context.Context, id, name string) erro
 		return false, fmt.Errorf("active workstream %q not found", id)
 	})
 	return err
+}
+
+// ReorderWorkstream moves an active workstream by one visible position. The
+// state slice is the durable display order, so existing state files need no
+// migration and archived workstreams do not occupy a position in the UI.
+func (c *Controller) ReorderWorkstream(ctx context.Context, id string, delta int) (bool, error) {
+	if delta != -1 && delta != 1 {
+		return false, fmt.Errorf("workstream reorder delta must be -1 or 1 (got %d)", delta)
+	}
+	moved := false
+	_, err := c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		active := make([]int, 0, len(state.Workstreams))
+		position := -1
+		for index, item := range state.Workstreams {
+			if item.ArchivedAt != nil {
+				continue
+			}
+			if item.ID == id {
+				position = len(active)
+			}
+			active = append(active, index)
+		}
+		if position == -1 {
+			return false, fmt.Errorf("active workstream %q not found", id)
+		}
+		target := position + delta
+		if target < 0 || target >= len(active) {
+			return false, nil
+		}
+		left, right := active[position], active[target]
+		state.Workstreams[left], state.Workstreams[right] = state.Workstreams[right], state.Workstreams[left]
+		moved = true
+		return true, nil
+	})
+	return moved && err == nil, err
 }
 
 func (c *Controller) ArchiveWorkstream(ctx context.Context, id string) error {

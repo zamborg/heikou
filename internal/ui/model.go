@@ -104,20 +104,23 @@ type Model struct {
 	settingsOffset int
 	helpOpen       bool
 	helpOffset     int
+	resizeMode     bool
+	detailAdjust   int
 
-	organizerOpen        bool
-	organizerCursor      int
-	organizerSelected    string
-	organizerCollapsed   map[string]bool
-	organizerSource      string
-	organizerEdit        string
-	organizerRootTarget  string
-	organizerInput       []string
-	organizerInputCursor int
-	confirmArchive       string
-	confirmRootRemoval   string
-	pendingWorkstream    string
-	organizerContext     organizerContextState
+	organizerOpen          bool
+	organizerCursor        int
+	organizerSelected      string
+	organizerCollapsed     map[string]bool
+	organizerSource        string
+	organizerEdit          string
+	organizerRootTarget    string
+	organizerInput         []string
+	organizerInputCursor   int
+	confirmArchive         string
+	confirmRootRemoval     string
+	pendingWorkstream      string
+	organizerContext       organizerContextState
+	organizerContextAdjust int
 }
 
 func New(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config) Model {
@@ -125,6 +128,17 @@ func New(controller control.Service, root string, backend heikou.Backend, store 
 		controller: controller, root: root, backend: backend, store: store, settings: settings,
 		collapsed: make(map[string]bool), rootIndex: make(map[string]int), organizerCollapsed: make(map[string]bool),
 	}
+}
+
+// NewWithSelectedSession opens the dashboard with a durable session selected
+// once the initial snapshot arrives. It is used by the guided quickstart after
+// the user practices detaching from its directly attached native terminal.
+func NewWithSelectedSession(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config, sessionID string) Model {
+	model := New(controller, root, backend, store, settings)
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		model.selected = "session:" + sessionID
+	}
+	return model
 }
 
 func (m Model) Init() tea.Cmd {
@@ -198,6 +212,8 @@ type workstreamMsg struct {
 	item         workstream.Workstream
 	workstreamID string
 	sessionID    string
+	delta        int
+	moved        bool
 	err          error
 }
 
@@ -369,6 +385,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "created workstream · " + message.item.Name
 		case "rename":
 			m.notice = "renamed workstream"
+		case "reorder":
+			direction, boundary := "down", "last"
+			if message.delta < 0 {
+				direction, boundary = "up", "first"
+			}
+			if message.moved {
+				m.notice = "moved workstream " + direction
+			} else {
+				m.notice = "workstream is already " + boundary
+			}
 		case "archive":
 			m.notice = "archived workstream"
 		case "move":
@@ -408,6 +434,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy || m.settingsOpen || m.helpOpen {
 			return m, nil
 		}
+		m.resizeMode = false
 		if m.organizerOpen {
 			if m.organizerEdit != "" {
 				m.insertOrganizerText(normalizeInlinePaste(message.Content))
@@ -436,6 +463,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if stroke == "f1" || (stroke == "?" && !m.settingsOpen && !m.organizerOpen && m.inputValue() == "") ||
 		(stroke == "?" && (m.settingsOpen || (m.organizerOpen && m.organizerEdit == ""))) {
 		m.helpOpen = true
+		m.resizeMode = false
 		m.helpOffset = 0
 		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		m.confirmRootRemoval = ""
@@ -444,6 +472,16 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.settingsOpen {
 		return m.handleSettingsKey(stroke)
+	}
+	if stroke == "ctrl+g" && m.organizerEdit == "" {
+		m.resizeMode = !m.resizeMode
+		m.notice, m.errorText = "", ""
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
+		m.confirmRootRemoval = ""
+		return m, nil
+	}
+	if m.resizeMode {
+		return m.handleResizeKey(key)
 	}
 	if m.organizerOpen {
 		return m.handleOrganizerKey(key)
@@ -794,6 +832,19 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.confirmRootRemoval = ""
 		m.notice = "workstreams closed"
 		return m, nil
+	case "shift+up", "shift+down":
+		row, ok := m.selectedOrganizerRow()
+		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
+			m.errorText = "select a named workstream to reorder"
+			return m, nil
+		}
+		delta := -1
+		if stroke == "shift+down" {
+			delta = 1
+		}
+		m.busy = true
+		m.notice = "moving workstream…"
+		return m, m.reorderWorkstreamCmd(row.workstreamID, delta)
 	case "up":
 		m.organizerCursor = max(0, m.organizerCursor-1)
 		m.syncOrganizerSelection(rows)
@@ -1037,7 +1088,11 @@ func (m Model) renderHeader() string {
 	if finished > 0 {
 		counts += fmt.Sprintf(" · %d finished", finished)
 	}
-	return m.renderModeHeader("DASHBOARD", counts)
+	mode := "DASHBOARD"
+	if m.resizeMode {
+		mode += " · RESIZE"
+	}
+	return m.renderModeHeader(mode, counts)
 }
 
 func (m Model) renderModeHeader(mode, context string) string {
@@ -1305,9 +1360,12 @@ func (m Model) renderComposer() string {
 	}
 	prefix := backendStyle(m.backend).Bold(true).Render(prefixText)
 	composer := strings.Join(m.renderComposerInput(prefix), "\n")
-	help := fmt.Sprintf("%s new · %s send · Shift-Enter newline · %s runner · %s root · Option/Cmd arrows edit · ? help",
+	help := fmt.Sprintf("%s new · %s send · %s runner · %s root · Shift-Enter newline · Ctrl-G resize · ? help",
 		helpKeyLabel(m.settings.NewSessionKey()), helpKeyLabel(m.settings.SendMessageKey()),
 		helpKeyLabel(m.settings.CycleRunnerKey()), helpKeyLabel(m.settings.CycleRootKey()))
+	if m.resizeMode {
+		help = "RESIZE · ↑ bigger snapshot · ↓ more sessions · PgUp/PgDn faster · r reset · Ctrl-G/Esc done"
+	}
 	message := help
 	style := mutedStyle
 	if m.errorText != "" {
@@ -1354,7 +1412,11 @@ func (m Model) settingsLines() []string {
 }
 
 func (m Model) renderOrganizer() string {
-	title := m.renderModeHeader("WORKSTREAM ORGANIZER", m.organizerContextLabel())
+	mode := "WORKSTREAM ORGANIZER"
+	if m.resizeMode {
+		mode += " · RESIZE"
+	}
+	title := m.renderModeHeader(mode, m.organizerContextLabel())
 	lines := []string{title, m.renderRule()}
 	rows := m.organizerRows()
 	height := m.organizerViewportHeight()
@@ -1405,6 +1467,9 @@ func (m Model) renderOrganizer() string {
 }
 
 func (m Model) organizerHelp() string {
+	if m.resizeMode {
+		return "↑ bigger notes/files · ↓ more sessions · PgUp/PgDn faster · r reset · Ctrl-G/Esc done"
+	}
 	if m.organizerEdit != "" {
 		return "Enter save · Esc cancel"
 	}
@@ -1420,7 +1485,7 @@ func (m Model) organizerHelp() string {
 			return "Enter move here · u/Space use on dashboard · m move here · ? help · Esc close"
 		}
 		if row.workstreamID != "" {
-			return "Enter expand/collapse · u/Space use on dashboard · p/P/d roots · Tab cycle · ? help"
+			return "Shift-↑↓ reorder · Ctrl-G resize · Enter expand/collapse · u/Space use · p/P/d roots · ? help"
 		}
 		return "Enter expand/collapse · u/Space use Ungrouped · ? help · Esc dashboard"
 	case rowOrphanHeader:
@@ -1900,32 +1965,6 @@ func (m Model) selectedOrganizerWorkstream() (workstream.Workstream, bool) {
 	return m.workstream(row.workstreamID)
 }
 
-func (m Model) organizerViewportHeight() int {
-	return max(0, m.organizerAvailableHeight()-m.organizerContextHeight())
-}
-
-func (m Model) organizerAvailableHeight() int {
-	reserved := 5 // title, rule, status rule, message, key help
-	if m.organizerEdit != "" {
-		reserved++
-	}
-	return max(0, m.height-reserved)
-}
-
-func (m Model) organizerContextHeight() int {
-	available := m.organizerAvailableHeight()
-	if available < 4 {
-		return 0
-	}
-	if m.height < 13 {
-		return 1
-	}
-	if m.height < 20 {
-		return min(5, max(2, available-6))
-	}
-	return min(12, max(5, available*45/100))
-}
-
 func (m Model) moveOrganizerSource(workstreamID string) (tea.Model, tea.Cmd) {
 	if m.organizerSource == "" {
 		m.errorText = "select a session to move"
@@ -2076,18 +2115,6 @@ func (m Model) renderTextInput(clusters []string, cursor, width int) string {
 	return truncateANSI(result.String(), width)
 }
 
-func (m Model) listHeight() int {
-	effectiveHeight := m.height - (m.composerInputHeight() - 1)
-	if effectiveHeight < 18 {
-		return max(2, effectiveHeight-9)
-	}
-	return max(5, min(14, (effectiveHeight-8)/2))
-}
-
-func (m Model) detailHeight() int {
-	return max(0, m.height-m.listHeight()-m.composerInputHeight()-5)
-}
-
 func (m *Model) requestSnapshot() tea.Cmd {
 	if m.snapshotFetch.activeGeneration != 0 {
 		m.snapshotFetch.queued = true
@@ -2223,6 +2250,15 @@ func (m Model) renameWorkstreamCmd(id, name string) tea.Cmd {
 		defer cancel()
 		err := m.controller.RenameWorkstream(ctx, id, name)
 		return workstreamMsg{action: "rename", workstreamID: id, err: err}
+	}
+}
+
+func (m Model) reorderWorkstreamCmd(id string, delta int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		moved, err := m.controller.ReorderWorkstream(ctx, id, delta)
+		return workstreamMsg{action: "reorder", workstreamID: id, delta: delta, moved: moved, err: err}
 	}
 }
 

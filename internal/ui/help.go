@@ -131,6 +131,7 @@ func (m Model) helpContentLines() []string {
 		{"Backspace / Ctrl-H", "Delete the previous character; Delete removes the next one."},
 		{"Ctrl-W / Ctrl-U", "Delete the previous word, or clear text back to the current line start."},
 		{"Ctrl-R", "Cycle the next-session runner regardless of composer text."},
+		{"Ctrl-G", "Enter resize mode; Up grows the snapshot, Down shows more sessions, r restores automatic sizing, and Esc exits."},
 		{"Ctrl-X twice", "Stop an available runtime while keeping its durable session record. Once no pane remains, the same chord twice permanently deletes that record and membership."},
 		{"F3", "Open the workstream organizer."},
 		{"Ctrl-S / F2", "Open settings."},
@@ -154,9 +155,11 @@ func (m Model) helpContentLines() []string {
 		{"Enter · workstream", "Collapse or expand it; when a move source is active, move that session here instead."},
 		{"Enter · session", "Mark the session as a move source; it does not attach. Use u or Space to return with it selected on the dashboard."},
 		{"← / →", "Collapse or expand a workstream, or move from a session row to its parent."},
+		{"Shift-↑ / Shift-↓", "Move a named workstream one position up or down; the order is durable."},
 		{"m", "Mark or unmark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
 		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach/send."},
 		{"Lower pane", "Preview the selected workstream's notes.md and shallow artifact-directory tree; a session shows its parent workstream context."},
+		{"Ctrl-G", "Resize the lower notes/files pane with Up or Down; r restores automatic sizing and Esc exits resize mode."},
 		{"n / r", "Create or rename a workstream."},
 		{"p / Shift-P", "Add a root, or edit the currently selected root."},
 		{"d twice", "Remove the selected root without deleting files or historical sessions; every workstream keeps at least one root."},
@@ -185,6 +188,7 @@ func (m Model) helpContentLines() []string {
 		description string
 	}{
 		{"h", "Open the dashboard."},
+		{"h quickstart [-r claude|codex] [-C DIR]", "Launch and attach an agent-guided first-use tour."},
 		{"h spawn [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL", "Start a session without opening the dashboard."},
 		{"h list", "List durable sessions and orphaned runtimes."},
 		{"h send ID MESSAGE", "Send a follow-up through tmux."},

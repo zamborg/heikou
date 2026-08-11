@@ -1,6 +1,7 @@
 # Session status, titles, and recency
 
-Status: proposed; save for a later implementation pass.
+Status: next after the current layout nits. Deliver titles and semantic status
+as separate slices.
 
 Current stopgap: the tmux runtime retains a bounded preview of the latest user
 message successfully sent through Heikou, and the dashboard uses it instead of
@@ -24,7 +25,8 @@ prompt as the session's forever-label.
 
 Keep three independent axes.
 
-**Runtime lifecycle** remains process truth owned by `Supervisor`:
+**Runtime lifecycle observation** remains process truth owned by `Supervisor`;
+the controller owns the joined lifecycle projection shown by the UI:
 
 - `starting`
 - `live`
@@ -53,10 +55,24 @@ Tmux silence is not semantic evidence. Until a runner observer exists, render
 facts such as `active 12s ago`, `quiet 3m`, or `attached`; never translate those
 signals into `working`, `ready`, `returned`, or `needs input`.
 
-## Durable presentation metadata
+## Slice A · durable session titles
 
 Add an optional user-owned `Title` to `SessionRecord`. It is durable display
 identity, not process state, and must not rename the stable tmux session.
+
+This is the immediate next implementation:
+
+1. Add an explicit v1-to-v2 state migration with versioned JSON fixture tests.
+2. Add optional `SessionRecord.Title` and a controller `SetSessionTitle` action;
+   an empty value clears the title.
+3. Make `r` contextual in F3: rename a workstream header or edit a session
+   title.
+4. Render title first, falling back to a one-line initial prompt. Keep the
+   latest Heikou-routed message as secondary detail when space permits.
+5. Never rename the tmux session, Claude/Codex native session, or teach
+   `Supervisor` about presentation metadata.
+
+## Deferred presentation activity
 
 Keep recency and acknowledgement metadata separate from `SessionRecord`, keyed
 by session ID:
@@ -107,7 +123,24 @@ Selecting a row never acknowledges a returned result. Attaching/opening it with
 Enter, or successfully sending the next message, does. A later explicit
 “open result” action may use the same acknowledgement path.
 
-## Observer seam
+Do not add this table in the title slice. The retained tmux preview already
+provides the cheap latest-message shim; durable recency and acknowledgement can
+wait until their lifecycle is needed.
+
+## Slice B · real agent status
+
+Before adding semantic state, fix the known retained-pane ambiguity tracked in
+[`code-quality-audit.md`](code-quality-audit.md): an empty `pane_dead_status`
+must project as dead with an unknown outcome, never exit code zero, and must not
+produce a durable `OutcomeExited` record.
+
+Then run a focused signal probe. Claude exposes session listings and hooks;
+Codex app-server schemas expose turn and input state, but independently launched
+native TUIs are not automatically attached to that server. Prove inheritance,
+freshness, direct-TUI coverage, and stable completion identity before choosing
+a source.
+
+### Observer seam
 
 Real turn status must come from reliable Claude- or Codex-specific signals, not
 terminal scraping heuristics. Keep the observer above `Supervisor` and make it
@@ -127,7 +160,8 @@ type AgentObservation struct {
 
 A backend-selected `AgentObserver.Observe` returns observations for session
 references. The controller projection combines those with runtime and durable
-presentation metadata. `Supervisor` remains unaware of semantic agent state.
+presentation metadata. Current observations live outside `SessionRecord` and
+`Supervisor` remains unaware of semantic agent state.
 `CompletedTurnID` is the stable token used to determine whether a return is
 unread.
 
@@ -135,15 +169,19 @@ Potential sources include Claude hooks or structured agent output and Codex
 notifications or app-server events. Choose the first source only after proving
 that its turn-start, turn-complete, and input-request signals are reliable.
 
-## Later implementation order
+## Acceptance order
 
-1. Add title and bounded `SessionActivity` storage with migration tests.
-2. Add controller operations for rename, clear-title, and successful-send
-   preview updates.
-3. Update dashboard rows, details, and contextual F3 rename behavior.
-4. Improve honest runtime/activity labels using current tmux observations.
-5. Add the observer interface alongside the first reliable runner integration.
-6. Add durable returned-result acknowledgement once completed-turn IDs exist.
+1. Ship Slice A by itself: migration, title set/clear, contextual F3 rename,
+   rows/details, and downgrade/invalid-state tests.
+2. Represent dead panes with unknown outcomes honestly and stop persisting
+   guessed success.
+3. Probe authoritative Claude and Codex signals in fixtures or opt-in smoke
+   tests.
+4. Add the observer interface with only `working`, `ready`, and `unknown` beside
+   the first reliable runner integration. Terminal outcomes always win.
+5. Add `needs_input` only after its signal is proven.
+6. Add durable `returned`/`seen` acknowledgement only when a backend supplies
+   stable completed-turn IDs.
 
-The first four steps provide useful organization and recency immediately. The
-`returned` badge remains deferred until Heikou has a source it can trust.
+The title slice provides useful organization immediately. Semantic labels and
+the `returned` badge remain deferred until Heikou has sources it can trust.

@@ -35,6 +35,9 @@ type fakeController struct {
 	replacedRootValue      string
 	removedRootWorkstream  string
 	removedRootValue       string
+	reorderedWorkstream    string
+	reorderedDelta         int
+	reorderNoop            bool
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
@@ -67,7 +70,11 @@ func (f *fakeController) CreateWorkstream(context.Context, string, string, []str
 	return workstream.Workstream{}, nil
 }
 func (f *fakeController) RenameWorkstream(context.Context, string, string) error { return nil }
-func (f *fakeController) ArchiveWorkstream(context.Context, string) error        { return nil }
+func (f *fakeController) ReorderWorkstream(_ context.Context, id string, delta int) (bool, error) {
+	f.reorderedWorkstream, f.reorderedDelta = id, delta
+	return !f.reorderNoop, nil
+}
+func (f *fakeController) ArchiveWorkstream(context.Context, string) error { return nil }
 func (f *fakeController) MoveSession(_ context.Context, sessionID, workstreamID string) error {
 	f.movedSession, f.movedTarget = sessionID, workstreamID
 	return nil
@@ -108,6 +115,18 @@ func TestDashboardClipsAtTinyTerminalHeights(t *testing.T) {
 		model, _ := newTestModel("/tmp", heikou.BackendCodex)
 		model.width, model.height = 40, height
 		assertViewFits(t, model.View().Content, model.width, model.height)
+	}
+}
+
+func TestNewWithSelectedSessionRestoresGuideAfterInitialSnapshot(t *testing.T) {
+	session := testDurableSession("018f0000-0000-4000-8000-000000000041", "", heikou.BackendClaude, "guided tour", "/tmp", time.Now())
+	controller := &fakeController{snapshot: control.Snapshot{Sessions: []control.Session{session}, StatePath: "/tmp/heikou-test-state.json"}}
+	model := NewWithSelectedSession(controller, "/tmp", heikou.BackendClaude, config.Store{}, config.Default(), session.ID)
+	model.snapshot = controller.snapshot
+	model.restoreSelection()
+	selected, ok := model.selectedSession()
+	if !ok || selected.ID != session.ID {
+		t.Fatalf("selected session = (%q, %v), want %q", selected.ID, ok, session.ID)
 	}
 }
 
@@ -327,6 +346,220 @@ func TestOrganizerShowsExpandableSessionTree(t *testing.T) {
 	}
 }
 
+func TestOrganizerReordersOnlyNamedWorkstreams(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	first := testWorkstream("018f0000-0000-4000-8000-000000000061", "First", []string{"/tmp"}, now)
+	second := testWorkstream("018f0000-0000-4000-8000-000000000062", "Second", []string{"/tmp"}, now)
+	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.selected = workstreamRowKey(second.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd == nil || !model.busy {
+		t.Fatal("Shift-Up did not start a workstream reorder")
+	}
+	message := cmd()
+	if controller.reorderedWorkstream != second.ID || controller.reorderedDelta != -1 {
+		t.Fatalf("reorder = (%q, %d), want (%q, -1)", controller.reorderedWorkstream, controller.reorderedDelta, second.ID)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	if model.organizerSelected != workstreamRowKey(second.ID) {
+		t.Fatalf("reorder lost selected workstream: %q", model.organizerSelected)
+	}
+
+	model.busy = false
+	model.selectOrganizerKey(workstreamRowKey(first.ID))
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("locally first workstream did not reach the authoritative controller")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if !strings.Contains(model.notice, "moved workstream up") {
+		t.Fatalf("authoritative stale-snapshot move notice = %q", model.notice)
+	}
+
+	model.busy = false
+	controller.reorderNoop = true
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("boundary reorder did not reach the authoritative controller")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if !strings.Contains(model.notice, "already first") {
+		t.Fatalf("authoritative boundary notice = %q", model.notice)
+	}
+	controller.reorderNoop = false
+	model.busy = false
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Shift-Down did not start a workstream reorder")
+	}
+	_ = cmd()
+	if controller.reorderedWorkstream != first.ID || controller.reorderedDelta != 1 {
+		t.Fatalf("down reorder = (%q, %d), want (%q, 1)", controller.reorderedWorkstream, controller.reorderedDelta, first.ID)
+	}
+	model.busy = false
+	model.selectOrganizerKey(ungroupedKey)
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if cmd != nil || !strings.Contains(model.errorText, "named workstream") {
+		t.Fatalf("synthetic reorder = command %v, error %q", cmd != nil, model.errorText)
+	}
+}
+
+func TestResizeModeAdjustsDashboardAndOrganizerIndependently(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+	container := testWorkstream("018f0000-0000-4000-8000-000000000063", "Core", []string{"/tmp"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	selected := model.selected
+	baseDetails, baseList := model.detailHeight(), model.listHeight()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if !model.resizeMode || !strings.Contains(ansi.Strip(model.renderHeader()), "RESIZE") {
+		t.Fatal("Ctrl-G did not enter visible dashboard resize mode")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	model = updated.(Model)
+	if model.detailHeight() != baseDetails+1 || model.listHeight() != baseList-1 {
+		t.Fatalf("dashboard resize = details %d list %d, want %d/%d", model.detailHeight(), model.listHeight(), baseDetails+1, baseList-1)
+	}
+	if model.selected != selected || model.inputValue() != "" {
+		t.Fatal("dashboard resize mutated selection or composer")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	model = updated.(Model)
+	if model.detailHeight() != baseDetails || model.listHeight() != baseList {
+		t.Fatal("resize reset did not restore automatic dashboard sizing")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	if model.resizeMode {
+		t.Fatal("Escape did not close resize mode")
+	}
+
+	model.openOrganizer()
+	baseContext, baseViewport := model.organizerContextHeight(), model.organizerViewportHeight()
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	model = updated.(Model)
+	if model.organizerContextHeight() != baseContext+1 || model.organizerViewportHeight() != baseViewport-1 {
+		t.Fatalf("organizer resize = context %d viewport %d, want %d/%d", model.organizerContextHeight(), model.organizerViewportHeight(), baseContext+1, baseViewport-1)
+	}
+	if model.detailHeight() != baseDetails {
+		t.Fatal("organizer resize changed dashboard detail sizing")
+	}
+}
+
+func TestResizeModeClampsSafelyAcrossTerminalAndComposerSizes(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{20, 8}, {80, 24}, {120, 50}} {
+		model, _ := newTestModel("/tmp", heikou.BackendCodex)
+		model.width, model.height = size.width, size.height
+		model.resizeMode = true
+		for range 100 {
+			model.resizeLowerPane(1)
+		}
+		if model.detailHeight() < 0 || model.listHeight() < 2 {
+			t.Fatalf("grown dashboard split at %dx%d = list %d detail %d", size.width, size.height, model.listHeight(), model.detailHeight())
+		}
+		for range 200 {
+			model.resizeLowerPane(-1)
+		}
+		if model.detailHeight() != 0 {
+			t.Fatalf("shrunk dashboard detail at %dx%d = %d, want 0", size.width, size.height, model.detailHeight())
+		}
+		model.insertText("one\ntwo\nthree\nfour\nfive")
+		assertViewFits(t, model.View().Content, size.width, size.height)
+
+		model.resizeMode = false
+		model.openOrganizer()
+		for range 100 {
+			model.resizeLowerPane(1)
+		}
+		if available := model.organizerAvailableHeight(); available >= 3 && model.organizerViewportHeight() < 3 {
+			t.Fatalf("grown organizer consumed session viewport at %dx%d: context %d viewport %d", size.width, size.height, model.organizerContextHeight(), model.organizerViewportHeight())
+		}
+		for range 200 {
+			model.resizeLowerPane(-1)
+		}
+		if model.organizerContextHeight() != 0 {
+			t.Fatalf("shrunk organizer context at %dx%d = %d, want 0", size.width, size.height, model.organizerContextHeight())
+		}
+		assertViewFits(t, model.View().Content, size.width, size.height)
+	}
+}
+
+func TestResizeUsesVisibleHeightAfterTerminalShrinks(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 50
+	for range 100 {
+		model.resizeLowerPane(1)
+	}
+	model.height = 24
+	before := model.detailHeight()
+	model.resizeLowerPane(-1)
+	if got, want := model.detailHeight(), max(0, before-1); got != want {
+		t.Fatalf("dashboard resize after terminal shrink = %d, want %d", got, want)
+	}
+
+	model.openOrganizer()
+	model.height = 50
+	for range 100 {
+		model.resizeLowerPane(1)
+	}
+	model.height = 24
+	before = model.organizerContextHeight()
+	model.resizeLowerPane(-1)
+	if got, want := model.organizerContextHeight(), max(0, before-1); got != want {
+		t.Fatalf("organizer resize after terminal shrink = %d, want %d", got, want)
+	}
+}
+
+func TestResizeUsesVisibleHeightAfterComposerExpands(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+	for range 100 {
+		model.resizeLowerPane(1)
+	}
+	model.insertText("one\ntwo\nthree\nfour\nfive")
+	before := model.detailHeight()
+	model.resizeLowerPane(-1)
+	if got, want := model.detailHeight(), max(0, before-1); got != want {
+		t.Fatalf("dashboard resize after composer growth = %d, want %d", got, want)
+	}
+}
+
+func TestNonLayoutKeyLeavesResizeModeAndKeepsItsMeaning(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.resizeMode = true
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	model = updated.(Model)
+	if model.resizeMode || model.inputValue() != "x" {
+		t.Fatalf("printable key after resize = mode %v input %q", model.resizeMode, model.inputValue())
+	}
+
+	model.clearInput()
+	model.resizeMode = true
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if model.resizeMode || model.inputValue() != "\n" {
+		t.Fatalf("Shift-Enter after resize = mode %v input %q", model.resizeMode, model.inputValue())
+	}
+}
+
 func TestOrganizerEditsAndRemovesSelectedRoot(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000033", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
@@ -445,6 +678,38 @@ func TestOrganizerMovesDurableSessionWithoutClosing(t *testing.T) {
 	model = updated.(Model)
 	if !model.organizerOpen || model.organizerSource != "" || model.organizerSelected != workstreamRowKey(web.ID) {
 		t.Fatalf("organizer did not remain ready after move: open=%v source=%q selected=%q", model.organizerOpen, model.organizerSource, model.organizerSelected)
+	}
+}
+
+func TestOrganizerKeepsSelectedGuideMarkedThroughWorkstreamCreation(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendClaude)
+	now := time.Now()
+	guide := testDurableSession("018f0000-0000-4000-8000-000000000073", "", heikou.BackendClaude, "guided tour", "/tmp", now)
+	destination := testWorkstream("018f0000-0000-4000-8000-000000000074", "First project", []string{"/tmp"}, now)
+	model.snapshot.Sessions = []control.Session{guide}
+	model.selected = sessionRowKey(guide)
+	model.restoreSelection()
+	model.openOrganizer()
+	if model.organizerSource != guide.ID {
+		t.Fatalf("opening organizer source = %q, want guide %q", model.organizerSource, guide.ID)
+	}
+
+	updated, _ := model.Update(workstreamMsg{action: "create", item: destination})
+	model = updated.(Model)
+	model.snapshot.Workstreams = []workstream.Workstream{destination}
+	model.restoreOrganizerSelection()
+	if model.organizerSource != guide.ID || model.organizerSelected != workstreamRowKey(destination.ID) {
+		t.Fatalf("post-create source=%q selected=%q", model.organizerSource, model.organizerSelected)
+	}
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Enter on the new workstream did not move the guided session")
+	}
+	_ = cmd()
+	if controller.movedSession != guide.ID || controller.movedTarget != destination.ID {
+		t.Fatalf("guided move = session %q target %q", controller.movedSession, controller.movedTarget)
 	}
 }
 
@@ -587,6 +852,46 @@ func TestOrganizerContextShowsWorkstreamNotesAndArtifactTree(t *testing.T) {
 	assertViewFits(t, model.View().Content, model.width, model.height)
 }
 
+func TestLargeOrganizerContextGivesNotesAndTreeMoreRoom(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 40
+	container := testWorkstream("018f0000-0000-4000-8000-000000000064", "Deep context", []string{"/tmp"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+
+	tree := make([]artifactTreeEntry, 12)
+	for index := range tree {
+		tree[index] = artifactTreeEntry{Name: "artifact-" + string(rune('a'+index)), Depth: 1, Regular: true}
+	}
+	model.organizerContext.snapshot = artifactContextSnapshot{
+		WorkstreamID: container.ID,
+		ArtifactDir:  container.ArtifactDir,
+		Notes:        strings.Repeat("one useful note line\n", 12),
+		NotesStatus:  artifactNotesReady,
+		Tree:         tree,
+	}
+	height := model.organizerContextHeight()
+	if height <= 12 {
+		t.Fatalf("large default context height = %d, want more than the old 12-row cap", height)
+	}
+	lines := model.renderOrganizerContext(height)
+	filesIndex := -1
+	for index, line := range lines {
+		if strings.Contains(ansi.Strip(line), "FILES") {
+			filesIndex = index
+			break
+		}
+	}
+	if filesIndex <= 4 {
+		t.Fatalf("notes received only %d rows, want more than the old three-row cap", filesIndex-1)
+	}
+	if treeRows := len(lines) - filesIndex - 1; treeRows <= 4 {
+		t.Fatalf("artifact tree received only %d rows", treeRows)
+	}
+}
+
 func TestOrganizerFooterExplainsEnterForSelectedNoun(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000056", "Core", []string{"/tmp"}, time.Now())
@@ -596,7 +901,8 @@ func TestOrganizerFooterExplainsEnterForSelectedNoun(t *testing.T) {
 	model.restoreSelection()
 	model.openOrganizer()
 
-	if help := model.organizerHelp(); !strings.Contains(help, "Enter expand/collapse") {
+	if help := model.organizerHelp(); !strings.Contains(help, "Enter expand/collapse") ||
+		!strings.Contains(help, "Shift-↑↓ reorder") || !strings.Contains(help, "Ctrl-G resize") {
 		t.Fatalf("workstream footer = %q", help)
 	}
 	model.selectOrganizerKey(sessionRowKey(session))
@@ -843,7 +1149,7 @@ func TestQuestionMarkHelpDoesNotStealComposerText(t *testing.T) {
 		t.Fatal("? on an empty composer did not open help")
 	}
 	plain := ansi.Strip(strings.Join(model.helpContentLines(), "\n"))
-	for _, want := range []string{"local command center", "Nouns", "Workstream", "Orphaned"} {
+	for _, want := range []string{"local command center", "Nouns", "Workstream", "Orphaned", "Ctrl-G", "Shift-↑"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("help is missing %q:\n%s", want, plain)
 		}

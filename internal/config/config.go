@@ -377,6 +377,7 @@ var reservedComposerKeys = map[string]struct{}{
 	"ctrl+a":    {},
 	"ctrl+c":    {},
 	"ctrl+e":    {},
+	"ctrl+g":    {},
 	"ctrl+h":    {},
 	"ctrl+r":    {},
 	"ctrl+s":    {},

@@ -178,6 +178,9 @@ ordinary artifacts at `~/.local/share/heikou/workstreams/<id>/`. The JSON
 sidecar is versioned, mode `0600`, written by temp-file/fsync/rename, and guarded
 by an advisory lock. Storage remains behind a repository interface so a later
 SQLite implementation does not change the domain contract.
+The workstream array order is also its durable display order; moving an active
+workstream swaps it with an active neighbor in one atomic state mutation and
+does not require a separate position field or schema migration.
 
 The deliberately small durable model is:
 
@@ -249,7 +252,8 @@ created.
 Messages never enter a shell command constructed by Heikou. It:
 
 1. writes the exact UTF-8 bytes to a uniquely named tmux buffer on stdin;
-2. uses bracketed `paste-buffer -p -r` into the canonical pane;
+2. uses bracketed `paste-buffer -p` into the canonical pane, retaining tmux's
+   LF-to-CR conversion so multiline input reaches the pane line discipline;
 3. deletes the buffer; and
 4. sends the `Enter` key separately.
 
@@ -296,15 +300,22 @@ session resolves to its parent workstream. It renders a bounded `notes.md`
 preview and shallow artifact-directory tree. This UI-owned read never mutates
 domain state, modifies files, or inspects any registered repository root. The
 organizer also supports create, rename, add/edit/remove-root, notes/files,
-archive, and the same safe stop/delete lifecycle as the dashboard. Root edits
-affect future launch choices only; they never rewrite historical session roots
-or touch the filesystem.
+archive, persistent `Shift-Up`/`Shift-Down` workstream ordering, and the same
+safe stop/delete lifecycle as the dashboard. Root edits affect future launch
+choices only; they never rewrite historical session roots or touch the
+filesystem.
+
+`Ctrl-G` enters a narrow resize mode on either primary surface. Up grows the
+lower snapshot or notes/files pane, Down gives those rows back to the session
+list, and `r` restores automatic sizing. Dashboard and organizer adjustments
+are independent process-local presentation state, not configuration or domain
+data.
 
 This makes the two most common actions one keystroke after typing while keeping
 their consequences distinct. A selected session's preview is always open, so
 the dashboard does not require a separate peek mode. Multiline clipboard
-content is collapsed to a single line; follow-up transport itself remains
-capable of arbitrary UTF-8.
+content preserves its logical line breaks in the composer, and follow-up
+transport remains capable of arbitrary UTF-8.
 
 Rows stay intentionally sparse: process mark, runner, short ID, truthful state,
 most recent Heikou-routed user message (falling back to the initial task),

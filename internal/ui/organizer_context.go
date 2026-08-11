@@ -128,8 +128,10 @@ func (m Model) renderOrganizerContext(height int) []string {
 	}
 
 	notesHeight := 1
-	if contentHeight >= 6 {
-		notesHeight = min(3, max(1, contentHeight/3))
+	if contentHeight >= 5 {
+		// Share larger context panes more evenly. Keep at least a label and one
+		// tree row for files, while allowing enough notes to be genuinely useful.
+		notesHeight = min(contentHeight-3, max(2, (contentHeight-2)*2/5))
 	}
 	notes := renderArtifactNotes(m.organizerContext.snapshot, m.width, notesHeight)
 	lines = append(lines, notes...)

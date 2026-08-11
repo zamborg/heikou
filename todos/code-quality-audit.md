@@ -29,6 +29,9 @@ tests passed during the audit.
   whose required metadata cannot be parsed instead of silently dropping it from
   the normal dashboard projection. Lifecycle deletion already uses a separate,
   metadata-independent existence check.
+- [ ] Treat a retained dead pane with missing `pane_dead_status` as “outcome
+  unknown,” especially on tmux 3.3/3.4. Never default an empty status to zero or
+  persist `OutcomeExited` until an exit code is actually observed.
 - [ ] Replace parallel screen booleans, string edit/action modes, and independent
   confirmation fields with typed screen-specific UI state.
 - [ ] Add an explicit state-migration function and versioned fixture tests before
