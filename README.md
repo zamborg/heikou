@@ -34,9 +34,12 @@ are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
 bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.2
+go install github.com/zamborg/heikou/cmd/h@v0.3.3
 h doctor
 ```
+
+Go does not run package-defined post-install hooks. After successful checks,
+`h doctor` prints the next step: `h quickstart`.
 
 Ensure `$(go env GOPATH)/bin` is on your `PATH`. To install the `heikou`, `h`,
 and `H` aliases together, build from source instead:
@@ -49,6 +52,23 @@ make install
 
 `make install` writes `heikou` to `~/.local/bin` and adds `h` / `H` symlinks.
 Override the destination with `make install PREFIX=/somewhere`.
+
+For an agent-guided first run, run:
+
+```sh
+h quickstart
+```
+
+This embeds the [`learn-heikou` skill](skills/learn-heikou/SKILL.md) in the
+installed binary, prefers Claude when its configured executable is available,
+falls back to Codex, starts a real durable Heikou session, and attaches to it
+immediately. Use
+`h quickstart -r codex` or `h quickstart -r claude` to choose explicitly.
+
+The guide's first lesson is how to detach. Press `Ctrl-b`, release both keys,
+then press `d`; `h quickstart` will open the dashboard with the guide selected
+so it can walk you through sending a follow-up, reattaching, `F3`, workstreams,
+and persistent notes.
 
 ## Use it
 
@@ -75,6 +95,7 @@ The composer is always ready:
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
 | `F3` | Open the expandable workstream/session organizer |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
+| `Ctrl-G` | Enter resize mode; `Up` grows the snapshot, `Down` shows more sessions, `r` resets, and `Esc` exits |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
@@ -130,11 +151,17 @@ their sessions. On a workstream row, `Enter` expands/collapses it unless a move
 source is active, in which case it moves or adopts that session there. On a
 session row, `Enter` marks it as the move source; `m` also marks or completes a
 move. Press `u` or `Space` to return to the dashboard with the highlighted
-workstream or session selected.
+workstream or session selected. On a named workstream, `Shift-Up` and
+`Shift-Down` move it in the durable display order; the synthetic Ungrouped and
+Orphaned sections remain fixed after named workstreams.
 
 The organizer's lower, read-only context pane follows the selected workstream;
 selecting a session shows its parent workstream. It previews a bounded portion
 of `notes.md` and a shallow tree of that workstream's artifact directory only.
+It receives more space by default on taller terminals. Press `Ctrl-G` to enter
+resize mode, then use `Up` to grow notes/files, `Down` to expose more sessions,
+or `r` to restore automatic sizing. Dashboard snapshot sizing is adjusted the
+same way and remembered independently for the current process.
 Rendering context does not change domain state, inspect registered repository
 roots, or modify files. The organizer also creates or renames workstreams,
 opens notes/artifacts, and archives. On a named workstream, `p` adds a root,
@@ -181,6 +208,8 @@ keep the defaults shown above; `new_session` and `send_message` apply when the
 composer has text, while `cycle_runner` and `cycle_root` apply when it is empty.
 `Shift-Enter` inserts a newline unless it is explicitly assigned to one of
 those actions.
+`Ctrl-G` is reserved for layout resize mode and cannot be assigned to a
+composer action.
 The settings pane displays the active bindings and reloads JSON changes with
 `r`. Command changes affect new sessions; a changed `default_runner` applies
 the next time the dashboard opens. `no-agent` is not configurable: it asks tmux

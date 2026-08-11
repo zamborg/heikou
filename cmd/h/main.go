@@ -24,9 +24,10 @@ import (
 	"github.com/zamborg/heikou/internal/supervisor"
 	"github.com/zamborg/heikou/internal/ui"
 	"github.com/zamborg/heikou/internal/workstream"
+	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.3.2"
+var version = "0.3.3"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -61,6 +62,8 @@ func runWithGlobalOutput(args []string, writer io.Writer) error {
 	switch args[0] {
 	case "doctor":
 		return runDoctor(args[1:])
+	case "quickstart":
+		return runQuickstart(args[1:])
 	case "list", "ls":
 		return runList(args[1:])
 	case "spawn", "new":
@@ -93,6 +96,10 @@ func routeGlobalCommand(args []string, writer io.Writer) bool {
 }
 
 func runDashboard(args []string) error {
+	return runDashboardSelected(args, "")
+}
+
+func runDashboardSelected(args []string, selectedSessionID string) error {
 	configStore, settings, err := loadSettings()
 	if err != nil {
 		return err
@@ -138,11 +145,109 @@ func runDashboard(args []string) error {
 		return err
 	}
 
-	program := tea.NewProgram(ui.New(controller, absRoot, backend, configStore, settings))
+	program := tea.NewProgram(ui.NewWithSelectedSession(controller, absRoot, backend, configStore, settings, selectedSessionID))
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run dashboard: %w", err)
 	}
 	return nil
+}
+
+func runQuickstart(args []string) error {
+	flags := newFlagSet("h quickstart")
+	root := flags.String("root", mustWorkingDirectory(), "project root for the guided session")
+	flags.StringVar(root, "C", *root, "project root for the guided session")
+	runnerValue := flags.String("runner", "", "guide runner: claude or codex (default: prefer claude)")
+	flags.StringVar(runnerValue, "r", *runnerValue, "guide runner: claude or codex (default: prefer claude)")
+	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
+	flags.Usage = func() {
+		fmt.Fprintln(flags.Output(), "Usage: h quickstart [-r claude|codex] [-C DIR]")
+		flags.PrintDefaults()
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: h quickstart [-r claude|codex] [-C dir]")
+	}
+	_, settings, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	backend, err := quickstartBackend(*runnerValue, settings)
+	if err != nil {
+		return err
+	}
+	absRoot, err := filepath.Abs(*root)
+	if err != nil {
+		return fmt.Errorf("resolve root: %w", err)
+	}
+	_, controller, _, err := newController(*socket)
+	if err != nil {
+		return err
+	}
+	startContext, cancelStart := context.WithTimeout(context.Background(), 8*time.Second)
+	session, err := controller.Start(startContext, control.StartRequest{
+		Backend: backend,
+		Prompt:  quickstartPrompt(),
+		Root:    absRoot,
+		Command: settings.Command(backend),
+	})
+	cancelStart()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("started guided %s session %s\n", backend, shortID(session.ID))
+	fmt.Fprintln(os.Stderr, "attaching now · your first lesson is Ctrl-b, release, then d")
+	attachContext, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
+	command, err := controller.AttachCommand(attachContext, session.ID)
+	cancelAttach()
+	if err != nil {
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+	}
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+	}
+
+	fmt.Fprintln(os.Stderr, "detached · opening heikou with the guide selected")
+	return runDashboardSelected([]string{
+		"--runner", string(backend),
+		"--root", absRoot,
+		"--socket", *socket,
+	}, session.ID)
+}
+
+func quickstartBackend(value string, settings config.Config) (heikou.Backend, error) {
+	if strings.TrimSpace(value) != "" {
+		backend, err := heikou.ParseBackend(value)
+		if err != nil {
+			return "", err
+		}
+		if backend == heikou.BackendNoAgent {
+			return "", errors.New("quickstart requires the claude or codex runner")
+		}
+		if _, err := runner.ResolveCommand(backend, settings.Command(backend)); err != nil {
+			return "", err
+		}
+		return backend, nil
+	}
+
+	var failures []string
+	for _, backend := range []heikou.Backend{heikou.BackendClaude, heikou.BackendCodex} {
+		if _, err := runner.ResolveCommand(backend, settings.Command(backend)); err == nil {
+			return backend, nil
+		} else {
+			failures = append(failures, err.Error())
+		}
+	}
+	return "", fmt.Errorf("quickstart requires claude or codex: %s", strings.Join(failures, "; "))
+}
+
+func quickstartPrompt() string {
+	return "Guide me through my first Heikou workstream and session. You are running inside the guided session created by h quickstart. Follow the embedded skill below, begin with its in-session path, teach one action at a time, and wait for me after each action.\n\n" + learnheikou.Instructions
 }
 
 func runSpawn(args []string) error {
@@ -406,6 +511,7 @@ func runDoctor(args []string) error {
 	if failed {
 		return errors.New("required dependencies are missing")
 	}
+	fmt.Println("[next]   tour    h quickstart")
 	return nil
 }
 
@@ -415,6 +521,8 @@ func printHelp(writer io.Writer) {
 Usage:
   h [--runner codex|claude|no-agent] [-C DIR]
                                         open the dashboard
+  h quickstart [-r claude|codex] [-C DIR]
+                                        launch and attach an agent-guided tour
   h spawn [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL
                                         start a session without the dashboard
   h list                               list sessions
@@ -436,7 +544,9 @@ Dashboard:
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
   F3                open the expandable workstream/session organizer
   Up / Down         select a session; move draft lines when multiline
+  Ctrl-G            resize snapshot/context with Up/Down; r resets
   Empty Enter       collapse a workstream or attach a session
+  Organizer Shift-↑/↓ reorder a named workstream persistently
   Organizer m       mark a session; Enter/m on a workstream moves it
   Organizer u/Space use a workstream or select a session and return
   Ctrl-b d          detach the native terminal back to heikou

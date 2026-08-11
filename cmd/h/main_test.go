@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
@@ -51,6 +54,77 @@ func TestRunRoutesLongVersionBeforeDashboardFlags(t *testing.T) {
 	}
 	if got, want := output.String(), "heikou "+version+"\n"; got != want {
 		t.Fatalf("runWithGlobalOutput() = %q, want %q", got, want)
+	}
+}
+
+func TestReadmeAdvertisesCurrentVersion(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "github.com/zamborg/heikou/cmd/h@v" + version; !strings.Contains(string(readme), want) {
+		t.Fatalf("README install command does not advertise %q", want)
+	}
+}
+
+func TestHelpAdvertisesQuickstart(t *testing.T) {
+	var output bytes.Buffer
+	printHelp(&output)
+	for _, want := range []string{
+		"h quickstart [-r claude|codex] [-C DIR]",
+		"Ctrl-G            resize snapshot/context",
+		"Organizer Shift-↑/↓ reorder a named workstream",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("help does not advertise %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestQuickstartBackendPrefersClaudeAndRejectsNoAgent(t *testing.T) {
+	settings := config.Default()
+	settings.Commands[string(heikou.BackendClaude)] = []string{"/bin/sh"}
+	settings.Commands[string(heikou.BackendCodex)] = []string{"/bin/sh"}
+	backend, err := quickstartBackend("", settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend != heikou.BackendClaude {
+		t.Fatalf("quickstart backend = %q, want claude", backend)
+	}
+	if _, err := quickstartBackend("no-agent", settings); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("no-agent quickstart error = %v", err)
+	}
+}
+
+func TestQuickstartBackendFallsBackToCodex(t *testing.T) {
+	settings := config.Default()
+	settings.Commands[string(heikou.BackendClaude)] = []string{"/definitely/missing/heikou-claude"}
+	settings.Commands[string(heikou.BackendCodex)] = []string{"/bin/sh"}
+	backend, err := quickstartBackend("", settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend != heikou.BackendCodex {
+		t.Fatalf("quickstart fallback = %q, want codex", backend)
+	}
+	if _, err := quickstartBackend("claude", settings); err == nil {
+		t.Fatal("explicit missing Claude runner did not fail")
+	}
+}
+
+func TestQuickstartPromptEmbedsCanonicalSkill(t *testing.T) {
+	prompt := strings.Join(strings.Fields(quickstartPrompt()), " ")
+	for _, want := range []string{"name: learn-heikou", "If this guide itself is running inside a Heikou session", "already marked as the move source", "Only if that marker is absent", "Ctrl-b", "Ctrl-G", "Shift-Up"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("quickstart prompt is missing %q", want)
+		}
+	}
+}
+
+func TestQuickstartHelpReturnsSuccess(t *testing.T) {
+	if err := runQuickstart([]string{"-h"}); err != nil {
+		t.Fatalf("quickstart help: %v", err)
 	}
 }
 

@@ -49,6 +49,46 @@ func TestFileStorePersistsVersionedAtomicState(t *testing.T) {
 	}
 }
 
+func TestFileStorePreservesWorkstreamArrayOrder(t *testing.T) {
+	base := t.TempDir()
+	store := FileStore{Path: filepath.Join(base, "state.json"), Artifacts: filepath.Join(base, "data")}
+	now := time.Unix(1_700_000_100, 0).UTC()
+	ids := []string{
+		"018f0000-0000-4000-8000-000000000021",
+		"018f0000-0000-4000-8000-000000000022",
+		"018f0000-0000-4000-8000-000000000023",
+	}
+	_, err := store.Mutate(context.Background(), func(state *State) (bool, error) {
+		for index, id := range ids {
+			state.Workstreams = append(state.Workstreams, Workstream{
+				ID: id, Name: string(rune('A' + index)), ArtifactDir: filepath.Join(base, "data", id),
+				Roots: []string{base}, Revision: 1, CreatedAt: now, UpdatedAt: now,
+			})
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Mutate(context.Background(), func(state *State) (bool, error) {
+		state.Workstreams[0], state.Workstreams[2] = state.Workstreams[2], state.Workstreams[0]
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ids[2], ids[1], ids[0]}
+	for index, id := range want {
+		if loaded.Workstreams[index].ID != id {
+			t.Fatalf("workstream order[%d] = %q, want %q", index, loaded.Workstreams[index].ID, id)
+		}
+	}
+}
+
 func TestLifecycleLockSerializesFileStoreInstances(t *testing.T) {
 	base := t.TempDir()
 	first := FileStore{Path: filepath.Join(base, "state.json"), Artifacts: filepath.Join(base, "data")}

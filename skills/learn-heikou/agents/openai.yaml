@@ -1,0 +1,4 @@
+interface:
+  display_name: "Learn Heikou"
+  short_description: "Walk through the core Heikou workflow"
+  default_prompt: "Use $learn-heikou to guide me through my first Heikou workstream and session."

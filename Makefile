@@ -15,6 +15,7 @@ install:
 	$(GO) build -o "$(BIN_DIR)/heikou" ./cmd/h
 	ln -sf heikou "$(BIN_DIR)/h"
 	ln -sf heikou "$(BIN_DIR)/H"
+	@printf '\nNext: run h doctor, then h quickstart\n'
 
 test:
 	$(GO) test ./...

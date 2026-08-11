@@ -123,6 +123,66 @@ func (f *fakeSupervisor) Stop(_ context.Context, session heikou.Session) error {
 }
 func (f *fakeSupervisor) AttachCommand(heikou.Session) *exec.Cmd { return exec.Command("true") }
 
+func TestReorderWorkstreamPersistsVisibleOrderAndSkipsArchived(t *testing.T) {
+	root := t.TempDir()
+	repository := newMemoryRepository(root)
+	controller := New(&fakeSupervisor{}, repository, "heikou-test")
+
+	var items []workstream.Workstream
+	for _, name := range []string{"Alpha", "Archived", "Charlie", "Delta"} {
+		item, err := controller.CreateWorkstream(context.Background(), name, "", []string{root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item)
+	}
+	if err := controller.ArchiveWorkstream(context.Background(), items[1].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if moved, err := controller.ReorderWorkstream(context.Background(), items[2].ID, -1); err != nil {
+		t.Fatal(err)
+	} else if !moved {
+		t.Fatal("valid reorder reported a no-op")
+	}
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(snapshot.Workstreams))
+	for _, item := range snapshot.Workstreams {
+		got = append(got, item.Name)
+	}
+	want := []string{"Charlie", "Alpha", "Delta"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("visible workstream order = %v, want %v", got, want)
+	}
+
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBoundary := state.Revision
+	if moved, err := controller.ReorderWorkstream(context.Background(), items[2].ID, -1); err != nil {
+		t.Fatal(err)
+	} else if moved {
+		t.Fatal("boundary reorder reported a move")
+	}
+	state, err = repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Revision != beforeBoundary {
+		t.Fatalf("boundary reorder advanced revision from %d to %d", beforeBoundary, state.Revision)
+	}
+	if _, err := controller.ReorderWorkstream(context.Background(), items[1].ID, 1); err == nil {
+		t.Fatal("archived workstream was reorderable")
+	}
+	if _, err := controller.ReorderWorkstream(context.Background(), items[0].ID, 0); err == nil {
+		t.Fatal("invalid reorder delta was accepted")
+	}
+}
+
 func TestStartPersistsPendingIdentityBeforeSupervisorAndBindsSuccess(t *testing.T) {
 	root := t.TempDir()
 	repository := newMemoryRepository(root)
