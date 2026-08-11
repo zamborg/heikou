@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "revision": 9,
+  "workstreams": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000100",
+      "name": "Migration fixture",
+      "artifact_dir": "/tmp/heikou-v1-artifacts/018f0000-0000-4000-8000-000000000100",
+      "roots": [
+        "/tmp/heikou-v1-root"
+      ],
+      "revision": 3,
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-02T00:00:00Z"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000101",
+      "backend": "codex",
+      "initial_prompt": "Preserve this launch identity",
+      "initial_root": "/tmp/heikou-v1-root",
+      "created_at": "2024-01-02T01:02:03Z",
+      "launch": {
+        "status": "pending"
+      }
+    },
+    {
+      "id": "018f0000-0000-4000-8000-000000000102",
+      "backend": "claude",
+      "initial_prompt": "Preserve this completed outcome",
+      "initial_root": "/tmp/heikou-v1-root",
+      "created_at": "2024-01-02T02:03:04Z",
+      "launch": {
+        "status": "started",
+        "binding": {
+          "driver": "tmux",
+          "socket": "heikou-v1",
+          "session_name": "h-018f0000-0000-4000-8000-000000000102",
+          "bound_at": "2024-01-02T02:03:05Z"
+        }
+      },
+      "outcome": {
+        "kind": "exited",
+        "exit_code": 7,
+        "recorded_at": "2024-01-02T02:04:05Z"
+      }
+    }
+  ],
+  "memberships": [
+    {
+      "workstream_id": "018f0000-0000-4000-8000-000000000100",
+      "session_id": "018f0000-0000-4000-8000-000000000101",
+      "joined_at": "2024-01-02T01:02:04Z"
+    }
+  ]
+}

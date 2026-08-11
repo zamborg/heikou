@@ -29,13 +29,25 @@ tests passed during the audit.
   whose required metadata cannot be parsed instead of silently dropping it from
   the normal dashboard projection. Lifecycle deletion already uses a separate,
   metadata-independent existence check.
-- [ ] Treat a retained dead pane with missing `pane_dead_status` as “outcome
+- [x] Treat a retained dead pane with missing `pane_dead_status` as “outcome
   unknown,” especially on tmux 3.3/3.4. Never default an empty status to zero or
   persist `OutcomeExited` until an exit code is actually observed.
-- [ ] Replace parallel screen booleans, string edit/action modes, and independent
-  confirmation fields with typed screen-specific UI state.
-- [ ] Add an explicit state-migration function and versioned fixture tests before
-  persisting session titles or any other new durable field.
+- [x] Replace parallel screen booleans and string edit/action modes with typed
+  primary-screen, overlay, and organizer-edit state. Dashboard and organizer now
+  share one indexed overview relationship model. Independent lifecycle
+  confirmation fields remain intentionally narrow and explicit.
+- [x] Add an explicit ordered v1-to-v2 state migration and versioned fixture
+  tests before persisting durable session titles. Schema-only migration does not
+  advance the domain revision.
+- [x] Route current human mutations through a closed typed actor/scope command
+  plane. The active authorizer remains local-human-only; session actors stay
+  denied until manager grants are designed.
+- [x] Resolve native runner argv through a trusted config-backed controller
+  resolver instead of accepting executable argv in command actions.
+- [x] Add machine-readable `h list --json`, `h spawn --json`, and
+  `h send --json` local CLI surfaces.
+- [ ] Consolidate the remaining lifecycle confirmation fields into typed state
+  only if that makes their transitions materially clearer.
 
 ### P2 · hardening
 
@@ -57,10 +69,15 @@ tests passed during the audit.
 - Session identity is durable before launch, reconciliation is conservative,
   and deletion refuses any live or retained tmux pane.
 - State writes are validated, locked, private, atomic, file-synced, and
-  directory-synced.
+  directory-synced. Ordered schema migrations preserve domain revisions and
+  reject invalid, future, or version-inaccurate JSON.
 - Settings use a strict JSON schema and argv arrays with private atomic creation.
+- Human mutations share a closed typed command boundary, and configured runner
+  argv is supplied only by the trusted resolver.
 - Artifact context reads are byte/entry/depth bounded, symlink-aware, and
   isolated from registered repository roots.
+- Typed UI screen/edit state and one shared overview projection keep dashboard
+  and organizer navigation consistent.
 - The long-lived tmux server refreshes removed credentials, with a regression
   test proving stale values do not leak into later sessions.
 
@@ -68,9 +85,10 @@ tests passed during the audit.
 
 1. Add durable redacted diagnostics and typed tmux errors.
 2. Make malformed Heikou pane metadata visible in the normal projection.
-3. Introduce typed screen, confirmation, edit, and action state; then split the
-   large UI file by screen without building a generic framework.
-4. Add state migration before the first new durable title/status field.
+3. Replace the remaining independent lifecycle confirmation fields only if a
+   typed state makes those transitions materially clearer.
+4. Split the large UI file further by screen without building a generic
+   framework.
 5. Expand `h doctor` around the real state, lock, tmux, and log boundaries.
 6. Add explicit payload limits or a large-prompt transport.
 7. Reconcile failed workstream artifact-directory creation.

@@ -47,7 +47,11 @@ Explain this loop in plain language:
 9. Open `F3`, select the named workstream, and press `e` to edit its `notes.md`.
    Record decisions, useful commands, and next steps there. These notes persist
    independently of any one agent session and appear in the organizer's lower
-   context pane.
+   context pane. Press `R` after an external editor or agent changes those
+   files to refresh the preview.
+10. Select a durable session in `F3` and press `r` to give it a concise title.
+    Explain that saving an empty title clears it, and that titles never rename
+    the native provider conversation or tmux runtime.
 
 If this guide itself is running inside a Heikou session, start at step 7. Ask
 the user to detach, send `I made it back` with `Tab`, and reattach with `Enter`.
@@ -84,6 +88,8 @@ the dashboard with that session selected, then press `Enter` to attach.
 | Open workstreams and persistent notes | `F3` |
 | Resize snapshot or notes/files | `Ctrl-G`, then `Up` / `Down`; `r` resets and `Esc` exits |
 | Reorder a named workstream | In `F3`, press `Shift-Up` / `Shift-Down` |
+| Title or clear a durable session | Select it in `F3`, press `r`, then save a title or an empty value |
+| Refresh notes and artifacts | Select their workstream in `F3` and press `R` |
 | Start a session | Type a task, then `Enter` |
 | Send to the selected live session | Type a message, then `Tab` |
 | Attach to a selected session | `Enter` with an empty composer |
@@ -93,7 +99,8 @@ the dashboard with that session selected, then press `Enter` to attach.
 
 Mention the CLI equivalents when useful: `h quickstart`, `h list`,
 `h spawn -r RUNNER -C DIR -w WORKSTREAM LABEL`, `h send ID MESSAGE`,
-`h attach ID`, `h stop ID`, and `h help`.
+`h attach ID`, `h stop ID`, and `h help`. Add `--json` to `h list`, `h spawn`,
+or `h send` when a machine-readable result is useful.
 
 Do not stop, delete, archive, or move the user's sessions without explicit
 confirmation. Point to `h help` for the complete current key map if behavior

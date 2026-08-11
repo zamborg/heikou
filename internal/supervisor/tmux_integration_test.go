@@ -135,13 +135,15 @@ pollExit:
 	fields := strings.Split(metadata, "|")
 	switch {
 	case len(fields) == 3 && fields[0] == "7":
-		if finished.Status != heikou.StatusFailed || finished.ExitCode != 7 || finished.EndedAt.IsZero() {
+		if finished.Status != heikou.StatusFailed || finished.ExitCode == nil || *finished.ExitCode != 7 || finished.EndedAt.IsZero() {
 			t.Fatalf("exit metadata = %#v", finished)
 		}
 	case metadata == "||" && legacyDeadMetadata:
 		// tmux before 3.5 intermittently retains a dead pane without exit fields.
-		// The delivery assertions below remain valid; parseSession's explicit
-		// nonzero-exit projection is covered deterministically by unit tests.
+		// The pane is known dead, but its exit code and end time are not known.
+		if finished.Status != heikou.StatusExited || finished.ExitCode != nil || !finished.EndedAt.IsZero() {
+			t.Fatalf("omitted exit metadata was projected as known: %#v", finished)
+		}
 		t.Logf("%s omitted retained-pane exit metadata", tmuxVersion)
 	default:
 		t.Fatalf("raw exit metadata = %q on %s; session = %#v", metadata, tmuxVersion, finished)

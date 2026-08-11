@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/runner"
 )
 
@@ -59,10 +60,63 @@ func TestRuntimeMetadataParsesExitTime(t *testing.T) {
 	if got := session.Runtime(time.Unix(2000, 0)); got != 42*time.Second {
 		t.Fatalf("Runtime() = %s, want 42s", got)
 	}
-	if session.ExitCode != 7 || !strings.Contains(string(session.Status), "failed") {
+	if session.ExitCode == nil || *session.ExitCode != 7 || !strings.Contains(string(session.Status), "failed") {
 		t.Fatalf("unexpected failed session: %#v", session)
 	}
 }
+
+func TestParseSessionDistinguishesUnknownAndKnownExitCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		dead       string
+		rawCode    string
+		wantStatus heikou.Status
+		wantCode   *int
+	}{
+		{name: "live", dead: "0", rawCode: "", wantStatus: heikou.StatusLive},
+		{name: "live ignores stale code", dead: "0", rawCode: "7", wantStatus: heikou.StatusLive},
+		{name: "dead unknown", dead: "1", rawCode: "", wantStatus: heikou.StatusExited},
+		{name: "dead success", dead: "1", rawCode: "0", wantStatus: heikou.StatusExited, wantCode: exitCodePointer(0)},
+		{name: "dead failure", dead: "1", rawCode: "7", wantStatus: heikou.StatusFailed, wantCode: exitCodePointer(7)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fields := []string{
+				"h-test", "%1", "018f0000-0000-4000-8000-000000000000", "%1",
+				"", "codex", "1000", runner.Encode("task"), runner.Encode("/tmp/root"),
+				test.dead, test.rawCode, "1042", "1042", "/tmp/root", "codex", "0", "0", "0", "",
+			}
+			session, err := parseSession(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session.Status != test.wantStatus {
+				t.Fatalf("Status = %q, want %q", session.Status, test.wantStatus)
+			}
+			switch {
+			case test.wantCode == nil && session.ExitCode != nil:
+				t.Fatalf("ExitCode = %d, want unknown", *session.ExitCode)
+			case test.wantCode != nil && session.ExitCode == nil:
+				t.Fatalf("ExitCode = unknown, want %d", *test.wantCode)
+			case test.wantCode != nil && *session.ExitCode != *test.wantCode:
+				t.Fatalf("ExitCode = %d, want %d", *session.ExitCode, *test.wantCode)
+			}
+		})
+	}
+}
+
+func TestParseSessionRejectsMalformedNonemptyExitCode(t *testing.T) {
+	fields := []string{
+		"h-test", "%1", "018f0000-0000-4000-8000-000000000000", "%1",
+		"", "codex", "1000", runner.Encode("task"), runner.Encode("/tmp/root"),
+		"1", "not-a-number", "1042", "1042", "/tmp/root", "codex", "0", "0", "0", "",
+	}
+	if _, err := parseSession(fields); err == nil {
+		t.Fatal("parseSession accepted a malformed nonempty pane_dead_status")
+	}
+}
+
+func exitCodePointer(code int) *int { return &code }
 
 func TestParseSessionIgnoresMalformedOptionalUserMessage(t *testing.T) {
 	fields := []string{

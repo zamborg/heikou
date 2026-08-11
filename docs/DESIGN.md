@@ -73,16 +73,17 @@ runtime boundary below is intentionally independent of Bubble Tea.
 
 ```mermaid
 flowchart LR
-    UI["Bubble Tea dashboard"] --> C["workstream controller"]
-    CLI["h spawn / send / attach"] --> C
+    UI["Bubble Tea dashboard"] --> C["typed command/query controller"]
+    CLI["h CLI + JSON projection"] --> C
     CFG["one JSON settings module"] --> UI
-    CFG --> CLI
+    CFG --> R["trusted runner argv resolver"]
+    C --> R
     C --> DS["versioned atomic state"]
     C --> S["Supervisor interface"]
     S --> T["private tmux server (-L heikou)"]
     T --> P1["one session + pane"]
     T --> P2["one session + pane"]
-    P1 --> C["native codex"]
+    P1 --> CX["native codex"]
     P2 --> A["native claude"]
     T --> SH["native no-agent shell"]
     C -. "future typed caller" .-> M["manager agent"]
@@ -99,15 +100,37 @@ The package boundaries are:
 - `internal/workstream`: durable workstream/session/membership types and the
   versioned atomic store;
 - `internal/control`: the sole join between durable organization and current
-  runtime observation;
+  runtime observation, including the closed typed actor/scope command plane;
 - `internal/runner`: tiny Codex and Claude argv adapters plus the exec wrapper;
 - `internal/supervisor`: the tmux implementation;
-- `internal/ui`: the dashboard reducer and renderer; and
+- `internal/ui`: typed screen reducers, their shared overview read model, and
+  rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
 
 There is no Heikou daemon in V0. The private tmux server already provides the
 needed process lifetime and PTY ownership. It is isolated from the user's normal
 tmux server and configured with zero-session persistence.
+
+### Typed command plane
+
+Every current human mutation enters `Controller.Execute` as a closed Go action
+with an explicit actor and either installation or workstream scope. Convenience
+methods used by the TUI and CLI construct the same `local_human` command rather
+than bypassing that boundary. Structural validation runs before authorization,
+and the default authorizer admits only the local human. A session actor is a
+modeled future caller but is rejected until manager grants and their policy
+exist.
+
+This is deliberately a local in-process boundary, not yet a durable command
+queue. There are no manager grants, command IDs, approvals, events, leases, or
+outbox semantics in V0.3.4. Adding those later should strengthen this one path,
+not create a manager-only mutation API.
+
+Launch actions choose a backend, prompt, and root; they do not carry executable
+argv. Immediately before a native launch, the controller asks a trusted
+config-backed resolver for the configured argv prefix and passes that snapshot
+to `Supervisor.Start`. This keeps human and future authorized callers from
+substituting an arbitrary executable through the command payload.
 
 ## Session lifecycle
 
@@ -115,7 +138,7 @@ Before the first child starts, Heikou bootstraps the private server with:
 
 - `exit-empty off`, so the supervisor can exist with zero sessions;
 - global `remain-on-exit on`, so even an immediately failing runner leaves an
-  inspectable pane and exit code;
+  inspectable pane and, when tmux reports it, an exit code;
 - extended-key and passthrough support for modern agent TUIs;
 - a large history buffer and `window-size latest`; and
 - `Ctrl-\` as a root-table detach binding, in addition to normal `Ctrl-b d`.
@@ -123,7 +146,8 @@ Before the first child starts, Heikou bootstraps the private server with:
 The bootstrap marker is versioned so a later Heikou release can safely migrate
 an already-running server's configuration. Environment variable *names* are
 refreshed into tmux on each invocation; values are never embedded in a shell
-command. Provider executables are resolved to absolute paths before spawn.
+command. Provider executables are resolved through that trusted configuration
+boundary to absolute paths before spawn.
 Codex resolution also checks known macOS application-bundle locations when the
 bare `codex` name is absent from the login-shell `PATH`.
 
@@ -175,9 +199,14 @@ daemon-owned settings in this iteration.
 Workstream state is application data, not configuration. It normally lives at
 `~/.local/state/heikou/state.json`, independently of `internal/config`, with
 ordinary artifacts at `~/.local/share/heikou/workstreams/<id>/`. The JSON
-sidecar is versioned, mode `0600`, written by temp-file/fsync/rename, and guarded
-by an advisory lock. Storage remains behind a repository interface so a later
-SQLite implementation does not change the domain contract.
+sidecar remains versioned, mode `0600`, written by temp-file/fsync/rename, and
+guarded by an advisory lock. Storage remains behind a repository interface so a
+later SQLite implementation does not change the domain contract.
+State schema v2 adds the optional durable session title. The loader uses an
+explicit ordered v1-to-v2 migration: it strictly validates the claimed v1
+shape, migrates in memory, and atomically installs v2 while preserving the
+domain revision. Invalid states, future versions, and fields unknown to the
+claimed schema are rejected rather than rewritten.
 The workstream array order is also its durable display order; moving an active
 workstream swaps it with an active neighbor in one atomic state mutation and
 does not require a separate position field or schema migration.
@@ -186,8 +215,9 @@ The deliberately small durable model is:
 
 - `Workstream`: name, description, artifact directory, explicit roots,
   revision, timestamps, and optional archive time;
-- `SessionRecord`: caller-owned launch ID, backend, initial prompt/root,
-  creation time, launch intent/binding, and durable terminal outcome; and
+- `SessionRecord`: caller-owned launch ID, optional user-authored display title,
+  backend, initial prompt/root, creation time, launch intent/binding, and
+  durable terminal outcome; and
 - `Membership`: one optional active-workstream membership per durable session.
 
 Starting a session is ordered as follows:
@@ -210,7 +240,7 @@ The runtime layer derives only states tmux can prove:
 | --- | --- |
 | `live` | canonical pane process is alive |
 | `attached` | live session has one or more tmux clients |
-| `exited` | pane is dead with status 0 |
+| `exited` | pane is dead; status may be known zero or unavailable |
 | `failed` | pane is dead with nonzero status |
 
 `pane_dead_time` freezes runtime for exited sessions. `window_activity` provides
@@ -222,10 +252,16 @@ The controller conservatively joins those observations to durable records:
 | Durable/runtime evidence | Projected result |
 | --- | --- |
 | durable ID plus matching live pane | `live` |
-| durable ID plus matching dead retained pane | record `exited` and exit code |
+| durable ID plus matching dead retained pane and known status | record `exited` and exit code |
+| durable ID plus matching dead retained pane without status | project exited with unknown outcome; do not record success |
 | explicit stop whose tmux kill succeeds | record `stopped` |
 | durable ID, no pane, no terminal outcome | `unavailable` |
 | pane carrying an unknown durable ID | `orphaned` and excluded from membership |
+
+Tmux 3.3/3.4 can retain a dead pane while omitting `pane_dead_status`. That is
+positive evidence that the process ended, but not evidence of success: the
+runtime exit code remains unknown and reconciliation never substitutes zero or
+persists `OutcomeExited`.
 
 Absence never implies exit, and Heikou never automatically restarts an
 unavailable session. A positive matching pane can repair an ambiguous launch
@@ -298,12 +334,14 @@ target or the highlighted session selected.
 The lower pane is read-only context for the selected workstream; a selected
 session resolves to its parent workstream. It renders a bounded `notes.md`
 preview and shallow artifact-directory tree. This UI-owned read never mutates
-domain state, modifies files, or inspects any registered repository root. The
-organizer also supports create, rename, add/edit/remove-root, notes/files,
-archive, persistent `Shift-Up`/`Shift-Down` workstream ordering, and the same
-safe stop/delete lifecycle as the dashboard. Root edits affect future launch
-choices only; they never rewrite historical session roots or touch the
-filesystem.
+domain state, modifies files, or inspects any registered repository root.
+`R` explicitly refreshes the cached notes/artifact context after an editor or
+agent changes it. The organizer also supports create, contextual `r` to rename
+a workstream or edit/clear a durable session title, add/edit/remove-root,
+notes/files, archive, persistent `Shift-Up`/`Shift-Down` workstream ordering,
+and the same safe stop/delete lifecycle as the dashboard. Root edits affect
+future launch choices only; they never rewrite historical session roots or
+touch the filesystem.
 
 `Ctrl-G` enters a narrow resize mode on either primary surface. Up grows the
 lower snapshot or notes/files pane, Down gives those rows back to the session
@@ -318,11 +356,25 @@ content preserves its logical line breaks in the composer, and follow-up
 transport remains capable of arbitrary UTF-8.
 
 Rows stay intentionally sparse: process mark, runner, short ID, truthful state,
-most recent Heikou-routed user message (falling back to the initial task),
-optional root basename, and runtime. The recent-message preview is bounded tmux
-metadata for the lifetime of the retained runtime; Heikou does not claim to see
-text entered directly in an attached native TUI. Detailed path, activity, and
-the exact terminal tail sit below the list.
+durable user title (falling back to the initial task), optional secondary
+**latest via Heikou** text, optional root basename, and runtime. The recent
+message preview is bounded tmux metadata for the lifetime of the retained
+runtime; Heikou does not claim to see text entered directly in an attached
+native TUI. Detailed title, initial task, path, activity, and the exact terminal
+tail sit below the list.
+
+Dashboard and organizer navigation use one typed primary-screen state plus a
+typed help overlay and typed organizer edit modes. Both primary surfaces consume
+the same indexed overview read model for workstream/session relationships, then
+apply their own collapse and selection state. This removes parallel boolean
+screen combinations and prevents the two views from independently rebuilding
+membership projections.
+
+The CLI exposes the same read/action surface for local automation without
+claiming manager authority. `h list --json` returns workstreams and sessions,
+including titles, latest-via-Heikou text, availability, a stable process-state
+enum, and a nullable exit code; `h spawn --json` and `h send --json` return
+machine-readable action results.
 
 `F1`, or `?` when the composer is empty, opens a scrollable, viewport-safe help
 panel. It describes Heikou, reports the active composer bindings, and defines
@@ -346,7 +398,8 @@ tokens, cost, model, and notifications.
 
 Workstreams remain above `Supervisor`; tmux never learns their meaning. A future
 manager will issue the same typed controller actions rather than gaining a
-second execution path. Manager roles, grants, leases, approvals, event queues,
+second execution path. The current local-human authorizer rejects session
+actors. Manager roles, grants, leases, approvals, event queues,
 execution-attempt tables, and daemons are intentionally absent today.
 
 Editing isolation deserves its own explicit policy. A later spawn hook can
@@ -373,8 +426,13 @@ The automated suite covers:
 - paths containing spaces and Unicode;
 - literal prompts/messages containing shell-looking syntax;
 - strict JSON settings, context-aware composer bindings, and exact configured
-  argv transport;
+  argv transport through the trusted resolver;
+- strict v1-to-v2 state migration fixtures, durable title validation, and
+  unchanged domain revisions for schema-only migration;
+- closed command actor/scope validation and local-human authorization;
+- machine-readable list/spawn/send projections with optional known exit codes;
 - scrollable help/glossary and expandable organizer navigation;
+- typed screen/edit state and a shared dashboard/organizer overview model;
 - raw `no-agent` shells whose labels are never executed;
 - durable-before-launch ordering and failed-launch retention;
 - conservative reconciliation, staged stop/delete cleanup, and orphan

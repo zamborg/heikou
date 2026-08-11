@@ -7,11 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/zamborg/heikou/internal/heikou"
 )
 
-const StateVersion = 1
+const (
+	StateVersion         = 2
+	MaxSessionTitleRunes = 120
+)
 
 type LaunchStatus string
 
@@ -63,16 +68,19 @@ type Outcome struct {
 	RecordedAt time.Time   `json:"recorded_at"`
 }
 
-// SessionRecord owns launch identity and durable outcome only. Live process
-// observations remain exclusively in the Supervisor projection.
+// SessionRecord owns launch identity, optional user-authored display identity,
+// and durable outcome. Live process observations remain exclusively in the
+// Supervisor projection.
 type SessionRecord struct {
-	ID            string         `json:"id"`
-	Backend       heikou.Backend `json:"backend"`
-	InitialPrompt string         `json:"initial_prompt"`
-	InitialRoot   string         `json:"initial_root"`
-	CreatedAt     time.Time      `json:"created_at"`
-	Launch        LaunchIntent   `json:"launch"`
-	Outcome       *Outcome       `json:"outcome,omitempty"`
+	ID      string         `json:"id"`
+	Backend heikou.Backend `json:"backend"`
+	// Title never renames the tmux runtime or native provider conversation.
+	Title         string       `json:"title,omitempty"`
+	InitialPrompt string       `json:"initial_prompt"`
+	InitialRoot   string       `json:"initial_root"`
+	CreatedAt     time.Time    `json:"created_at"`
+	Launch        LaunchIntent `json:"launch"`
+	Outcome       *Outcome     `json:"outcome,omitempty"`
 }
 
 type Membership struct {
@@ -132,8 +140,15 @@ func (s State) WorkstreamForSession(sessionID string) string {
 }
 
 func (s State) Validate() error {
-	if s.Version != StateVersion {
-		return fmt.Errorf("unsupported state version %d (want %d)", s.Version, StateVersion)
+	return s.validateVersion(StateVersion)
+}
+
+// validateVersion validates the domain invariants shared by persisted schema
+// versions. Migration code uses it to prove an older state is valid before
+// applying the next ordered schema transition.
+func (s State) validateVersion(version int) error {
+	if s.Version != version {
+		return fmt.Errorf("state version %d does not match schema version %d", s.Version, version)
 	}
 	workstreams := make(map[string]Workstream, len(s.Workstreams))
 	for _, item := range s.Workstreams {
@@ -182,6 +197,11 @@ func (s State) Validate() error {
 		}
 		if strings.TrimSpace(item.InitialPrompt) == "" {
 			return fmt.Errorf("session %s has an empty initial prompt", item.ID)
+		}
+		if version >= 2 {
+			if err := validateSessionTitle(item.Title); err != nil {
+				return fmt.Errorf("session %s has an invalid title: %w", item.ID, err)
+			}
 		}
 		if !filepath.IsAbs(item.InitialRoot) || item.CreatedAt.IsZero() {
 			return fmt.Errorf("session %s has invalid launch metadata", item.ID)
@@ -238,6 +258,27 @@ func (s State) Validate() error {
 			return fmt.Errorf("membership for session %s is missing joined_at", item.SessionID)
 		}
 		memberships[item.SessionID] = struct{}{}
+	}
+	return nil
+}
+
+func validateSessionTitle(title string) error {
+	if title == "" {
+		return nil
+	}
+	if !utf8.ValidString(title) {
+		return errors.New("must be valid UTF-8")
+	}
+	if strings.TrimSpace(title) != title {
+		return errors.New("must not have leading or trailing whitespace")
+	}
+	if utf8.RuneCountInString(title) > MaxSessionTitleRunes {
+		return fmt.Errorf("must be at most %d characters", MaxSessionTitleRunes)
+	}
+	for _, r := range title {
+		if unicode.IsControl(r) {
+			return errors.New("must not contain control characters")
+		}
 	}
 	return nil
 }

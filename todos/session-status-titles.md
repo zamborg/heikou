@@ -1,11 +1,12 @@
 # Session status, titles, and recency
 
-Status: next after the current layout nits. Deliver titles and semantic status
-as separate slices.
+Status: durable titles shipped in V0.3.4. Semantic agent status and returned/seen
+attention state remain deferred until authoritative runner observations exist.
 
-Current stopgap: the tmux runtime retains a bounded preview of the latest user
-message successfully sent through Heikou, and the dashboard uses it instead of
-the initial prompt while that runtime is retained. This is intentionally not
+Current implementation: state schema v2 stores an optional user-owned session
+title. Rows lead with that title, falling back to the initial prompt, and use a
+bounded runtime preview of the latest user message successfully sent through
+Heikou as secondary **latest via Heikou** detail. This is intentionally not
 durable chat history; direct native-TUI input remains unknowable. The durable
 `SessionActivity` design below is still deferred.
 
@@ -57,20 +58,22 @@ signals into `working`, `ready`, `returned`, or `needs input`.
 
 ## Slice A · durable session titles
 
-Add an optional user-owned `Title` to `SessionRecord`. It is durable display
-identity, not process state, and must not rename the stable tmux session.
+Shipped in V0.3.4. Optional user-owned `SessionRecord.Title` is durable display
+identity, not process state, and never renames the stable tmux session or native
+provider conversation.
 
-This is the immediate next implementation:
+Completed:
 
-1. Add an explicit v1-to-v2 state migration with versioned JSON fixture tests.
-2. Add optional `SessionRecord.Title` and a controller `SetSessionTitle` action;
-   an empty value clears the title.
-3. Make `r` contextual in F3: rename a workstream header or edit a session
-   title.
-4. Render title first, falling back to a one-line initial prompt. Keep the
+1. [x] Add an explicit v1-to-v2 state migration with versioned JSON fixture
+   tests. Schema-only migration preserves the domain revision.
+2. [x] Add optional `SessionRecord.Title` and a controller
+   `SetSessionTitle` action; an empty value clears the title.
+3. [x] Make `r` contextual in F3: rename a workstream header or edit/clear a
+   session title.
+4. [x] Render title first, falling back to a one-line initial prompt. Keep the
    latest Heikou-routed message as secondary detail when space permits.
-5. Never rename the tmux session, Claude/Codex native session, or teach
-   `Supervisor` about presentation metadata.
+5. [x] Keep title metadata out of tmux names, native provider identity, and
+   `Supervisor` process truth.
 
 ## Deferred presentation activity
 
@@ -96,6 +99,9 @@ The initial prompt remains the fallback when no later preview exists.
 
 ## Dashboard and organizer UX
 
+The title-first layout and contextual organizer rename behavior below shipped
+in V0.3.4. The semantic state labels in the example remain the future target:
+
 A dashboard row should prioritize attention state and the user-owned title:
 
 ```text
@@ -113,28 +119,28 @@ keep status and title before runner details or the message preview.
 The details pane should show title, agent state, runtime activity, latest via
 Heikou, initial task, cwd, and the existing terminal preview.
 
-In the F3 organizer, make `r` mean **rename the selected noun**:
+In the F3 organizer, `r` now means **rename the selected noun**:
 
 - on a workstream header, rename the workstream;
 - on a session row, edit its title; and
 - saving an empty session title clears it and restores the prompt-derived label.
 
-Selecting a row never acknowledges a returned result. Attaching/opening it with
-Enter, or successfully sending the next message, does. A later explicit
-“open result” action may use the same acknowledgement path.
+Returned/seen acknowledgement is not implemented. When it is, selecting a row
+must not acknowledge a returned result. Attaching/opening it with Enter, or
+successfully sending the next message, can use the acknowledgement path.
 
-Do not add this table in the title slice. The retained tmux preview already
+The title slice did not add this table. The retained tmux preview already
 provides the cheap latest-message shim; durable recency and acknowledgement can
 wait until their lifecycle is needed.
 
 ## Slice B · real agent status
 
-Before adding semantic state, fix the known retained-pane ambiguity tracked in
-[`code-quality-audit.md`](code-quality-audit.md): an empty `pane_dead_status`
-must project as dead with an unknown outcome, never exit code zero, and must not
-produce a durable `OutcomeExited` record.
+The retained-pane prerequisite shipped in V0.3.4: an empty
+`pane_dead_status` now projects as dead with an unknown outcome, never exit code
+zero, and does not produce a durable `OutcomeExited` record. That removes a
+false-success signal but does not provide semantic agent status.
 
-Then run a focused signal probe. Claude exposes session listings and hooks;
+Next, run a focused signal probe. Claude exposes session listings and hooks;
 Codex app-server schemas expose turn and input state, but independently launched
 native TUIs are not automatically attached to that server. Prove inheritance,
 freshness, direct-TUI coverage, and stable completion identity before choosing
@@ -171,17 +177,17 @@ that its turn-start, turn-complete, and input-request signals are reliable.
 
 ## Acceptance order
 
-1. Ship Slice A by itself: migration, title set/clear, contextual F3 rename,
+1. [x] Ship Slice A: migration, title set/clear, contextual F3 rename,
    rows/details, and downgrade/invalid-state tests.
-2. Represent dead panes with unknown outcomes honestly and stop persisting
+2. [x] Represent dead panes with unknown outcomes honestly and stop persisting
    guessed success.
-3. Probe authoritative Claude and Codex signals in fixtures or opt-in smoke
+3. [ ] Probe authoritative Claude and Codex signals in fixtures or opt-in smoke
    tests.
-4. Add the observer interface with only `working`, `ready`, and `unknown` beside
-   the first reliable runner integration. Terminal outcomes always win.
-5. Add `needs_input` only after its signal is proven.
-6. Add durable `returned`/`seen` acknowledgement only when a backend supplies
-   stable completed-turn IDs.
+4. [ ] Add the observer interface with only `working`, `ready`, and `unknown`
+   beside the first reliable runner integration. Terminal outcomes always win.
+5. [ ] Add `needs_input` only after its signal is proven.
+6. [ ] Add durable `returned`/`seen` acknowledgement only when a backend
+   supplies stable completed-turn IDs.
 
-The title slice provides useful organization immediately. Semantic labels and
+The shipped title slice provides useful organization now. Semantic labels and
 the `returned` badge remain deferred until Heikou has sources it can trust.

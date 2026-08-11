@@ -13,8 +13,8 @@ daemon, manager agent, task graph, or replacement execution engine.
 
 - **Workstream** — a durable named grouping for roots, sessions, notes, and
   artifacts; it provides organization, not autonomy.
-- **Session** — a durable launch identity with its initial task, root, runner,
-  and outcome; it persists beyond its runtime.
+- **Session** — a durable launch identity with an optional user title, initial
+  task, root, runner, and outcome; it persists beyond its runtime.
 - **Runtime** — the tmux pane associated with a session and the source of its
   current process observations.
 - **Root** — an explicit launch working directory registered on a workstream.
@@ -34,7 +34,7 @@ are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
 bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.3
+go install github.com/zamborg/heikou/cmd/h@v0.3.4
 h doctor
 ```
 
@@ -94,6 +94,8 @@ The composer is always ready:
 | `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
 | `F3` | Open the expandable workstream/session organizer |
+| `r` in F3 | Rename a workstream, or edit/clear the selected durable session title |
+| `R` in F3 | Refresh the selected workstream's notes and artifact preview after external changes |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
 | `Ctrl-G` | Enter resize mode; `Up` grows the snapshot, `Down` shows more sessions, `r` resets, and `Esc` exits |
 | `Enter` on a workstream | Collapse or expand its sessions |
@@ -110,10 +112,11 @@ Ctrl-key fallbacks. If a terminal reports `Shift-Enter` as ordinary Enter, use
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Workstream Organizer**, **Settings**, or **Help**.
 
-Session rows show the most recent message successfully sent through Heikou for
-as long as the tmux runtime is retained, then fall back to the initial task.
-Text entered directly in an attached native terminal is not observable by this
-shim.
+Session rows lead with the durable user title when one is set, otherwise a
+one-line initial task. The most recent message successfully sent through
+Heikou appears as secondary **latest via Heikou** detail for as long as the
+tmux runtime is retained. Text entered directly in an attached native terminal
+is not observable by this shim.
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
@@ -130,9 +133,19 @@ h spawn -r codex -C ~/code/project -w "Core" "Implement the fix"
 h spawn -r no-agent -C ~/code/project "scratch shell"
 h list
 h send a1b2c3 "Also check whether the retry hides the root cause"
+h list --json
+h spawn --json -r codex -C ~/code/project "Machine-readable launch"
+h send --json a1b2c3 "Machine-readable delivery result"
 h attach a1b2c3
 h stop a1b2c3
 ```
+
+`h list --json` returns a machine-readable projection of workstreams and
+sessions, including durable/display titles, latest-via-Heikou text, runtime
+availability, a stable process-state enum, and an `exit_code` that is `null`
+when tmux cannot prove the outcome. `h spawn --json` and `h send --json` return
+machine-readable action results. These are local human CLI surfaces; they do
+not enable manager authority.
 
 ## Workstreams
 
@@ -163,22 +176,26 @@ resize mode, then use `Up` to grow notes/files, `Down` to expose more sessions,
 or `r` to restore automatic sizing. Dashboard snapshot sizing is adjusted the
 same way and remembered independently for the current process.
 Rendering context does not change domain state, inspect registered repository
-roots, or modify files. The organizer also creates or renames workstreams,
-opens notes/artifacts, and archives. On a named workstream, `p` adds a root,
-`Shift-P` edits the root selected with `Tab`, and `d` twice removes that root
-without deleting files or changing historical session records. Every
-workstream keeps at least one root.
+roots, or modify files. Press `R` after an editor, agent, or other process
+changes notes or artifacts to refresh that cached preview explicitly. The
+organizer also creates or renames workstreams, edits or clears a durable session
+title with contextual `r`, opens notes/artifacts, and archives. On a named
+workstream, `p` adds a root, `Shift-P` edits the root selected with `Tab`, and
+`d` twice removes that root without deleting files or changing historical
+session records. Every workstream keeps at least one root.
 Archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
 contain sessions launched from several registered roots, but membership never
 implicitly adds a root.
 
-Workstream state is separate from settings. It is stored in a versioned atomic
+Workstream state is separate from settings. It remains a versioned, locked JSON
 sidecar at `~/.local/state/heikou/state.json`; ordinary workstream files live in
 `~/.local/share/heikou/workstreams/<id>/`. State updates are serialized with a
 local advisory lock so CLI commands and the dashboard cannot overwrite one
-another.
+another. V0.3.4 uses state schema v2 for durable titles. A valid v1 file is
+validated, migrated, and atomically rewritten as v2 without manufacturing a
+domain revision; future or invalid versions are rejected.
 
 ## Configuration
 
@@ -203,9 +220,12 @@ there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
 ```
 
 Commands are argv arrays, not shell strings. Fixed flags are placed before the
-task arguments Heikou adds. The four `composer_keys` fields may be omitted to
-keep the defaults shown above; `new_session` and `send_message` apply when the
-composer has text, while `cycle_runner` and `cycle_root` apply when it is empty.
+task arguments Heikou adds. Callers select a runner, while the controller's
+trusted config-backed resolver loads and resolves its argv immediately before
+launch; a command action cannot supply arbitrary runner argv. The four
+`composer_keys` fields may be omitted to keep the defaults shown above;
+`new_session` and `send_message` apply when the composer has text, while
+`cycle_runner` and `cycle_root` apply when it is empty.
 `Shift-Enter` inserts a newline unless it is explicitly assigned to one of
 those actions.
 `Ctrl-G` is reserved for layout resize mode and cannot be assigned to a
@@ -235,8 +255,11 @@ An interactive agent process stays alive while it is thinking, waiting for
 input, or simply sitting at its prompt. Tmux cannot distinguish those semantic
 states. Heikou therefore reports process truth only: `live`, `attached`,
 `exited`, or `failed`, plus runtime, path, terminal activity, output preview,
-and exit code. It does not invent “completed” or “needs input” states, nor does
-it guess token usage.
+and an exit code when tmux supplies one. Some retained dead panes—especially on
+older tmux versions—omit `pane_dead_status`; Heikou reports their process as
+exited with an unknown outcome and never guesses zero or persists a successful
+exit. It does not invent “completed” or “needs input” states, nor does it guess
+token usage.
 
 Workstreams are organization, not autonomy. Heikou has no manager role,
 coordination grants, approvals, parent-child sessions, task graph, automatic
@@ -245,6 +268,12 @@ tmux-server loss, but a missing pane without an already recorded terminal
 outcome is reported as `unavailable`—never guessed to have exited. Running
 multiple editing agents in one checkout can still cause conflicts; the selected
 working directory remains intentionally prominent.
+
+All current human mutations pass through one closed typed command plane with
+an explicit actor and installation/workstream scope. Its active policy admits
+only the local human; session actors are rejected until real manager grants and
+authorization semantics exist. This is a future extension seam, not manager
+mode.
 
 See [the design document](docs/DESIGN.md) for the architecture, research notes,
 extension seams, and next steps. Future product ideas live separately in the

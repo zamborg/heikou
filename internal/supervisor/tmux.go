@@ -494,17 +494,24 @@ func parseSession(fields []string) (heikou.Session, error) {
 	// This option is optional presentation metadata. A malformed value must not
 	// hide an otherwise valid runtime from discovery.
 	lastUserMessage, _ := decodeMetadata(fields[18])
-	exitCode, _ := strconv.Atoi(fields[10])
 	deadUnix, _ := strconv.ParseInt(fields[11], 10, 64)
 	activityUnix, _ := strconv.ParseInt(fields[12], 10, 64)
 	attached, _ := strconv.Atoi(fields[15])
 	paneModeCount, _ := strconv.Atoi(fields[16])
 
 	status := heikou.StatusLive
+	var exitCode *int
 	if fields[9] == "1" {
 		status = heikou.StatusExited
-		if exitCode != 0 {
-			status = heikou.StatusFailed
+		if fields[10] != "" {
+			code, err := strconv.Atoi(fields[10])
+			if err != nil {
+				return heikou.Session{}, fmt.Errorf("parse pane exit status %q: %w", fields[10], err)
+			}
+			exitCode = &code
+			if code != 0 {
+				status = heikou.StatusFailed
+			}
 		}
 	}
 	return heikou.Session{

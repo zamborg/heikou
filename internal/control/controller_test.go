@@ -269,9 +269,10 @@ func TestReconciliationIsConservativeAndFindsOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	exitCode := 7
 	supervisor := &fakeSupervisor{sessions: []heikou.Session{
 		{ID: ids[0], Name: "h-" + ids[0], Backend: heikou.BackendCodex, Status: heikou.StatusLive, StartedAt: now.Add(-time.Minute)},
-		{ID: ids[1], Name: "h-" + ids[1], Backend: heikou.BackendCodex, Status: heikou.StatusFailed, ExitCode: 7, StartedAt: now.Add(-time.Minute), EndedAt: now},
+		{ID: ids[1], Name: "h-" + ids[1], Backend: heikou.BackendCodex, Status: heikou.StatusFailed, ExitCode: &exitCode, StartedAt: now.Add(-time.Minute), EndedAt: now},
 		{ID: ids[3], Name: "h-" + ids[3], Backend: heikou.BackendClaude, Status: heikou.StatusLive, StartedAt: now},
 	}}
 	controller := New(supervisor, repository, "heikou-test")
@@ -309,6 +310,113 @@ func TestReconciliationIsConservativeAndFindsOrphans(t *testing.T) {
 	state, _ = repository.Load(context.Background())
 	if state.Revision != revision {
 		t.Fatalf("idempotent reconciliation advanced revision from %d to %d", revision, state.Revision)
+	}
+}
+
+func TestDeadRuntimeWithUnknownExitCodeNeverBecomesGuessedSuccess(t *testing.T) {
+	root := t.TempDir()
+	repository := newMemoryRepository(root)
+	now := time.Unix(1_700_000_150, 0).UTC()
+	id := "018f0000-0000-4000-8000-000000000025"
+	_, err := repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+		state.Sessions = append(state.Sessions, workstream.SessionRecord{
+			ID: id, Backend: heikou.BackendCodex, InitialPrompt: "unknown outcome",
+			InitialRoot: root, CreatedAt: now.Add(-time.Minute),
+			Launch:  workstream.LaunchIntent{Status: workstream.LaunchPending},
+			Outcome: &workstream.Outcome{Kind: workstream.OutcomeStartFailed, Error: "ambiguous launch", RecordedAt: now.Add(-30 * time.Second)},
+		})
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &fakeSupervisor{sessions: []heikou.Session{{
+		ID: id, Name: "h-" + id, Backend: heikou.BackendCodex,
+		Status: heikou.StatusExited, ExitCode: nil,
+		StartedAt: now.Add(-time.Minute),
+	}}}
+	controller := New(supervisor, repository, "heikou-test")
+	controller.now = func() time.Time { return now }
+
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Sessions) != 1 || snapshot.Sessions[0].Status != StatusExited {
+		t.Fatalf("runtime projection = %#v, want retained exited pane", snapshot.Sessions)
+	}
+	if _, known := snapshot.Sessions[0].ExitCode(); known {
+		t.Fatal("unknown tmux exit status was presented as known")
+	}
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := state.Session(id)
+	if record.Outcome != nil {
+		t.Fatalf("unknown exit persisted terminal outcome: %#v", record.Outcome)
+	}
+	if record.Launch.Status != workstream.LaunchStarted || record.Launch.Binding == nil {
+		t.Fatalf("positive runtime evidence did not repair launch binding: %#v", record.Launch)
+	}
+
+	supervisor.sessions = nil
+	snapshot, err = controller.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Sessions[0].Status != StatusUnavailable || snapshot.Sessions[0].Record.Outcome != nil {
+		t.Fatalf("absent unknown outcome = %#v, want unavailable without outcome", snapshot.Sessions[0])
+	}
+}
+
+func TestSetSessionTitleNormalizesClearsAndPreservesRuntimeIdentity(t *testing.T) {
+	root := t.TempDir()
+	repository := newMemoryRepository(root)
+	id := "018f0000-0000-4000-8000-000000000026"
+	_, err := repository.Mutate(context.Background(), func(state *workstream.State) (bool, error) {
+		state.Sessions = append(state.Sessions, workstream.SessionRecord{
+			ID: id, Backend: heikou.BackendClaude, InitialPrompt: "immutable launch prompt",
+			InitialRoot: root, CreatedAt: time.Now(),
+			Launch: workstream.LaunchIntent{Status: workstream.LaunchStarted, Binding: &workstream.RuntimeBinding{
+				Driver: "tmux", Socket: "heikou-test", SessionName: "h-" + id, BoundAt: time.Now(),
+			}},
+		})
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := New(&fakeSupervisor{}, repository, "heikou-test")
+	if err := controller.SetSessionTitle(context.Background(), id, "  Release\n  Linux\tbuild  "); err != nil {
+		t.Fatal(err)
+	}
+	state, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := state.Session(id)
+	if record.Title != "Release Linux build" {
+		t.Fatalf("title = %q, want canonical display title", record.Title)
+	}
+	if record.InitialPrompt != "immutable launch prompt" || record.Launch.Binding.SessionName != "h-"+id {
+		t.Fatalf("title changed launch identity: %#v", record)
+	}
+	revision := state.Revision
+	if err := controller.SetSessionTitle(context.Background(), id, "Release Linux build"); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = repository.Load(context.Background())
+	if state.Revision != revision {
+		t.Fatalf("no-op title write advanced revision from %d to %d", revision, state.Revision)
+	}
+	if err := controller.SetSessionTitle(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = repository.Load(context.Background())
+	record, _ = state.Session(id)
+	if record.Title != "" || record.InitialPrompt != "immutable launch prompt" {
+		t.Fatalf("clear title changed durable launch identity: %#v", record)
 	}
 }
 

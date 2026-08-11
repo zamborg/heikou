@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,7 +28,7 @@ import (
 	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.3.3"
+var version = "0.3.4"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -193,7 +194,6 @@ func runQuickstart(args []string) error {
 		Backend: backend,
 		Prompt:  quickstartPrompt(),
 		Root:    absRoot,
-		Command: settings.Command(backend),
 	})
 	cancelStart()
 	if err != nil {
@@ -263,6 +263,7 @@ func runSpawn(args []string) error {
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	workstreamQuery := flags.String("workstream", "", "workstream name or id (default: Ungrouped)")
 	flags.StringVar(workstreamQuery, "w", *workstreamQuery, "workstream name or id (default: Ungrouped)")
+	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -292,7 +293,7 @@ func runSpawn(args []string) error {
 		}
 	}
 	session, err := controller.Start(ctx, control.StartRequest{
-		Backend: backend, Prompt: prompt, Root: *root, Command: settings.Command(backend), WorkstreamID: workstreamID,
+		Backend: backend, Prompt: prompt, Root: *root, WorkstreamID: workstreamID,
 	})
 	if err != nil {
 		return err
@@ -301,6 +302,12 @@ func runSpawn(args []string) error {
 	if session.Runtime != nil {
 		name = session.Runtime.Name
 	}
+	if *jsonOutput {
+		return writeJSON(os.Stdout, map[string]any{
+			"id": session.ID, "runner": session.Backend, "state": cliStatus(session),
+			"workstream_id": session.WorkstreamID, "runtime_name": name, "root": session.Root,
+		})
+	}
 	fmt.Printf("started %s %s (%s)\n", session.Backend, shortID(session.ID), name)
 	return nil
 }
@@ -308,6 +315,7 @@ func runSpawn(args []string) error {
 func runList(args []string) error {
 	flags := newFlagSet("h list")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
+	jsonOutput := flags.Bool("json", false, "write a machine-readable snapshot")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -324,17 +332,20 @@ func runList(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *jsonOutput {
+		return writeJSON(os.Stdout, newCLISnapshot(snapshot))
+	}
 	if len(snapshot.Sessions) == 0 && len(snapshot.Orphans) == 0 {
 		fmt.Println("no heikou sessions")
 		return nil
 	}
 	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "ID\tRUNNER\tSTATE\tWORKSTREAM\tRUNTIME\tROOT\tTASK")
+	fmt.Fprintln(writer, "ID\tRUNNER\tSTATE\tWORKSTREAM\tRUNTIME\tROOT\tSESSION")
 	all := append(append([]control.Session(nil), snapshot.Sessions...), snapshot.Orphans...)
 	for _, session := range all {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			shortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
-			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), oneLine(session.DisplayMessage()))
+			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), cliSessionSummary(session))
 	}
 	return writer.Flush()
 }
@@ -342,6 +353,7 @@ func runList(args []string) error {
 func runSend(args []string) error {
 	flags := newFlagSet("h send")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
+	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -360,6 +372,9 @@ func runSend(args []string) error {
 	}
 	if err := controller.Send(ctx, session.ID, strings.Join(flags.Args()[1:], " ")); err != nil {
 		return err
+	}
+	if *jsonOutput {
+		return writeJSON(os.Stdout, map[string]any{"session_id": session.ID, "status": "sent"})
 	}
 	fmt.Println("sent to", shortID(session.ID))
 	return nil
@@ -523,10 +538,10 @@ Usage:
                                         open the dashboard
   h quickstart [-r claude|codex] [-C DIR]
                                         launch and attach an agent-guided tour
-  h spawn [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL
+  h spawn [--json] [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL
                                         start a session without the dashboard
-  h list                               list sessions
-  h send ID MESSAGE                    send a follow-up through tmux
+  h list [--json]                      list sessions
+  h send [--json] ID MESSAGE           send a follow-up through tmux
   h attach ID                          enter the native agent terminal
   h stop ID                            stop runtime; keep the durable record
   h doctor                             check local dependencies
@@ -547,6 +562,8 @@ Dashboard:
   Ctrl-G            resize snapshot/context with Up/Down; r resets
   Empty Enter       collapse a workstream or attach a session
   Organizer Shift-↑/↓ reorder a named workstream persistently
+  Organizer r       rename a workstream or edit/clear a session title
+  Organizer R       refresh selected notes and artifact context
   Organizer m       mark a session; Enter/m on a workstream moves it
   Organizer u/Space use a workstream or select a session and return
   Ctrl-b d          detach the native terminal back to heikou
@@ -589,7 +606,21 @@ func newController(socket string) (*supervisor.Tmux, *control.Controller, workst
 	if err != nil {
 		return nil, nil, workstream.FileStore{}, err
 	}
-	return manager, control.New(manager, stateStore, socket), stateStore, nil
+	configStore, err := config.DefaultStore()
+	if err != nil {
+		return nil, nil, workstream.FileStore{}, err
+	}
+	resolver := control.ResolveCommandFunc(func(_ context.Context, backend heikou.Backend) ([]string, error) {
+		if backend == heikou.BackendNoAgent {
+			return nil, nil
+		}
+		settings, err := configStore.Load()
+		if err != nil {
+			return nil, err
+		}
+		return runner.ResolveCommand(backend, settings.Command(backend))
+	})
+	return manager, control.New(manager, stateStore, socket, control.WithCommandResolver(resolver)), stateStore, nil
 }
 
 func resolveWorkstream(snapshot control.Snapshot, query string) (string, error) {
@@ -612,13 +643,114 @@ func resolveWorkstream(snapshot control.Snapshot, query string) (string, error) 
 	return matches[0].ID, nil
 }
 
+type cliSnapshotJSON struct {
+	Revision    uint64              `json:"revision"`
+	Workstreams []cliWorkstreamJSON `json:"workstreams"`
+	Sessions    []cliSessionJSON    `json:"sessions"`
+}
+
+type cliWorkstreamJSON struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	ArtifactDir string   `json:"artifact_dir"`
+	Roots       []string `json:"roots"`
+	Revision    uint64   `json:"revision"`
+}
+
+type cliSessionJSON struct {
+	ID              string         `json:"id"`
+	Runner          heikou.Backend `json:"runner"`
+	State           string         `json:"state"`
+	Title           string         `json:"title,omitempty"`
+	DisplayTitle    string         `json:"display_title"`
+	InitialPrompt   string         `json:"initial_prompt"`
+	LatestViaHeikou string         `json:"latest_via_heikou,omitempty"`
+	WorkstreamID    string         `json:"workstream_id,omitempty"`
+	Workstream      string         `json:"workstream"`
+	Root            string         `json:"root"`
+	Available       bool           `json:"available"`
+	Alive           bool           `json:"alive"`
+	Orphaned        bool           `json:"orphaned"`
+	ExitCode        *int           `json:"exit_code"`
+	RuntimeSeconds  int64          `json:"runtime_seconds"`
+	LastActivityAt  *time.Time     `json:"last_activity_at,omitempty"`
+}
+
+func newCLISnapshot(snapshot control.Snapshot) cliSnapshotJSON {
+	result := cliSnapshotJSON{
+		Revision:    snapshot.Revision,
+		Workstreams: make([]cliWorkstreamJSON, 0, len(snapshot.Workstreams)),
+		Sessions:    make([]cliSessionJSON, 0, len(snapshot.Sessions)+len(snapshot.Orphans)),
+	}
+	for _, item := range snapshot.Workstreams {
+		result.Workstreams = append(result.Workstreams, cliWorkstreamJSON{
+			ID: item.ID, Name: item.Name, Description: item.Description,
+			ArtifactDir: item.ArtifactDir, Roots: append([]string(nil), item.Roots...), Revision: item.Revision,
+		})
+	}
+	all := append(append([]control.Session(nil), snapshot.Sessions...), snapshot.Orphans...)
+	for _, session := range all {
+		var exitCode *int
+		if code, known := session.ExitCode(); known {
+			value := code
+			exitCode = &value
+		}
+		title := strings.TrimSpace(session.Record.Title)
+		displayTitle := title
+		if displayTitle == "" {
+			displayTitle = oneLine(session.Prompt)
+		}
+		var lastActivityAt *time.Time
+		if observed := session.LastActivity(); !observed.IsZero() {
+			value := observed
+			lastActivityAt = &value
+		}
+		result.Sessions = append(result.Sessions, cliSessionJSON{
+			ID: session.ID, Runner: session.Backend, State: string(session.Status),
+			Title: title, DisplayTitle: displayTitle, InitialPrompt: session.Prompt,
+			LatestViaHeikou: session.LastUserMessage,
+			WorkstreamID:    session.WorkstreamID, Workstream: sessionGroup(snapshot, session),
+			Root: session.Root, Available: session.Available(), Alive: session.Alive(), Orphaned: session.Orphaned,
+			ExitCode: exitCode, RuntimeSeconds: int64(session.RuntimeDuration(time.Now()).Seconds()),
+			LastActivityAt: lastActivityAt,
+		})
+	}
+	return result
+}
+
+func writeJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Errorf("write JSON: %w", err)
+	}
+	return nil
+}
+
 func cliStatus(session control.Session) string {
 	if session.Status == control.StatusExited {
-		if code, ok := session.ExitCode(); ok && code != 0 {
-			return fmt.Sprintf("failed(%d)", code)
+		if code, ok := session.ExitCode(); ok {
+			if code != 0 {
+				return fmt.Sprintf("failed(%d)", code)
+			}
+		} else {
+			return "exited(?)"
 		}
 	}
 	return string(session.Status)
+}
+
+func cliSessionSummary(session control.Session) string {
+	title := strings.TrimSpace(session.Record.Title)
+	if title == "" {
+		title = session.Prompt
+	}
+	title = oneLine(title)
+	if latest := oneLine(session.LastUserMessage); latest != "" && latest != title {
+		return title + " · latest: " + latest
+	}
+	return title
 }
 
 func sessionGroup(snapshot control.Snapshot, session control.Session) string {

@@ -81,6 +81,9 @@ func (m *Model) acceptArtifactContext(message artifactContextMsg) {
 	}
 	m.organizerContext.loadingKey = ""
 	m.organizerContext.snapshot = message.snapshot
+	if m.notice == "refreshing workstream context…" {
+		m.notice = "workstream context refreshed"
+	}
 }
 
 func (m Model) renderOrganizerContext(height int) []string {
