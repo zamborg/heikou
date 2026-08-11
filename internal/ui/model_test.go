@@ -38,6 +38,8 @@ type fakeController struct {
 	reorderedWorkstream    string
 	reorderedDelta         int
 	reorderNoop            bool
+	titledSession          string
+	titleValue             string
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
@@ -70,6 +72,10 @@ func (f *fakeController) CreateWorkstream(context.Context, string, string, []str
 	return workstream.Workstream{}, nil
 }
 func (f *fakeController) RenameWorkstream(context.Context, string, string) error { return nil }
+func (f *fakeController) SetSessionTitle(_ context.Context, id, title string) error {
+	f.titledSession, f.titleValue = id, title
+	return nil
+}
 func (f *fakeController) ReorderWorkstream(_ context.Context, id string, delta int) (bool, error) {
 	f.reorderedWorkstream, f.reorderedDelta = id, delta
 	return !f.reorderNoop, nil
@@ -101,7 +107,7 @@ func TestViewStaysWithinTerminalAtCommonSizes(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{40, 15}, {80, 24}, {120, 40}} {
 		model, _ := newTestModel("/tmp/a directory with spaces", heikou.BackendCodex)
 		model.width, model.height = size.width, size.height
-		model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}, StatePath: "/tmp/heikou-state.json"}
+		model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}, StatePath: "/tmp/heikou-state.json"})
 		model.selected = sessionRowKey(session)
 		model.restoreSelection()
 		model.previewID = session.ID
@@ -122,7 +128,7 @@ func TestNewWithSelectedSessionRestoresGuideAfterInitialSnapshot(t *testing.T) {
 	session := testDurableSession("018f0000-0000-4000-8000-000000000041", "", heikou.BackendClaude, "guided tour", "/tmp", time.Now())
 	controller := &fakeController{snapshot: control.Snapshot{Sessions: []control.Session{session}, StatePath: "/tmp/heikou-test-state.json"}}
 	model := NewWithSelectedSession(controller, "/tmp", heikou.BackendClaude, config.Store{}, config.Default(), session.ID)
-	model.snapshot = controller.snapshot
+	model.setSnapshot(controller.snapshot)
 	model.restoreSelection()
 	selected, ok := model.selectedSession()
 	if !ok || selected.ID != session.ID {
@@ -144,6 +150,52 @@ func TestSessionRowKeepsRuntimeVisibleAtEightyColumns(t *testing.T) {
 	}
 }
 
+func TestNarrowSessionRowsPreserveStatusAndTitleBeforeMetadata(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000003", "", heikou.BackendCodex, "initial task", "/tmp", time.Now())
+	session.Record.Title = "Release Linux build"
+
+	model.width = 40
+	for name, row := range map[string]string{
+		"dashboard": model.renderSessionRow(session, false),
+		"organizer": model.renderOrganizerSessionRow(session, false, false),
+	} {
+		plain := ansi.Strip(row)
+		if width := ansi.StringWidth(row); width != model.width {
+			t.Errorf("%s row width = %d, want %d: %q", name, width, model.width, plain)
+		}
+		if !strings.Contains(plain, "live") || !strings.Contains(plain, session.Record.Title) {
+			t.Errorf("%s row lost status or title at 40 columns: %q", name, plain)
+		}
+		if strings.Contains(plain, "codex") || strings.Contains(plain, shortID(session.ID)) {
+			t.Errorf("%s row retained lower-priority metadata ahead of the title: %q", name, plain)
+		}
+	}
+}
+
+func TestMediumSessionRowsRestoreRunnerWithoutCrowdingOutTitle(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width = sessionRowRunnerMinWidth
+	session := testDurableSession("018f0000-0000-4000-8000-000000000003", "", heikou.BackendCodex, "initial task", "/tmp", time.Now())
+	session.Record.Title = "Release Linux build"
+
+	for name, row := range map[string]string{
+		"dashboard": model.renderSessionRow(session, false),
+		"organizer": model.renderOrganizerSessionRow(session, false, false),
+	} {
+		plain := ansi.Strip(row)
+		if width := ansi.StringWidth(row); width != model.width {
+			t.Errorf("%s row width = %d, want %d: %q", name, width, model.width, plain)
+		}
+		if !strings.Contains(plain, "codex") || !strings.Contains(plain, session.Record.Title) {
+			t.Errorf("%s row did not restore runner alongside the title: %q", name, plain)
+		}
+		if strings.Contains(plain, shortID(session.ID)) {
+			t.Errorf("%s row restored the short ID before the rich-layout threshold: %q", name, plain)
+		}
+	}
+}
+
 func TestSelectedRowHasExplicitMarkerAndContinuousWidth(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	model.width = 80
@@ -161,27 +213,56 @@ func TestSelectedRowHasExplicitMarkerAndContinuousWidth(t *testing.T) {
 	}
 }
 
-func TestSessionViewsPreferLatestMessageSentThroughHeikou(t *testing.T) {
+func TestSessionViewsRenderTitleBeforeLatestMessageSentThroughHeikou(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
-	model.width, model.height = 100, 30
+	model.width, model.height = 160, 30
 	session := testDurableSession("018f0000-0000-4000-8000-000000000005", "", heikou.BackendCodex, "initial task", "/tmp", time.Now())
+	session.Record.Title = "release linux build"
 	session.LastUserMessage = "most recent follow-up"
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 	model.previewID = session.ID
 
 	row := ansi.Strip(model.renderSessionRow(session, false))
-	if !strings.Contains(row, "most recent follow-up") || strings.Contains(row, "initial task") {
-		t.Fatalf("dashboard row did not prefer latest message: %q", row)
+	if title, latest := strings.Index(row, "release linux build"), strings.Index(row, "latest via Heikou · most recent follow-up"); title < 0 || latest <= title {
+		t.Fatalf("dashboard row did not render title before latest detail: %q", row)
 	}
 	details := ansi.Strip(model.renderDetails())
-	if !strings.Contains(details, "you") || !strings.Contains(details, "most recent follow-up") {
-		t.Fatalf("details did not label latest user message: %q", details)
+	if !strings.Contains(details, "title release linux build") || !strings.Contains(details, "latest via Heikou · most recent follow-up") ||
+		!strings.Contains(details, "initial task · initial task") {
+		t.Fatalf("details did not show title and latest user message: %q", details)
 	}
 	organizer := ansi.Strip(model.renderOrganizerSessionRow(session, false, false))
-	if !strings.Contains(organizer, "most recent follow-up") {
-		t.Fatalf("organizer row did not prefer latest message: %q", organizer)
+	if title, latest := strings.Index(organizer, "release linux build"), strings.Index(organizer, "latest via Heikou · most recent follow-up"); title < 0 || latest <= title {
+		t.Fatalf("organizer row did not render title before latest detail: %q", organizer)
+	}
+}
+
+func TestStatusLabelDistinguishesUnknownExitFromKnownSuccess(t *testing.T) {
+	zero, seven := 0, 7
+	tests := []struct {
+		name string
+		code *int
+		want string
+	}{
+		{name: "unknown", code: nil, want: "exited ?"},
+		{name: "success", code: &zero, want: "exited"},
+		{name: "failure", code: &seven, want: "failed 7"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := heikou.Session{Status: heikou.StatusExited, ExitCode: test.code}
+			if test.code != nil && *test.code != 0 {
+				runtime.Status = heikou.StatusFailed
+			}
+			session := control.Session{Status: control.StatusExited, Runtime: &runtime}
+			_, got := statusLabel(session)
+			if got != test.want {
+				t.Fatalf("statusLabel() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -192,7 +273,7 @@ func TestRowsGroupDurableSessionsAndKeepOrphansSeparate(t *testing.T) {
 	member := testDurableSession("018f0000-0000-4000-8000-000000000011", container.ID, heikou.BackendCodex, "member", "/tmp", now)
 	ungrouped := testDurableSession("018f0000-0000-4000-8000-000000000012", "", heikou.BackendClaude, "inbox", "/tmp", now)
 	orphan := testOrphan("018f0000-0000-4000-8000-000000000013", "/tmp", now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member, ungrouped}, Orphans: []control.Session{orphan}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member, ungrouped}, Orphans: []control.Session{orphan}})
 	rows := model.rows()
 	want := []string{workstreamRowKey(container.ID), sessionRowKey(member), ungroupedKey, sessionRowKey(ungrouped), orphanedKey, sessionRowKey(orphan)}
 	if len(rows) != len(want) {
@@ -214,6 +295,7 @@ func TestRowsGroupDurableSessionsAndKeepOrphansSeparate(t *testing.T) {
 func TestInitialSelectionRemainsUngroupedForBackwardCompatibleLaunches(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	model.snapshot.Workstreams = []workstream.Workstream{testWorkstream("018f0000-0000-4000-8000-000000000014", "Core", []string{"/tmp/core"}, time.Now())}
+	model.setSnapshot(model.snapshot)
 	model.restoreSelection()
 	if model.selected != ungroupedKey || model.launchWorkstreamID() != "" || model.launchRoot() != "/tmp" {
 		t.Fatalf("initial launch context = selected %q workstream %q root %q", model.selected, model.launchWorkstreamID(), model.launchRoot())
@@ -225,7 +307,7 @@ func TestSelectedWorkstreamAndRootDriveLaunch(t *testing.T) {
 	model.width, model.height = 100, 30
 	now := time.Now()
 	container := testWorkstream("018f0000-0000-4000-8000-000000000020", "Multi repo", []string{"/tmp/api", "/tmp/web"}, now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}})
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
@@ -253,6 +335,7 @@ func TestEmptyEnterOnHeaderCollapsesInsteadOfAttaching(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000030", "Core", []string{"/tmp"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -277,16 +360,16 @@ func TestSettingsShortcutDoesNotStealPrintableS(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 's', Text: "s"}))
 	model = updated.(Model)
-	if model.settingsOpen || model.inputValue() != "s" {
-		t.Fatalf("printable s changed mode/input: open=%v input=%q", model.settingsOpen, model.inputValue())
+	if model.screen == screenSettings || model.inputValue() != "s" {
+		t.Fatalf("printable s changed mode/input: screen=%v input=%q", model.screen, model.inputValue())
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 's', Mod: tea.ModCtrl}))
 	model = updated.(Model)
-	if !model.settingsOpen {
+	if model.screen != screenSettings {
 		t.Fatal("Ctrl-S did not open settings")
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if updated.(Model).settingsOpen {
+	if updated.(Model).screen != screenDashboard {
 		t.Fatal("Escape did not return to dashboard")
 	}
 }
@@ -295,17 +378,103 @@ func TestF3OpensOrganizerWithoutStealingPrintableInput(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF3}))
 	model = updated.(Model)
-	if !model.organizerOpen {
+	if model.screen != screenOrganizer {
 		t.Fatal("F3 did not open workstreams")
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
 	model = updated.(Model)
-	if model.organizerEdit != "create" {
+	if model.organizerEdit != organizerEditCreate {
 		t.Fatal("n did not begin workstream creation")
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'N', Text: "N", Mod: tea.ModShift}))
 	if updated.(Model).organizerValue() != "N" {
 		t.Fatal("organizer editor did not accept text")
+	}
+}
+
+func TestTypedScreenAndHelpOverlayReturnToUnderlyingScreen(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 's', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if model.screen != screenSettings || model.overlay != overlayNone {
+		t.Fatalf("settings navigation = screen %v overlay %v", model.screen, model.overlay)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
+	model = updated.(Model)
+	if model.screen != screenSettings || model.overlay != overlayHelp {
+		t.Fatalf("settings help = screen %v overlay %v", model.screen, model.overlay)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	if model.screen != screenSettings || model.overlay != overlayNone {
+		t.Fatalf("closing settings help = screen %v overlay %v", model.screen, model.overlay)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF3}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	if model.screen != screenOrganizer || model.overlay != overlayNone {
+		t.Fatalf("closing organizer help = screen %v overlay %v", model.screen, model.overlay)
+	}
+}
+
+func TestOrganizerRenameKeyEditsAndClearsSessionTitle(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-000000000020", "Core", []string{"/tmp"}, now)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000021", container.ID, heikou.BackendCodex, "initial task", "/tmp", now)
+	session.Record.Title = "Old title"
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	model.openOrganizer()
+	model.selectOrganizerKey(sessionRowKey(session))
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	model = updated.(Model)
+	if model.organizerEdit != organizerEditSessionTitle || model.organizerValue() != "Old title" {
+		t.Fatalf("session title edit = mode %v value %q", model.organizerEdit, model.organizerValue())
+	}
+	model.organizerInput = splitGraphemes("Release Linux build")
+	model.organizerInputCursor = len(model.organizerInput)
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("saving a session title did not produce a command")
+	}
+	message := cmd()
+	if controller.titledSession != session.ID || controller.titleValue != "Release Linux build" {
+		t.Fatalf("title command = session %q title %q", controller.titledSession, controller.titleValue)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+
+	session.Record.Title = "Release Linux build"
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
+	model.selectOrganizerKey(sessionRowKey(session))
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	model = updated.(Model)
+	model.organizerInput, model.organizerInputCursor = nil, 0
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("clearing a session title did not produce a command")
+	}
+	_ = updated
+	_ = cmd()
+	if controller.titledSession != session.ID || controller.titleValue != "" {
+		t.Fatalf("clear title command = session %q title %q", controller.titledSession, controller.titleValue)
+	}
+
+	model.organizerEdit = organizerEditNone
+	model.selectOrganizerKey(workstreamRowKey(container.ID))
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	if updated.(Model).organizerEdit != organizerEditWorkstreamName {
+		t.Fatal("r on a workstream did not retain workstream rename behavior")
 	}
 }
 
@@ -316,7 +485,7 @@ func TestOrganizerShowsExpandableSessionTree(t *testing.T) {
 	member := testDurableSession("018f0000-0000-4000-8000-000000000035", container.ID, heikou.BackendCodex, "member task", "/tmp/core", now)
 	ungrouped := testDurableSession("018f0000-0000-4000-8000-000000000036", "", heikou.BackendClaude, "inbox task", "/tmp", now)
 	orphan := testOrphan("018f0000-0000-4000-8000-000000000037", "/tmp", now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member, ungrouped}, Orphans: []control.Session{orphan}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member, ungrouped}, Orphans: []control.Session{orphan}})
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -352,6 +521,7 @@ func TestOrganizerReordersOnlyNamedWorkstreams(t *testing.T) {
 	first := testWorkstream("018f0000-0000-4000-8000-000000000061", "First", []string{"/tmp"}, now)
 	second := testWorkstream("018f0000-0000-4000-8000-000000000062", "Second", []string{"/tmp"}, now)
 	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(second.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -421,6 +591,7 @@ func TestResizeModeAdjustsDashboardAndOrganizerIndependently(t *testing.T) {
 	model.width, model.height = 100, 30
 	container := testWorkstream("018f0000-0000-4000-8000-000000000063", "Core", []string{"/tmp"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	selected := model.selected
@@ -564,14 +735,15 @@ func TestOrganizerEditsAndRemovesSelectedRoot(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000033", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.rootIndex[container.ID] = 1
 	model.openOrganizer()
 
 	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: 'P', Text: "P", Mod: tea.ModShift}))
 	model = updated.(Model)
-	if cmd != nil || model.organizerEdit != "root_replace" || model.organizerRootTarget != "/tmp/web" {
-		t.Fatalf("Shift-P did not edit selected root: mode=%q target=%q", model.organizerEdit, model.organizerRootTarget)
+	if cmd != nil || model.organizerEdit != organizerEditReplaceRoot || model.organizerRootTarget != "/tmp/web" {
+		t.Fatalf("Shift-P did not edit selected root: mode=%v target=%q", model.organizerEdit, model.organizerRootTarget)
 	}
 	model.organizerInput = splitGraphemes("/tmp/frontend")
 	model.organizerInputCursor = len(model.organizerInput)
@@ -587,6 +759,7 @@ func TestOrganizerEditsAndRemovesSelectedRoot(t *testing.T) {
 
 	model, controller = newTestModel("/tmp", heikou.BackendCodex)
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.rootIndex[container.ID] = 1
 	model.openOrganizer()
@@ -610,6 +783,7 @@ func TestOrganizerRootRemovalConfirmationTracksSelectedRoot(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000032", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.openOrganizer()
 
@@ -631,6 +805,7 @@ func TestOrganizerHelpClearsRootRemovalConfirmation(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000031", "Core", []string{"/tmp/api", "/tmp/web"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.openOrganizer()
 
@@ -641,8 +816,8 @@ func TestOrganizerHelpClearsRootRemovalConfirmation(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
 	model = updated.(Model)
-	if !model.helpOpen || model.confirmRootRemoval != "" {
-		t.Fatalf("help did not clear root confirmation: help=%v confirmation=%q", model.helpOpen, model.confirmRootRemoval)
+	if model.overlay != overlayHelp || model.confirmRootRemoval != "" {
+		t.Fatalf("help did not clear root confirmation: overlay=%v confirmation=%q", model.overlay, model.confirmRootRemoval)
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	model = updated.(Model)
@@ -659,7 +834,7 @@ func TestOrganizerMovesDurableSessionWithoutClosing(t *testing.T) {
 	core := testWorkstream("018f0000-0000-4000-8000-000000000038", "Core", []string{"/tmp/core"}, now)
 	web := testWorkstream("018f0000-0000-4000-8000-000000000039", "Web", []string{"/tmp/web"}, now)
 	member := testDurableSession("018f0000-0000-4000-8000-00000000003a", core.ID, heikou.BackendCodex, "member", "/tmp/core", now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{core, web}, Sessions: []control.Session{member}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{core, web}, Sessions: []control.Session{member}})
 	model.selected = sessionRowKey(member)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -676,8 +851,8 @@ func TestOrganizerMovesDurableSessionWithoutClosing(t *testing.T) {
 	}
 	updated, _ = model.Update(message)
 	model = updated.(Model)
-	if !model.organizerOpen || model.organizerSource != "" || model.organizerSelected != workstreamRowKey(web.ID) {
-		t.Fatalf("organizer did not remain ready after move: open=%v source=%q selected=%q", model.organizerOpen, model.organizerSource, model.organizerSelected)
+	if model.screen != screenOrganizer || model.organizerSource != "" || model.organizerSelected != workstreamRowKey(web.ID) {
+		t.Fatalf("organizer did not remain ready after move: screen=%v source=%q selected=%q", model.screen, model.organizerSource, model.organizerSelected)
 	}
 }
 
@@ -687,6 +862,7 @@ func TestOrganizerKeepsSelectedGuideMarkedThroughWorkstreamCreation(t *testing.T
 	guide := testDurableSession("018f0000-0000-4000-8000-000000000073", "", heikou.BackendClaude, "guided tour", "/tmp", now)
 	destination := testWorkstream("018f0000-0000-4000-8000-000000000074", "First project", []string{"/tmp"}, now)
 	model.snapshot.Sessions = []control.Session{guide}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(guide)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -697,6 +873,7 @@ func TestOrganizerKeepsSelectedGuideMarkedThroughWorkstreamCreation(t *testing.T
 	updated, _ := model.Update(workstreamMsg{action: "create", item: destination})
 	model = updated.(Model)
 	model.snapshot.Workstreams = []workstream.Workstream{destination}
+	model.setSnapshot(model.snapshot)
 	model.restoreOrganizerSelection()
 	if model.organizerSource != guide.ID || model.organizerSelected != workstreamRowKey(destination.ID) {
 		t.Fatalf("post-create source=%q selected=%q", model.organizerSource, model.organizerSelected)
@@ -718,7 +895,7 @@ func TestOrganizerUseReturnsWithSessionSelected(t *testing.T) {
 	now := time.Now()
 	container := testWorkstream("018f0000-0000-4000-8000-00000000003c", "Core", []string{"/tmp/api", "/tmp/web"}, now)
 	member := testDurableSession("018f0000-0000-4000-8000-00000000003d", container.ID, heikou.BackendCodex, "member", "/tmp/web", now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{member}})
 	model.collapsed[workstreamRowKey(container.ID)] = true
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
@@ -727,8 +904,8 @@ func TestOrganizerUseReturnsWithSessionSelected(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
 	model = updated.(Model)
-	if model.organizerOpen || model.selected != sessionRowKey(member) || model.collapsed[workstreamRowKey(container.ID)] {
-		t.Fatalf("use did not return with visible session selected: open=%v selected=%q collapsed=%v", model.organizerOpen, model.selected, model.collapsed[workstreamRowKey(container.ID)])
+	if model.screen != screenDashboard || model.selected != sessionRowKey(member) || model.collapsed[workstreamRowKey(container.ID)] {
+		t.Fatalf("use did not return with visible session selected: screen=%v selected=%q collapsed=%v", model.screen, model.selected, model.collapsed[workstreamRowKey(container.ID)])
 	}
 	if model.launchRoot() != "/tmp/web" {
 		t.Fatalf("use did not align the launch root to selected session: %q", model.launchRoot())
@@ -739,6 +916,7 @@ func TestOrganizerMoveExplicitlyAdoptsSelectedOrphan(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	orphan := testOrphan("018f0000-0000-4000-8000-00000000003b", "/tmp", time.Now())
 	model.snapshot.Orphans = []control.Session{orphan}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(orphan)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -761,11 +939,11 @@ func TestSettingsAndOrganizerViewsStayWithinTerminal(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{1, 12}, {2, 12}, {8, 12}, {20, 12}, {40, 15}, {80, 24}, {120, 40}} {
 		model, _ := newTestModel("/tmp", heikou.BackendCodex)
 		model.width, model.height = size.width, size.height
-		model.settingsOpen = true
+		model.screen = screenSettings
 		assertViewFits(t, model.View().Content, size.width, size.height)
-		model.settingsOpen, model.organizerOpen = false, true
+		model.screen = screenOrganizer
 		assertViewFits(t, model.View().Content, size.width, size.height)
-		model.organizerOpen, model.helpOpen = false, true
+		model.screen, model.overlay = screenDashboard, overlayHelp
 		assertViewFits(t, model.View().Content, size.width, size.height)
 	}
 }
@@ -775,7 +953,7 @@ func TestSelectedOrganizerRowsRemainValidAtNarrowWidths(t *testing.T) {
 	now := time.Now()
 	container := testWorkstream("018f0000-0000-4000-8000-000000000053", "Narrow", []string{"/tmp"}, now)
 	session := testDurableSession("018f0000-0000-4000-8000-000000000054", container.ID, heikou.BackendCodex, "narrow row", "/tmp", now)
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
 	model.height = 12
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
@@ -802,11 +980,11 @@ func TestTopBarNamesEveryView(t *testing.T) {
 		}
 	}
 	assertMode("DASHBOARD", model.View().Content)
-	model.organizerOpen = true
+	model.screen = screenOrganizer
 	assertMode("WORKSTREAM ORGANIZER", model.View().Content)
-	model.organizerOpen, model.settingsOpen = false, true
+	model.screen = screenSettings
 	assertMode("SETTINGS", model.View().Content)
-	model.settingsOpen, model.helpOpen = false, true
+	model.screen, model.overlay = screenDashboard, overlayHelp
 	assertMode("HELP", model.View().Content)
 }
 
@@ -827,7 +1005,7 @@ func TestOrganizerContextShowsWorkstreamNotesAndArtifactTree(t *testing.T) {
 	container := testWorkstream("018f0000-0000-4000-8000-000000000054", "Payments", []string{"/tmp"}, time.Now())
 	container.ArtifactDir = artifactDir
 	session := testDurableSession("018f0000-0000-4000-8000-000000000055", container.ID, heikou.BackendCodex, "member", "/tmp", time.Now())
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -852,11 +1030,50 @@ func TestOrganizerContextShowsWorkstreamNotesAndArtifactTree(t *testing.T) {
 	assertViewFits(t, model.View().Content, model.width, model.height)
 }
 
+func TestOrganizerExplicitContextRefreshReadsExternalChanges(t *testing.T) {
+	artifactDir := t.TempDir()
+	notesPath := filepath.Join(artifactDir, "notes.md")
+	if err := os.WriteFile(notesPath, []byte("before manager edit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000022", "Refresh", []string{"/tmp"}, time.Now())
+	container.ArtifactDir = artifactDir
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}})
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.openOrganizer()
+	initial := model.organizerContextCmd(true)
+	if initial == nil {
+		t.Fatal("initial context read was not requested")
+	}
+	updated, _ := model.Update(initial())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.Notes != "before manager edit" {
+		t.Fatalf("initial notes = %q", model.organizerContext.snapshot.Notes)
+	}
+	if err := os.WriteFile(notesPath, []byte("after manager edit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, refresh := model.Update(tea.KeyPressMsg(tea.Key{Code: 'R', Text: "R", Mod: tea.ModShift}))
+	model = updated.(Model)
+	if refresh == nil {
+		t.Fatal("R did not force an artifact context refresh")
+	}
+	updated, _ = model.Update(refresh())
+	model = updated.(Model)
+	if model.organizerContext.snapshot.Notes != "after manager edit" || model.notice != "workstream context refreshed" {
+		t.Fatalf("refreshed notes = %q notice = %q", model.organizerContext.snapshot.Notes, model.notice)
+	}
+}
+
 func TestLargeOrganizerContextGivesNotesAndTreeMoreRoom(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	model.width, model.height = 100, 40
 	container := testWorkstream("018f0000-0000-4000-8000-000000000064", "Deep context", []string{"/tmp"}, time.Now())
 	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -896,7 +1113,7 @@ func TestOrganizerFooterExplainsEnterForSelectedNoun(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	container := testWorkstream("018f0000-0000-4000-8000-000000000056", "Core", []string{"/tmp"}, time.Now())
 	session := testDurableSession("018f0000-0000-4000-8000-000000000057", container.ID, heikou.BackendCodex, "member", "/tmp", time.Now())
-	model.snapshot = control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -923,6 +1140,7 @@ func TestOrganizerContextIgnoresStaleSelectionRead(t *testing.T) {
 	second := testWorkstream("018f0000-0000-4000-8000-000000000059", "Second", []string{"/tmp"}, time.Now())
 	second.ArtifactDir = t.TempDir()
 	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(first.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -952,6 +1170,7 @@ func TestOrganizerContextRetriesSelectionWhoseStaleReadCompletedElsewhere(t *tes
 	second := testWorkstream("018f0000-0000-4000-8000-00000000005b", "Second", []string{"/tmp"}, time.Now())
 	second.ArtifactDir = t.TempDir()
 	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.setSnapshot(model.snapshot)
 	model.selected = workstreamRowKey(first.ID)
 	model.restoreSelection()
 	model.openOrganizer()
@@ -1037,6 +1256,7 @@ func TestPreviewFetchesAreSingleFlightAndRejectLateOlderCompletion(t *testing.T)
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	session := testDurableSession("018f0000-0000-4000-8000-00000000005c", "", heikou.BackendCodex, "preview", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 
@@ -1084,6 +1304,7 @@ func TestPreviewCompletionDoesNotReviveOutputForUnavailableSession(t *testing.T)
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	session := testDurableSession("018f0000-0000-4000-8000-00000000005d", "", heikou.BackendCodex, "preview", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 	controller.captureText = "stale live output"
@@ -1130,6 +1351,7 @@ func TestOrganizerViewportKeepsSelectedSessionVisible(t *testing.T) {
 		id := "session-" + string(rune('a'+index))
 		model.snapshot.Sessions = append(model.snapshot.Sessions, testDurableSession(id, container.ID, heikou.BackendNoAgent, "task "+id, "/tmp", now))
 	}
+	model.setSnapshot(model.snapshot)
 	model.openOrganizer()
 	last := model.snapshot.Sessions[len(model.snapshot.Sessions)-1]
 	model.selectOrganizerKey(sessionRowKey(last))
@@ -1145,7 +1367,7 @@ func TestQuestionMarkHelpDoesNotStealComposerText(t *testing.T) {
 	model.width, model.height = 80, 24
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	model = updated.(Model)
-	if !model.helpOpen {
+	if model.overlay != overlayHelp {
 		t.Fatal("? on an empty composer did not open help")
 	}
 	plain := ansi.Strip(strings.Join(model.helpContentLines(), "\n"))
@@ -1159,14 +1381,14 @@ func TestQuestionMarkHelpDoesNotStealComposerText(t *testing.T) {
 	model.insertText("why")
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	model = updated.(Model)
-	if model.helpOpen || model.inputValue() != "why?" {
-		t.Fatalf("printable ? changed mode/input: help=%v input=%q", model.helpOpen, model.inputValue())
+	if model.overlay == overlayHelp || model.inputValue() != "why?" {
+		t.Fatalf("printable ? changed mode/input: overlay=%v input=%q", model.overlay, model.inputValue())
 	}
 }
 
 func TestHelpPanelScrolls(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
-	model.width, model.height, model.helpOpen = 50, 12, true
+	model.width, model.height, model.overlay = 50, 12, overlayHelp
 	before := ansi.Strip(model.renderHelp())
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
 	model = updated.(Model)
@@ -1183,6 +1405,7 @@ func TestOpeningHelpCancelsDestructiveConfirmations(t *testing.T) {
 	session.Runtime = nil
 	session.Status = control.StatusStopped
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
@@ -1192,7 +1415,7 @@ func TestOpeningHelpCancelsDestructiveConfirmations(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF1}))
 	model = updated.(Model)
-	if model.confirmDelete != "" || !model.helpOpen {
+	if model.confirmDelete != "" || model.overlay != overlayHelp {
 		t.Fatal("opening help did not cancel the destructive confirmation")
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
@@ -1245,6 +1468,7 @@ func TestConfiguredSendKeyUsesComposerContext(t *testing.T) {
 	}
 	session := testDurableSession("018f0000-0000-4000-8000-000000000055", "", heikou.BackendCodex, "original", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 	model.insertText("follow up")
@@ -1261,7 +1485,7 @@ func TestConfiguredSendKeyUsesComposerContext(t *testing.T) {
 
 func TestSettingsRendersComposerBindings(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
-	model.width, model.height, model.settingsOpen = 80, 24, true
+	model.width, model.height, model.screen = 80, 24, screenSettings
 	model.settings.ComposerKeys = config.ComposerKeys{
 		NewSession: "ctrl+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
 	}
@@ -1275,7 +1499,7 @@ func TestSettingsRendersComposerBindings(t *testing.T) {
 
 func TestSmallSettingsPaneScrollsToLaunchCommands(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
-	model.width, model.height, model.settingsOpen = 40, 15, true
+	model.width, model.height, model.screen = 40, 15, screenSettings
 	if strings.Contains(ansi.Strip(model.View().Content), "launch commands") {
 		t.Fatal("test fixture no longer needs scrolling")
 	}
@@ -1291,6 +1515,7 @@ func TestCtrlXStopsRuntimeBeforeDeletingDurableRecord(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	session := testDurableSession("018f0000-0000-4000-8000-000000000060", "", heikou.BackendCodex, "cleanup", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 
@@ -1314,6 +1539,7 @@ func TestCtrlXStopsRuntimeBeforeDeletingDurableRecord(t *testing.T) {
 	model.busy = false
 	model.confirmStop = ""
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
 	model = updated.(Model)
 	if cmd != nil || model.confirmDelete != session.ID {
@@ -1333,6 +1559,7 @@ func TestCtrlXAlsoStopsHighlightedOrganizerSession(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	session := testDurableSession("018f0000-0000-4000-8000-000000000061", "", heikou.BackendCodex, "cleanup", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = ungroupedKey
 	model.restoreSelection()
 	model.openOrganizer()
@@ -1353,7 +1580,7 @@ func TestCtrlXAlsoStopsHighlightedOrganizerSession(t *testing.T) {
 
 func TestSettingsErrorsSurviveSnapshotRefresh(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
-	model.width, model.height, model.settingsOpen = 80, 24, true
+	model.width, model.height, model.screen = 80, 24, screenSettings
 	updated, _ := model.Update(settingsMsg{err: context.DeadlineExceeded})
 	model = updated.(Model)
 	model.snapshotFetch.generation = 1
@@ -1520,6 +1747,7 @@ func TestUntrustedMetadataCannotInjectTerminalEscapes(t *testing.T) {
 	model.width, model.height = 80, 24
 	session := testDurableSession("018f0000-0000-4000-8000-000000000040", "", heikou.BackendCodex, "safe\x1b]52;c;c2VjcmV0\x07task", "/tmp/\x1b[31mred\x1b[0m", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
 	model.previewID, model.preview = session.ID, "preview\x1b]52;c;c2VjcmV0\x07"

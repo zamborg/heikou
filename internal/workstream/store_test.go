@@ -1,9 +1,12 @@
 package workstream
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,4 +149,165 @@ func TestValidateRejectsMultipleActiveMemberships(t *testing.T) {
 	if err := state.Validate(); err == nil {
 		t.Fatal("multiple active memberships were accepted")
 	}
+}
+
+func TestFileStoreLoadMigratesV1FixtureWithoutChangingDomainRevision(t *testing.T) {
+	store := storeFromFixture(t, "state-v1-valid.json")
+	state, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != 2 || state.Revision != 9 {
+		t.Fatalf("migrated header = version %d revision %d, want version 2 revision 9", state.Version, state.Revision)
+	}
+	if len(state.Sessions) != 2 || state.Sessions[0].Title != "" || state.Sessions[0].InitialPrompt != "Preserve this launch identity" {
+		t.Fatalf("migrated sessions = %#v", state.Sessions)
+	}
+	completed := state.Sessions[1]
+	if completed.Launch.Binding == nil || completed.Launch.Binding.Socket != "heikou-v1" ||
+		completed.Outcome == nil || completed.Outcome.ExitCode == nil || *completed.Outcome.ExitCode != 7 {
+		t.Fatalf("migrated completed session = %#v", completed)
+	}
+
+	persisted := readPersistedState(t, store.Path)
+	if persisted.Version != 2 || persisted.Revision != 9 {
+		t.Fatalf("persisted migrated header = version %d revision %d", persisted.Version, persisted.Revision)
+	}
+	info, err := os.Stat(store.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("migrated state mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestFileStoreMutateMigratesV1FixtureAndCountsOnlyDomainChange(t *testing.T) {
+	t.Run("no-op", func(t *testing.T) {
+		store := storeFromFixture(t, "state-v1-valid.json")
+		state, err := store.Mutate(context.Background(), func(*State) (bool, error) { return false, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Version != 2 || state.Revision != 9 {
+			t.Fatalf("no-op migration header = version %d revision %d", state.Version, state.Revision)
+		}
+		persisted := readPersistedState(t, store.Path)
+		if persisted.Version != 2 || persisted.Revision != 9 {
+			t.Fatalf("persisted no-op migration header = version %d revision %d", persisted.Version, persisted.Revision)
+		}
+	})
+
+	t.Run("domain mutation", func(t *testing.T) {
+		store := storeFromFixture(t, "state-v1-valid.json")
+		state, err := store.Mutate(context.Background(), func(state *State) (bool, error) {
+			state.Workstreams[0].Description = "changed after migration"
+			state.Workstreams[0].Revision++
+			state.Workstreams[0].UpdatedAt = state.Workstreams[0].UpdatedAt.Add(time.Second)
+			return true, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Version != 2 || state.Revision != 10 {
+			t.Fatalf("mutated migration header = version %d revision %d, want version 2 revision 10", state.Version, state.Revision)
+		}
+	})
+}
+
+func TestFileStoreLoadsV2TitleFixture(t *testing.T) {
+	store := storeFromFixture(t, "state-v2-valid.json")
+	state, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != StateVersion || state.Revision != 12 || len(state.Sessions) != 1 {
+		t.Fatalf("loaded v2 state = %#v", state)
+	}
+	if state.Sessions[0].Title != "Release Linux build" {
+		t.Fatalf("loaded title = %q", state.Sessions[0].Title)
+	}
+}
+
+func TestFileStoreRejectsInvalidVersionedFixturesWithoutRewriting(t *testing.T) {
+	tests := []struct {
+		fixture string
+		want    string
+	}{
+		{fixture: "state-v1-rejects-v2-field.json", want: `unknown field "title"`},
+		{fixture: "state-v1-invalid.json", want: "invalid launch metadata"},
+		{fixture: "state-v2-unknown-field.json", want: `unknown field "surprise"`},
+		{fixture: "state-v3-future.json", want: "newer than supported version 2"},
+	}
+	for _, test := range tests {
+		t.Run(test.fixture, func(t *testing.T) {
+			store := storeFromFixture(t, test.fixture)
+			before, err := os.ReadFile(store.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Load(context.Background()); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, test.want)
+			}
+			after, err := os.ReadFile(store.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("rejected state was rewritten")
+			}
+		})
+	}
+}
+
+func TestValidateSessionTitleInvariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		wantErr bool
+	}{
+		{name: "empty clears", title: ""},
+		{name: "unicode", title: "Release 日本 build"},
+		{name: "maximum", title: strings.Repeat("界", MaxSessionTitleRunes)},
+		{name: "leading space", title: " release", wantErr: true},
+		{name: "trailing space", title: "release ", wantErr: true},
+		{name: "newline", title: "release\nnow", wantErr: true},
+		{name: "too long", title: strings.Repeat("x", MaxSessionTitleRunes+1), wantErr: true},
+		{name: "invalid utf8", title: string([]byte{0xff}), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateSessionTitle(test.title)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateSessionTitle(%q) error = %v, wantErr %t", test.title, err, test.wantErr)
+			}
+		})
+	}
+}
+
+func storeFromFixture(t *testing.T, name string) FileStore {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	path := filepath.Join(base, "state.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return FileStore{Path: path, Artifacts: filepath.Join(base, "artifacts")}
+}
+
+func readPersistedState(t *testing.T, path string) State {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }

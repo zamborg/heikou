@@ -14,7 +14,7 @@ import (
 func (m Model) handleHelpKey(stroke string) (tea.Model, tea.Cmd) {
 	switch stroke {
 	case "f1", "?", "esc":
-		m.helpOpen = false
+		m.overlay = overlayNone
 		m.helpOffset = 0
 		return m, nil
 	case "up":
@@ -99,7 +99,7 @@ func (m Model) helpContentLines() []string {
 		description string
 	}{
 		{"Workstream", "A durable project grouping with a name, registered roots, notes and artifacts, and zero or more sessions. It does not imply a manager or autonomy."},
-		{"Session", "A durable launch identity with its initial task, root, runner, and recorded outcome. It remains after its process stops."},
+		{"Session", "A durable launch identity with an optional title, initial task, root, runner, and recorded outcome. It remains after its process stops."},
 		{"Runtime", "The tmux pane currently associated with a session. It supplies live process observations and may be live, retained after exit, or unavailable."},
 		{"Root", "An explicitly registered directory used as the working directory for a new launch. A workstream may have several."},
 		{"Runner", "The native program Heikou launches: Codex, Claude, or a no-agent interactive shell."},
@@ -160,7 +160,9 @@ func (m Model) helpContentLines() []string {
 		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach/send."},
 		{"Lower pane", "Preview the selected workstream's notes.md and shallow artifact-directory tree; a session shows its parent workstream context."},
 		{"Ctrl-G", "Resize the lower notes/files pane with Up or Down; r restores automatic sizing and Esc exits resize mode."},
-		{"n / r", "Create or rename a workstream."},
+		{"n", "Create a workstream."},
+		{"r", "Rename the selected workstream, or edit/clear the selected durable session title."},
+		{"R", "Refresh the selected workstream's notes and artifact preview after external changes."},
 		{"p / Shift-P", "Add a root, or edit the currently selected root."},
 		{"d twice", "Remove the selected root without deleting files or historical sessions; every workstream keeps at least one root."},
 		{"Tab", "Cycle the highlighted workstream's selected launch root."},
@@ -189,9 +191,9 @@ func (m Model) helpContentLines() []string {
 	}{
 		{"h", "Open the dashboard."},
 		{"h quickstart [-r claude|codex] [-C DIR]", "Launch and attach an agent-guided first-use tour."},
-		{"h spawn [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL", "Start a session without opening the dashboard."},
-		{"h list", "List durable sessions and orphaned runtimes."},
-		{"h send ID MESSAGE", "Send a follow-up through tmux."},
+		{"h spawn [--json] [-r RUNNER] [-C DIR] [-w WORKSTREAM] LABEL", "Start a session without opening the dashboard; --json returns a machine-readable result."},
+		{"h list [--json]", "List durable sessions and orphaned runtimes; --json returns the complete machine-readable projection."},
+		{"h send [--json] ID MESSAGE", "Send a follow-up through tmux; --json returns a machine-readable result."},
 		{"h attach ID", "Enter a session's native terminal."},
 		{"h stop ID", "Stop its runtime and keep the durable record."},
 		{"h doctor", "Check tmux, runners, settings, and local state paths."},

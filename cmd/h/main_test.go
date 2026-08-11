@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
@@ -72,8 +74,10 @@ func TestHelpAdvertisesQuickstart(t *testing.T) {
 	printHelp(&output)
 	for _, want := range []string{
 		"h quickstart [-r claude|codex] [-C DIR]",
+		"h list [--json]",
 		"Ctrl-G            resize snapshot/context",
 		"Organizer Shift-↑/↓ reorder a named workstream",
+		"Organizer r       rename a workstream or edit/clear a session title",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("help does not advertise %q:\n%s", want, output.String())
@@ -170,5 +174,78 @@ func TestOneLineStripsTerminalControlSequences(t *testing.T) {
 	}
 	if got != "safe text next red" {
 		t.Fatalf("oneLine = %q", got)
+	}
+}
+
+func TestMachineSnapshotIncludesDurableTitleAndHonestUnknownExit(t *testing.T) {
+	id := "018f0000-0000-4000-8000-000000000081"
+	workstreamID := "018f0000-0000-4000-8000-000000000082"
+	runtime := heikou.Session{
+		ID: id, Name: "h-" + id, Backend: heikou.BackendCodex,
+		Status: heikou.StatusExited, ExitCode: nil, StartedAt: time.Now().Add(-time.Minute),
+	}
+	snapshot := control.Snapshot{
+		Revision:    9,
+		Workstreams: []workstream.Workstream{{ID: workstreamID, Name: "Release", Roots: []string{"/tmp"}}},
+		Sessions: []control.Session{{
+			ID: id, Backend: heikou.BackendCodex, Prompt: "initial task", LastUserMessage: "latest follow-up",
+			Root: "/tmp", WorkstreamID: workstreamID, Status: control.StatusExited, Durable: true,
+			Record: workstream.SessionRecord{ID: id, Title: "Ship macOS build"}, Runtime: &runtime,
+		}},
+	}
+
+	machine := newCLISnapshot(snapshot)
+	if len(machine.Sessions) != 1 {
+		t.Fatalf("machine sessions = %#v", machine.Sessions)
+	}
+	session := machine.Sessions[0]
+	if session.Title != "Ship macOS build" || session.DisplayTitle != session.Title || session.LatestViaHeikou != "latest follow-up" {
+		t.Fatalf("machine title projection = %#v", session)
+	}
+	if session.ExitCode != nil || session.State != "exited" {
+		t.Fatalf("unknown exit projection = stable state %q code %#v", session.State, session.ExitCode)
+	}
+
+	var output bytes.Buffer
+	if err := writeJSON(&output, machine); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("machine JSON is invalid: %v\n%s", err, output.String())
+	}
+	if decoded["revision"] != float64(9) {
+		t.Fatalf("decoded revision = %#v", decoded["revision"])
+	}
+	sessions, ok := decoded["sessions"].([]any)
+	if !ok || len(sessions) != 1 {
+		t.Fatalf("decoded sessions = %#v", decoded["sessions"])
+	}
+	decodedSession, ok := sessions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("decoded session = %#v", sessions[0])
+	}
+	if exitCode, exists := decodedSession["exit_code"]; !exists || exitCode != nil {
+		t.Fatalf("unknown exit_code = %#v (present %v), want explicit null", exitCode, exists)
+	}
+}
+
+func TestMachineSnapshotKeepsStateStableWhenExitCodeIsNonzero(t *testing.T) {
+	code := 7
+	id := "018f0000-0000-4000-8000-000000000083"
+	runtime := heikou.Session{
+		ID: id, Backend: heikou.BackendCodex, Status: heikou.StatusFailed,
+		ExitCode: &code, StartedAt: time.Now().Add(-time.Minute),
+	}
+	machine := newCLISnapshot(control.Snapshot{Sessions: []control.Session{{
+		ID: id, Backend: heikou.BackendCodex, Prompt: "failing task", Root: "/tmp",
+		Status: control.StatusExited, Durable: true, Runtime: &runtime,
+	}}})
+	if len(machine.Sessions) != 1 {
+		t.Fatalf("machine sessions = %#v", machine.Sessions)
+	}
+	session := machine.Sessions[0]
+	if session.State != "exited" || session.ExitCode == nil || *session.ExitCode != 7 {
+		t.Fatalf("failed process projection = state %q code %#v", session.State, session.ExitCode)
 	}
 }

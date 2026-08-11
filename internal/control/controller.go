@@ -59,8 +59,8 @@ func (s Session) Alive() bool {
 func (s Session) Available() bool { return s.Runtime != nil }
 
 func (s Session) ExitCode() (int, bool) {
-	if s.Runtime != nil && !s.Runtime.Alive() {
-		return s.Runtime.ExitCode, true
+	if s.Runtime != nil && !s.Runtime.Alive() && s.Runtime.ExitCode != nil {
+		return *s.Runtime.ExitCode, true
 	}
 	if s.Durable && s.Record.Outcome != nil && s.Record.Outcome.ExitCode != nil {
 		return *s.Record.Outcome.ExitCode, true
@@ -104,7 +104,6 @@ type StartRequest struct {
 	Backend      heikou.Backend
 	Prompt       string
 	Root         string
-	Command      []string
 	WorkstreamID string
 }
 
@@ -116,6 +115,7 @@ type Service interface {
 	Capture(context.Context, string, int) (string, error)
 	Stop(context.Context, string) error
 	DeleteSession(context.Context, string) error
+	SetSessionTitle(context.Context, string, string) error
 	AttachCommand(context.Context, string) (*exec.Cmd, error)
 	CreateWorkstream(context.Context, string, string, []string) (workstream.Workstream, error)
 	RenameWorkstream(context.Context, string, string) error
@@ -129,14 +129,83 @@ type Service interface {
 }
 
 type Controller struct {
-	supervisor heikou.Supervisor
-	store      workstream.Repository
-	socket     string
-	now        func() time.Time
+	supervisor      heikou.Supervisor
+	store           workstream.Repository
+	socket          string
+	now             func() time.Time
+	authorizer      Authorizer
+	commandResolver CommandResolver
 }
 
-func New(supervisor heikou.Supervisor, store workstream.Repository, socket string) *Controller {
-	return &Controller{supervisor: supervisor, store: store, socket: socket, now: time.Now}
+func New(supervisor heikou.Supervisor, store workstream.Repository, socket string, options ...controllerOption) *Controller {
+	controller := &Controller{
+		supervisor: supervisor, store: store, socket: socket, now: time.Now,
+		authorizer: localHumanAuthorizer{},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(controller)
+		}
+	}
+	return controller
+}
+
+// Execute is the single mutation path for human callers and future
+// grant-backed manager sessions. Reads remain explicit query methods.
+func (c *Controller) Execute(ctx context.Context, command Command) (CommandResult, error) {
+	if err := validateCommand(command); err != nil {
+		return CommandResult{}, err
+	}
+	if c.authorizer == nil {
+		return CommandResult{}, errors.New("command authorizer is not configured")
+	}
+	if err := c.authorizer.Authorize(ctx, command); err != nil {
+		return CommandResult{}, fmt.Errorf("authorize command: %w", err)
+	}
+
+	switch action := command.Action.(type) {
+	case StartAction:
+		session, err := c.start(ctx, StartRequest{
+			Backend: action.Backend, Prompt: action.Prompt, Root: action.Root,
+			WorkstreamID: command.Scope.WorkstreamID,
+		})
+		return CommandResult{Session: session}, err
+	case SendAction:
+		return CommandResult{}, c.send(ctx, action.SessionID, action.Message)
+	case StopAction:
+		return CommandResult{}, c.stop(ctx, action.SessionID)
+	case DeleteSessionAction:
+		return CommandResult{}, c.deleteSession(ctx, action.SessionID)
+	case SetSessionTitleAction:
+		return CommandResult{}, c.setSessionTitle(ctx, action.SessionID, action.Title)
+	case CreateWorkstreamAction:
+		item, err := c.createWorkstream(ctx, action.Name, action.Description, action.Roots)
+		return CommandResult{Workstream: item}, err
+	case RenameWorkstreamAction:
+		return CommandResult{}, c.renameWorkstream(ctx, command.Scope.WorkstreamID, action.Name)
+	case ReorderWorkstreamAction:
+		moved, err := c.reorderWorkstream(ctx, command.Scope.WorkstreamID, action.Delta)
+		return CommandResult{Moved: moved}, err
+	case ArchiveWorkstreamAction:
+		return CommandResult{}, c.archiveWorkstream(ctx, command.Scope.WorkstreamID)
+	case MoveSessionAction:
+		return CommandResult{}, c.moveSession(ctx, action.SessionID, action.WorkstreamID)
+	case AdoptSessionAction:
+		session, err := c.adoptSession(ctx, action.SessionID, action.WorkstreamID)
+		return CommandResult{Session: session}, err
+	case AddRootAction:
+		return CommandResult{}, c.addRoot(ctx, command.Scope.WorkstreamID, action.Root)
+	case ReplaceRootAction:
+		return CommandResult{}, c.replaceRoot(ctx, command.Scope.WorkstreamID, action.Current, action.Replacement)
+	case RemoveRootAction:
+		return CommandResult{}, c.removeRoot(ctx, command.Scope.WorkstreamID, action.Root)
+	default:
+		return CommandResult{}, fmt.Errorf("unsupported command action %T", command.Action)
+	}
+}
+
+func humanCommand(scope Scope, action Action) Command {
+	return Command{Actor: LocalHuman(), Scope: scope, Action: action}
 }
 
 func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -170,8 +239,15 @@ func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
 				}
 				continue
 			}
+			if runtime.ExitCode == nil {
+				if record.Outcome != nil && record.Outcome.Kind == workstream.OutcomeStartFailed {
+					record.Outcome = nil
+					changed = true
+				}
+				continue
+			}
 			if record.Outcome == nil || record.Outcome.Kind == workstream.OutcomeStartFailed {
-				exitCode := runtime.ExitCode
+				exitCode := *runtime.ExitCode
 				recordedAt := runtime.EndedAt
 				if recordedAt.IsZero() {
 					recordedAt = now
@@ -223,6 +299,13 @@ func (c *Controller) Find(ctx context.Context, query string) (Session, error) {
 }
 
 func (c *Controller) Start(ctx context.Context, request StartRequest) (Session, error) {
+	result, err := c.Execute(ctx, humanCommand(scopeForWorkstream(request.WorkstreamID), StartAction{
+		Backend: request.Backend, Prompt: request.Prompt, Root: request.Root,
+	}))
+	return result.Session, err
+}
+
+func (c *Controller) start(ctx context.Context, request StartRequest) (Session, error) {
 	var session Session
 	var startErr error
 	if err := c.store.WithLifecycleLock(ctx, func() error {
@@ -280,10 +363,20 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 		return Session{}, err
 	}
 
-	runtime, launchErr := c.supervisor.Start(ctx, heikou.StartRequest{
-		ID: id, Backend: request.Backend, Prompt: prompt, Root: root, Command: request.Command,
-	})
-	if launchErr != nil {
+	var runtime heikou.Session
+	var launchErr error
+	var command []string
+	startAttempted := false
+	if request.Backend != heikou.BackendNoAgent && c.commandResolver != nil {
+		command, launchErr = c.commandResolver.Resolve(ctx, request.Backend)
+	}
+	if launchErr == nil {
+		startAttempted = true
+		runtime, launchErr = c.supervisor.Start(ctx, heikou.StartRequest{
+			ID: id, Backend: request.Backend, Prompt: prompt, Root: root, Command: command,
+		})
+	}
+	if launchErr != nil && startAttempted {
 		// A cancelled tmux command can report an error after creating the pane.
 		// Positive runtime evidence wins over that ambiguous error.
 		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -346,6 +439,11 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 }
 
 func (c *Controller) Send(ctx context.Context, id, message string) error {
+	_, err := c.Execute(ctx, humanCommand(InstallationScope(), SendAction{SessionID: id, Message: message}))
+	return err
+}
+
+func (c *Controller) send(ctx context.Context, id, message string) error {
 	runtime, err := c.supervisor.Find(ctx, id)
 	if err != nil {
 		return err
@@ -362,6 +460,11 @@ func (c *Controller) Capture(ctx context.Context, id string, lines int) (string,
 }
 
 func (c *Controller) Stop(ctx context.Context, id string) error {
+	_, err := c.Execute(ctx, humanCommand(InstallationScope(), StopAction{SessionID: id}))
+	return err
+}
+
+func (c *Controller) stop(ctx context.Context, id string) error {
 	runtime, err := c.supervisor.Find(ctx, id)
 	if err != nil {
 		return err
@@ -393,6 +496,11 @@ func (c *Controller) Stop(ctx context.Context, id string) error {
 // remove a record while tmux still has a matching pane, even when that pane is
 // dead, and never stops a runtime as a side effect.
 func (c *Controller) DeleteSession(ctx context.Context, id string) error {
+	_, err := c.Execute(ctx, humanCommand(InstallationScope(), DeleteSessionAction{SessionID: id}))
+	return err
+}
+
+func (c *Controller) deleteSession(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("session id is required")
@@ -451,6 +559,37 @@ func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
 	return err
 }
 
+// SetSessionTitle sets human-owned durable display identity. Empty clears the
+// title; runtime names and native provider conversation identities never move.
+func (c *Controller) SetSessionTitle(ctx context.Context, id, title string) error {
+	_, err := c.Execute(ctx, humanCommand(InstallationScope(), SetSessionTitleAction{
+		SessionID: id, Title: title,
+	}))
+	return err
+}
+
+func (c *Controller) setSessionTitle(ctx context.Context, id, title string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("session id is required")
+	}
+	title = cleanTitle(title)
+	_, err := c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Sessions {
+			if state.Sessions[index].ID != id {
+				continue
+			}
+			if state.Sessions[index].Title == title {
+				return false, nil
+			}
+			state.Sessions[index].Title = title
+			return true, nil
+		}
+		return false, fmt.Errorf("durable session %q not found", id)
+	})
+	return err
+}
+
 func (c *Controller) deleteRuntimeName(record workstream.SessionRecord) (string, error) {
 	if record.Launch.Binding == nil {
 		if record.Launch.Status == workstream.LaunchPending && record.Outcome == nil {
@@ -480,6 +619,13 @@ func (c *Controller) AttachCommand(ctx context.Context, id string) (*exec.Cmd, e
 }
 
 func (c *Controller) CreateWorkstream(ctx context.Context, name, description string, roots []string) (workstream.Workstream, error) {
+	result, err := c.Execute(ctx, humanCommand(InstallationScope(), CreateWorkstreamAction{
+		Name: name, Description: description, Roots: roots,
+	}))
+	return result.Workstream, err
+}
+
+func (c *Controller) createWorkstream(ctx context.Context, name, description string, roots []string) (workstream.Workstream, error) {
 	name = cleanName(name)
 	if name == "" {
 		return workstream.Workstream{}, errors.New("workstream name cannot be empty")
@@ -523,6 +669,11 @@ func (c *Controller) CreateWorkstream(ctx context.Context, name, description str
 }
 
 func (c *Controller) RenameWorkstream(ctx context.Context, id, name string) error {
+	_, err := c.Execute(ctx, humanCommand(WorkstreamScope(id), RenameWorkstreamAction{Name: name}))
+	return err
+}
+
+func (c *Controller) renameWorkstream(ctx context.Context, id, name string) error {
 	name = cleanName(name)
 	if name == "" {
 		return errors.New("workstream name cannot be empty")
@@ -555,6 +706,11 @@ func (c *Controller) RenameWorkstream(ctx context.Context, id, name string) erro
 // state slice is the durable display order, so existing state files need no
 // migration and archived workstreams do not occupy a position in the UI.
 func (c *Controller) ReorderWorkstream(ctx context.Context, id string, delta int) (bool, error) {
+	result, err := c.Execute(ctx, humanCommand(WorkstreamScope(id), ReorderWorkstreamAction{Delta: delta}))
+	return result.Moved, err
+}
+
+func (c *Controller) reorderWorkstream(ctx context.Context, id string, delta int) (bool, error) {
 	if delta != -1 && delta != 1 {
 		return false, fmt.Errorf("workstream reorder delta must be -1 or 1 (got %d)", delta)
 	}
@@ -587,6 +743,11 @@ func (c *Controller) ReorderWorkstream(ctx context.Context, id string, delta int
 }
 
 func (c *Controller) ArchiveWorkstream(ctx context.Context, id string) error {
+	_, err := c.Execute(ctx, humanCommand(WorkstreamScope(id), ArchiveWorkstreamAction{}))
+	return err
+}
+
+func (c *Controller) archiveWorkstream(ctx context.Context, id string) error {
 	now := c.now()
 	_, err := c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
 		found := false
@@ -616,6 +777,13 @@ func (c *Controller) ArchiveWorkstream(ctx context.Context, id string) error {
 }
 
 func (c *Controller) MoveSession(ctx context.Context, sessionID, workstreamID string) error {
+	_, err := c.Execute(ctx, humanCommand(scopeForWorkstream(workstreamID), MoveSessionAction{
+		SessionID: sessionID, WorkstreamID: workstreamID,
+	}))
+	return err
+}
+
+func (c *Controller) moveSession(ctx context.Context, sessionID, workstreamID string) error {
 	now := c.now()
 	_, err := c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
 		if _, ok := state.Session(sessionID); !ok {
@@ -652,6 +820,13 @@ func (c *Controller) MoveSession(ctx context.Context, sessionID, workstreamID st
 // older Heikou build. Unknown panes remain orphaned until the user invokes this
 // action; reconciliation never adopts them automatically.
 func (c *Controller) AdoptSession(ctx context.Context, sessionID, workstreamID string) (Session, error) {
+	result, err := c.Execute(ctx, humanCommand(scopeForWorkstream(workstreamID), AdoptSessionAction{
+		SessionID: sessionID, WorkstreamID: workstreamID,
+	}))
+	return result.Session, err
+}
+
+func (c *Controller) adoptSession(ctx context.Context, sessionID, workstreamID string) (Session, error) {
 	runtime, err := c.supervisor.Find(ctx, sessionID)
 	if err != nil {
 		return Session{}, err
@@ -668,8 +843,8 @@ func (c *Controller) AdoptSession(ctx context.Context, sessionID, workstreamID s
 	}
 	binding := runtimeBinding(c.socket, runtime, now)
 	record.Launch.Binding = &binding
-	if !runtime.Alive() {
-		exitCode := runtime.ExitCode
+	if !runtime.Alive() && runtime.ExitCode != nil {
+		exitCode := *runtime.ExitCode
 		recordedAt := runtime.EndedAt
 		if recordedAt.IsZero() {
 			recordedAt = now
@@ -705,6 +880,11 @@ func (c *Controller) AdoptSession(ctx context.Context, sessionID, workstreamID s
 }
 
 func (c *Controller) AddRoot(ctx context.Context, workstreamID, value string) error {
+	_, err := c.Execute(ctx, humanCommand(WorkstreamScope(workstreamID), AddRootAction{Root: value}))
+	return err
+}
+
+func (c *Controller) addRoot(ctx context.Context, workstreamID, value string) error {
 	root, err := validateRoot(value)
 	if err != nil {
 		return err
@@ -730,6 +910,13 @@ func (c *Controller) AddRoot(ctx context.Context, workstreamID, value string) er
 }
 
 func (c *Controller) ReplaceRoot(ctx context.Context, workstreamID, currentValue, replacementValue string) error {
+	_, err := c.Execute(ctx, humanCommand(WorkstreamScope(workstreamID), ReplaceRootAction{
+		Current: currentValue, Replacement: replacementValue,
+	}))
+	return err
+}
+
+func (c *Controller) replaceRoot(ctx context.Context, workstreamID, currentValue, replacementValue string) error {
 	current, err := workstream.NormalizeRoot(currentValue)
 	if err != nil {
 		return err
@@ -766,6 +953,11 @@ func (c *Controller) ReplaceRoot(ctx context.Context, workstreamID, currentValue
 }
 
 func (c *Controller) RemoveRoot(ctx context.Context, workstreamID, value string) error {
+	_, err := c.Execute(ctx, humanCommand(WorkstreamScope(workstreamID), RemoveRootAction{Root: value}))
+	return err
+}
+
+func (c *Controller) removeRoot(ctx context.Context, workstreamID, value string) error {
 	root, err := workstream.NormalizeRoot(value)
 	if err != nil {
 		return err
@@ -923,6 +1115,21 @@ func cleanName(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
 	if len([]rune(value)) > 80 {
 		value = string([]rune(value)[:80])
+	}
+	return value
+}
+
+func cleanTitle(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > workstream.MaxSessionTitleRunes {
+		value = string(runes[:workstream.MaxSessionTitleRunes])
 	}
 	return value
 }

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "revision": 2,
+  "workstreams": [],
+  "sessions": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000301",
+      "backend": "codex",
+      "title": "This field did not exist in v1",
+      "initial_prompt": "Reject version drift",
+      "initial_root": "/tmp/heikou-v1-strict-root",
+      "created_at": "2024-03-01T00:00:00Z",
+      "launch": {
+        "status": "pending"
+      }
+    }
+  ],
+  "memberships": []
+}

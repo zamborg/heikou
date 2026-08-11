@@ -69,7 +69,10 @@ type Session struct {
 	StartedAt       time.Time
 	EndedAt         time.Time
 	LastActivityAt  time.Time
-	ExitCode        int
+	// ExitCode is nil when the runtime is live or when tmux retained a dead
+	// pane without reporting pane_dead_status. A non-nil zero is therefore a
+	// known successful exit, distinct from an unknown terminal status.
+	ExitCode        *int
 	AttachedClients int
 	PaneInMode      bool
 	InputDisabled   bool

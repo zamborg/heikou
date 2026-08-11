@@ -25,7 +25,7 @@ func (m Model) handleResizeKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.resizeLowerPane(-3)
 		return m, nil
 	case "r":
-		if m.organizerOpen {
+		if m.screen == screenOrganizer {
 			m.organizerContextAdjust = 0
 		} else {
 			m.detailAdjust = 0
@@ -40,7 +40,7 @@ func (m Model) handleResizeKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) resizeLowerPane(delta int) {
-	if m.organizerOpen {
+	if m.screen == screenOrganizer {
 		target := min(m.organizerMaximumContextHeight(), max(0, m.organizerContextHeight()+delta))
 		m.organizerContextAdjust = target - m.defaultOrganizerContextHeight()
 		return
@@ -55,7 +55,7 @@ func (m Model) organizerViewportHeight() int {
 
 func (m Model) organizerAvailableHeight() int {
 	reserved := 5 // title, rule, status rule, message, key help
-	if m.organizerEdit != "" {
+	if m.organizerEdit != organizerEditNone {
 		reserved++
 	}
 	return max(0, m.height-reserved)
