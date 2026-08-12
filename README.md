@@ -146,12 +146,80 @@ h attach a1b2c3
 h stop a1b2c3
 ```
 
+Every organizing action the `F3` organizer performs is also a command, so the
+whole durable model can be driven without the TUI:
+
+```sh
+h ws create "API work" -C ~/code/api -d "the public API"
+h ws list --json
+h ws root add "API work" ~/code/api-client
+h ws rename "API work" "Public API"
+h ws reorder "Public API" --up
+h title a1b2c3 "OAuth retry investigation"
+h move a1b2c3 --workstream "Public API"
+h move a1b2c3 --ungrouped
+h adopt a1b2c3 -w "Public API"
+h peek a1b2c3
+h ws archive "Public API" --yes
+h delete a1b2c3 --yes
+```
+
+Workstreams and sessions accept a full id, an id prefix, or a workstream name;
+an ambiguous prefix is an error rather than a guess. Flags may appear before or
+after positional arguments. `h ws archive` and `h delete` require an explicit
+`--yes`.
+
 `h list --json` returns a machine-readable projection of workstreams and
 sessions, including durable/display titles, latest-via-Heikou text, runtime
 availability, a stable process-state enum, and an `exit_code` that is `null`
-when tmux cannot prove the outcome. `h spawn --json` and `h send --json` return
-machine-readable action results. These are local human CLI surfaces; they do
+when tmux cannot prove the outcome. Every command above accepts `--json` and
+returns a machine-readable result. These are local human CLI surfaces; they do
 not enable manager authority.
+
+## The pilot
+
+Because that command surface is complete, an ordinary agent can maintain
+Heikou's state. Heikou writes the instructions for one into `~/.heikou`:
+
+```text
+~/.heikou/
+  AGENTS.md                       operating contract, read by Codex and Claude
+  CLAUDE.md                       pointer to AGENTS.md
+  skills/manage-heikou/SKILL.md   the full command reference
+```
+
+A new installation is also seeded with one workstream named `heikou-managers`,
+rooted only at `~/.heikou`, so there is somewhere to launch pilots from the
+dashboard without building it by hand.
+
+It is seeded only on an installation that has never written durable state, and
+the state file is what marks that: reads never create it and no-op mutations
+never write it. So deleting or archiving the workstream keeps it deleted, and an
+installation you have already organized is never seeded behind your back. `h init`
+is the explicit way to create it, or to get it back.
+
+Start a pilot by running an agent in that directory:
+
+```sh
+cd ~/.heikou && claude
+```
+
+Codex works the same way. The instructions are deliberately vendor-neutral: the
+contract lives in `AGENTS.md`, and `CLAUDE.md` only points at it, so there is
+one source of truth rather than two that can drift.
+
+Then ask for what you want in words — "make a workstream for the API work and
+move those three sessions into it", "register ~/code/api-client as a root",
+"what's running right now?" — instead of remembering which key does it.
+
+Those files are installed on first run and are **never overwritten**, so house
+rules you add to `AGENTS.md` survive upgrades. `h init --force` refreshes them
+from a newer binary.
+
+The pilot is an ordinary agent with a shell, not a privileged one. It acts as
+you, through the same CLI and the same command plane, and holds no grant of any
+kind. Scope comes from what the instructions teach and which verbs require
+`--yes`, which is a guardrail against mistakes rather than a security boundary.
 
 ## Workstreams
 
