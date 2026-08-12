@@ -507,3 +507,38 @@ The automated suite covers:
 
 Real Codex and Claude smoke tests remain opt-in because they require local
 authentication and can consume paid model usage.
+
+### The end-to-end layer
+
+Every command handler in `cmd/h` writes to `os.Stdout` and resolves its own
+controller from the environment, so none can be called directly without faking
+the process. `cmd/h/e2e_test.go` builds the binary and drives it as a
+subprocess instead, against a throwaway `HEIKOU_HOME`, a redirected `HOME`, and
+a private tmux socket.
+
+That shape is deliberate. The things it protects — dispatch, flag parsing, the
+exact wording of a refusal, the shape of `--json`, the exit code — are the
+contract two audiences depend on, a person at a shell and the pilot agent, and
+each one is invisible to a test that calls the handler directly. It found a
+shipped bug on its first run: `h spawn "task" -r claude` silently launched the
+default runner, because Go's `flag` package stops parsing at the first
+positional and only the newer verbs went through `parseAnywhere`.
+
+The cost is that `go test -cover` reports nothing for this layer, since coverage
+instrumentation does not follow a subprocess. `cmd/h`'s coverage number is
+therefore a floor and not a measure; do not read it as the state of CLI testing.
+
+### The published-contract layer
+
+`cmd/h/contract_test.go` asserts that the JSON keys `skills/manage-heikou`
+promises the pilot are keys the CLI actually emits, and that every session state
+the CLI can report is one the instructions document. A renamed field would
+otherwise break the pilot in the worst way available: it stops finding the data
+and starts guessing, with nothing failing anywhere.
+
+### Refusing to skip
+
+The tmux-dependent suites skip themselves when tmux is absent, which is right
+for a developer and wrong for CI. `HEIKOU_TEST_REQUIRE_TMUX=1` converts the skip
+into a failure. CI sets it globally, so a runner that loses its tmux install
+reports red rather than a green run over tests that never executed.

@@ -383,8 +383,11 @@ extension seams, and next steps. Future product ideas live separately in the
 ```sh
 make build
 make check
-go test -race ./...
 ```
+
+`make check` runs the same gates as CI, in the same order: formatting, `go mod
+tidy`, `go vet`, staticcheck, tests, tests under the race detector, and a build.
+Running it locally should mean a pull request has nothing left to discover.
 
 The integration suite uses a randomly named private tmux server and a fake PTY
 agent. It verifies caller-owned identity, lifecycle preservation, nonzero exits,
@@ -392,3 +395,11 @@ Unicode and paths with spaces, and literal delivery of shell-looking
 prompt/message content. Controller tests cover durable-before-launch ordering,
 failed launch retention, conservative reconciliation, orphan detection, and
 explicit stop outcomes.
+
+The end-to-end suite builds `h` and drives it as a subprocess against a
+throwaway `HEIKOU_HOME` and a private tmux socket, so argument parsing, refusal
+text, `--json` shape, and exit codes are tested as they ship.
+
+Both need tmux, and both skip themselves without it. Set
+`HEIKOU_TEST_REQUIRE_TMUX=1` — as CI and `make race` do — to turn that skip into
+a failure, so a run cannot report green over a suite that never executed.
