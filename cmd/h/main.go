@@ -204,6 +204,7 @@ func runDashboardSelected(args []string, selectedSessionID string) error {
 	if err := manager.Bootstrap(ctx); err != nil {
 		return err
 	}
+	provisionInstallation(ctx, controller, os.Stderr)
 
 	program := tea.NewProgram(ui.NewWithSelectedSession(controller, absRoot, backend, configStore, settings, selectedSessionID))
 	if _, err := program.Run(); err != nil {

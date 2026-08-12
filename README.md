@@ -188,6 +188,15 @@ Heikou's state. Heikou writes the instructions for one into `~/.heikou`:
   skills/manage-heikou/SKILL.md   the full command reference
 ```
 
+A new installation is also seeded with one workstream named `heikou-managers`,
+rooted only at `~/.heikou`, so there is somewhere to launch pilots from the
+dashboard without building it by hand.
+
+It is created **once, ever**. If you delete or archive it, that decision stands
+and Heikou will not put it back; `h init --force` is the explicit way to
+re-provision. The record of what has been seeded lives in `~/.heikou/.provisioned`
+and is deliberately separate from whether the workstream currently exists.
+
 Start a pilot by running an agent in that directory:
 
 ```sh

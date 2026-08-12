@@ -51,6 +51,20 @@ what will be lost, and let the user decide.
 - "what's running right now?" → `h list`
 - "what happened in the OAuth session?" → see the section below
 
+## The heikou-managers workstream
+
+A new installation is seeded with one workstream named `heikou-managers`, rooted
+only at this directory. It is where pilots live — sessions started there run in
+`~/.heikou`, so they can see these instructions and the state they maintain.
+
+Use it when the user asks for another agent to help manage Heikou. Do not use it
+for project work; a session that should edit a repository belongs in a
+workstream rooted at that repository.
+
+It is seeded exactly once. If the user deletes or archives it, that decision
+stands and Heikou will not recreate it — `h init --force` is the explicit way
+back. Do not recreate it on your own initiative.
+
 ## Notes are your durable memory
 
 Every workstream has an `artifact_dir` (returned by `h list --json`). Anything

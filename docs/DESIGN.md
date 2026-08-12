@@ -217,6 +217,15 @@ installed as `AGENTS.md`, a `CLAUDE.md` pointer, and
 `skills/manage-heikou/SKILL.md`; existing files are never overwritten, so user
 edits survive an upgrade and `h init --force` is the explicit refresh.
 
+A new installation is seeded once with a `heikou-managers` workstream rooted
+only at the home directory, so a pilot can be launched from the dashboard
+without hand-built setup. Seeding is recorded in a small `.provisioned` marker
+rather than inferred from the workstream's presence, and the distinction is the
+whole point: keying off presence would resurrect a workstream the user deleted
+on purpose. A damaged marker is read as already-provisioned for the same reason,
+because silently overriding a deletion is worse than skipping convenience setup.
+`h init --force` clears the marker when re-provisioning is what the user wants.
+
 A pilot receives no authority. It shells out to `h` and is therefore the local
 human at that boundary, holding no grant and leaving `localHumanAuthorizer`
 unchanged. Adding one does not enable session actors, and an authorizer rule

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,6 +61,20 @@ func runInit(args []string) error {
 	}
 	if len(written) == 0 {
 		fmt.Printf("%s already has its instructions; pass --force to refresh them\n", dir)
+	}
+
+	// --force is the explicit way to ask for setup again, including a managers
+	// workstream that was removed. Without it, a removed workstream stays removed.
+	if *force {
+		if err := forgetProvisioning(); err != nil {
+			return err
+		}
+	}
+	socket := defaultSocket()
+	if _, controller, _, err := newController(socket); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), organizeTimeout)
+		provisionInstallation(ctx, controller, os.Stdout)
+		cancel()
 	}
 	fmt.Printf("\nStart a pilot by running an agent in %s:\n\n", dir)
 	fmt.Printf("  cd %s && claude\n", dir)
