@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/home"
 	manageheikou "github.com/zamborg/heikou/skills/manage-heikou"
 )
@@ -36,8 +37,8 @@ func pilotDocs() []pilotDoc {
 	}
 }
 
-func runInit(args []string) error {
-	flags := newFlagSet("h init")
+func (a *app) runInit(args []string) error {
+	flags := a.newFlagSet("h init")
 	force := flags.Bool("force", false, "overwrite existing instruction files")
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "Usage: h init [--force]")
@@ -57,25 +58,25 @@ func runInit(args []string) error {
 		return err
 	}
 	for _, name := range written {
-		fmt.Printf("wrote %s\n", filepath.Join(dir, name))
+		fmt.Fprintf(a.out, "wrote %s\n", filepath.Join(dir, name))
 	}
 	if len(written) == 0 {
-		fmt.Printf("%s already has its instructions; pass --force to refresh them\n", dir)
+		fmt.Fprintf(a.out, "%s already has its instructions; pass --force to refresh them\n", dir)
 	}
 
 	// h init is the explicit opt-in. An installation that already has state is
 	// never seeded implicitly, so this is how a user asks for the managers
 	// workstream, and how they get it back after deleting it.
-	if _, controller, _, err := newController(defaultSocket()); err == nil {
+	if controller, err := a.dial(defaultSocket()); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), organizeTimeout)
-		if err := reprovisionManagersWorkstream(ctx, controller, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		if err := reprovisionManagersWorkstream(ctx, controller, a.out); err != nil {
+			fmt.Fprintln(a.err, "heikou:", format.OneLine(err.Error()))
 		}
 		cancel()
 	}
-	fmt.Printf("\nStart a pilot by running an agent in %s:\n\n", dir)
-	fmt.Printf("  cd %s && claude\n", dir)
-	fmt.Printf("  cd %s && codex\n", dir)
+	fmt.Fprintf(a.out, "\nStart a pilot by running an agent in %s:\n\n", dir)
+	fmt.Fprintf(a.out, "  cd %s && claude\n", dir)
+	fmt.Fprintf(a.out, "  cd %s && codex\n", dir)
 	return nil
 }
 
@@ -88,7 +89,7 @@ func runInit(args []string) error {
 // is no reason to refuse to list sessions.
 func ensurePilotDocs(writer io.Writer) {
 	if _, _, err := installPilotDocs(false); err != nil {
-		fmt.Fprintln(writer, "heikou: could not install pilot instructions:", oneLine(err.Error()))
+		fmt.Fprintln(writer, "heikou: could not install pilot instructions:", format.OneLine(err.Error()))
 	}
 }
 

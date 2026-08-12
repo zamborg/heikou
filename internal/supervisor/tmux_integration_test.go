@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/heikou"
-	"github.com/zamborg/heikou/internal/runner"
 )
 
 // requireTmux returns the tmux binary. Without tmux these tests cannot run at
@@ -63,7 +63,7 @@ func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
 
 	manager := &Tmux{binary: tmuxBinary, socket: socket, executable: wrapper}
 	t.Cleanup(func() { cleanupTestTmux(manager) })
-	t.Setenv(runner.CodexBinaryEnv, "/bin/sh")
+	t.Setenv(env.CodexBinary, "/bin/sh")
 
 	marker := filepath.Join(t.TempDir(), "prompt-was-executed")
 	prompt := "review this literally $(touch " + marker + ") with `backticks`"
@@ -266,7 +266,7 @@ func TestBootstrapRemovesCredentialUnsetAfterServerStart(t *testing.T) {
 
 	manager := &Tmux{binary: tmuxBinary, socket: socket, executable: wrapper}
 	t.Cleanup(func() { cleanupTestTmux(manager) })
-	t.Setenv(runner.CodexBinaryEnv, "/bin/sh")
+	t.Setenv(env.CodexBinary, "/bin/sh")
 	t.Setenv("HEIKOU_STALE_CREDENTIAL", "old-secret")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

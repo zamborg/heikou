@@ -21,6 +21,7 @@ import (
 	"github.com/clipperhouse/uax29/v2/graphemes"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/runner"
 	"github.com/zamborg/heikou/internal/workstream"
@@ -339,7 +340,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, m.requestSnapshot()
 		}
-		m.notice = fmt.Sprintf("started %s · %s", message.session.Backend, shortID(message.session.ID))
+		m.notice = fmt.Sprintf("started %s · %s", message.session.Backend, format.ShortID(message.session.ID))
 		return m, m.requestSnapshot()
 
 	case sendMsg:
@@ -354,7 +355,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		// at a conversation the user is done with, and staying is the mode that
 		// needs the extra keystroke rather than leaving.
 		m.replyTarget = ""
-		m.notice = "message sent · " + shortID(message.id) + " · composing a new session"
+		m.notice = "message sent · " + format.ShortID(message.id) + " · composing a new session"
 		m.confirmStop, m.confirmDelete = "", ""
 		return m, tea.Batch(m.requestSnapshot(), m.requestPreview(message.id))
 
@@ -364,7 +365,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, nil
 		}
-		m.notice = "stopped runtime · " + shortID(message.id)
+		m.notice = "stopped runtime · " + format.ShortID(message.id)
 		m.confirmStop = ""
 		if source, ok := m.session(message.id); ok && source.Orphaned && m.organizerSource == message.id {
 			m.organizerSource = ""
@@ -377,7 +378,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, nil
 		}
-		m.notice = "deleted session record · " + shortID(message.id)
+		m.notice = "deleted session record · " + format.ShortID(message.id)
 		m.confirmDelete = ""
 		if m.organizerSource == message.id {
 			m.organizerSource = ""
@@ -456,11 +457,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "move":
 			m.organizerSource = ""
 			m.organizerSelected = workstreamRowKey(message.workstreamID)
-			m.notice = "moved session · " + shortID(message.sessionID)
+			m.notice = "moved session · " + format.ShortID(message.sessionID)
 		case "adopt":
 			m.organizerSource = ""
 			m.organizerSelected = workstreamRowKey(message.workstreamID)
-			m.notice = "adopted legacy runtime · " + shortID(message.sessionID)
+			m.notice = "adopted legacy runtime · " + format.ShortID(message.sessionID)
 		case "root":
 			m.notice = "added workstream root"
 		case "root_replace":
@@ -479,9 +480,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.organizerEdit = organizerEditNone
 		m.organizerInput, m.organizerInputCursor = nil, 0
 		if strings.TrimSpace(message.title) == "" {
-			m.notice = "cleared session title · " + shortID(message.id)
+			m.notice = "cleared session title · " + format.ShortID(message.id)
 		} else {
-			m.notice = "updated session title · " + shortID(message.id)
+			m.notice = "updated session title · " + format.ShortID(message.id)
 		}
 		return m, m.requestSnapshot()
 
@@ -594,7 +595,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.cycleSelectedRoot(1) {
-			m.notice = "launch root · " + compactPath(m.launchRoot())
+			m.notice = "launch root · " + format.CompactPath(m.launchRoot())
 		}
 		return m, nil
 	}
@@ -749,7 +750,7 @@ func (m Model) beginReply() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.replyTarget = selected.ID
-	m.notice = "replying to " + shortID(selected.ID) + " · Esc to compose a new session"
+	m.notice = "replying to " + format.ShortID(selected.ID) + " · Esc to compose a new session"
 	return m, nil
 }
 
@@ -768,7 +769,7 @@ func (m Model) commitComposer(draft string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.busy = true
-	m.notice = "sending to " + shortID(target.ID) + "…"
+	m.notice = "sending to " + format.ShortID(target.ID) + "…"
 	return m, m.sendCmd(target.ID, draft)
 }
 
@@ -830,11 +831,11 @@ func (m Model) handleSessionLifecycle(selected control.Session) (tea.Model, tea.
 		m.confirmDelete = ""
 		if m.confirmStop != selected.ID {
 			m.confirmStop = selected.ID
-			m.notice = "Ctrl-X again to stop runtime " + shortID(selected.ID) + " (record stays)"
+			m.notice = "Ctrl-X again to stop runtime " + format.ShortID(selected.ID) + " (record stays)"
 			return m, nil
 		}
 		m.busy = true
-		m.notice = "stopping " + shortID(selected.ID) + "…"
+		m.notice = "stopping " + format.ShortID(selected.ID) + "…"
 		return m, m.stopCmd(selected.ID)
 	}
 	if !selected.Durable || selected.Orphaned {
@@ -844,11 +845,11 @@ func (m Model) handleSessionLifecycle(selected control.Session) (tea.Model, tea.
 	m.confirmStop = ""
 	if m.confirmDelete != selected.ID {
 		m.confirmDelete = selected.ID
-		m.notice = "Ctrl-X again to permanently delete record " + shortID(selected.ID)
+		m.notice = "Ctrl-X again to permanently delete record " + format.ShortID(selected.ID)
 		return m, nil
 	}
 	m.busy = true
-	m.notice = "deleting record " + shortID(selected.ID) + "…"
+	m.notice = "deleting record " + format.ShortID(selected.ID) + "…"
 	return m, m.deleteSessionCmd(selected.ID)
 }
 
@@ -1015,7 +1016,7 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.organizerSource = row.sessionID
-		m.notice = "move source · " + shortID(row.sessionID) + " · choose a workstream and press Enter"
+		m.notice = "move source · " + format.ShortID(row.sessionID) + " · choose a workstream and press Enter"
 		return m, nil
 	case "u", " ", "space":
 		row, ok := m.selectedOrganizerRow()
@@ -1093,14 +1094,14 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.busy = true
-		m.notice = "removing root · " + compactPath(root)
+		m.notice = "removing root · " + format.CompactPath(root)
 		return m, m.removeRootCmd(row.workstreamID, root)
 	case "tab":
 		row, ok := m.selectedOrganizerRow()
 		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
 			if m.cycleRoot(row.workstreamID, 1) {
 				if root, found := m.selectedOrganizerRoot(row); found {
-					m.notice = "launch root · " + compactPath(root)
+					m.notice = "launch root · " + format.CompactPath(root)
 				}
 			}
 		}
@@ -1116,7 +1117,7 @@ func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.notice = "move canceled"
 			} else {
 				m.organizerSource = row.sessionID
-				m.notice = "move source · " + shortID(row.sessionID) + " · choose a workstream and press Enter"
+				m.notice = "move source · " + format.ShortID(row.sessionID) + " · choose a workstream and press Enter"
 			}
 			return m, nil
 		}
@@ -1236,8 +1237,8 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderModeHeader(mode, context string) string {
-	mode = oneLine(sanitize(mode))
-	context = oneLine(sanitize(context))
+	mode = format.OneLine(mode)
+	context = format.OneLine(context)
 	brand := lipgloss.NewStyle().Bold(true).Foreground(colorText).Render("heikou")
 	left := brand + "  " + modeBadgeStyle.Render(mode)
 	if context == "" {
@@ -1322,7 +1323,7 @@ func (m Model) renderWorkstreamRow(row listRow, selected bool) string {
 	root := m.rootSummary(row)
 	activity := ""
 	if !latest.IsZero() {
-		activity = relativeTime(latest, time.Now())
+		activity = format.RelativeTime(latest, time.Now())
 	}
 	plain := marker + " " + twist + " " + name + "  " + counts
 	if root != "" {
@@ -1374,20 +1375,20 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 	fixedWidth := 42
 	path := ""
 	if m.width >= 96 {
-		path = truncatePlain(oneLine(filepath.Base(session.Root)), 16)
+		path = truncatePlain(format.OneLine(filepath.Base(session.Root)), 16)
 		fixedWidth += 18
 	}
 	taskWidth := max(1, m.width-fixedWidth)
 	task := sessionRowSummary(session, taskWidth)
 	row := marker + "   " + iconStyle.Render(icon) + " " +
 		padANSI(backendStyle(session.Backend).Render(string(session.Backend)), runnerWidth) + " " +
-		padPlain(shortID(session.ID), 7) + " " +
+		padPlain(format.ShortID(session.ID), 7) + " " +
 		padANSI(mutedStyle.Render(truncatePlain(status, 11)), 11) + " " +
 		padPlain(task, taskWidth)
 	if path != "" {
 		row += "  " + padANSI(mutedStyle.Render(path), 16)
 	}
-	row += "  " + padANSI(mutedStyle.Render(formatDuration(session.RuntimeDuration(time.Now()))), 7)
+	row += "  " + padANSI(mutedStyle.Render(format.Duration(session.RuntimeDuration(time.Now()))), 7)
 	row = padANSI(truncateANSI(row, m.width), m.width)
 	if selected {
 		return selectedStyle.Render(ansi.Strip(row))
@@ -1397,21 +1398,21 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 
 func sessionDisplayTitle(session control.Session) string {
 	if title := strings.TrimSpace(session.Record.Title); title != "" {
-		return oneLine(title)
+		return format.OneLine(title)
 	}
 	if prompt := strings.TrimSpace(session.Prompt); prompt != "" {
-		return oneLine(prompt)
+		return format.OneLine(prompt)
 	}
 	return string(session.Backend) + " session"
 }
 
 func sessionSecondaryDetail(session control.Session) string {
 	if latest := strings.TrimSpace(session.LastUserMessage); latest != "" {
-		return "latest via Heikou · " + oneLine(latest)
+		return "latest via Heikou · " + format.OneLine(latest)
 	}
 	if strings.TrimSpace(session.Record.Title) != "" {
 		if prompt := strings.TrimSpace(session.Prompt); prompt != "" {
-			return "initial task · " + oneLine(prompt)
+			return "initial task · " + format.OneLine(prompt)
 		}
 	}
 	return ""
@@ -1448,8 +1449,8 @@ func (m Model) renderDetails() string {
 	width := max(10, m.width-2)
 	statusIcon, status := statusLabel(selected)
 	header := " " + backendStyle(selected.Backend).Render(string(selected.Backend)) +
-		"  " + selectedKeyHint.Render(shortID(selected.ID)) + "  " + statusIcon + " " + status +
-		"  " + mutedStyle.Render(formatDuration(selected.RuntimeDuration(time.Now())))
+		"  " + selectedKeyHint.Render(format.ShortID(selected.ID)) + "  " + statusIcon + " " + status +
+		"  " + mutedStyle.Render(format.Duration(selected.RuntimeDuration(time.Now())))
 	lines := []string{truncateANSI(header, m.width)}
 	if len(lines) < height {
 		lines = append(lines, mutedStyle.Render(" title ")+truncatePlain(sessionDisplayTitle(selected), max(8, width-7)))
@@ -1458,7 +1459,7 @@ func (m Model) renderDetails() string {
 		lines = append(lines, mutedStyle.Render("       ")+truncatePlain(detail, max(8, width-7)))
 	}
 	if strings.TrimSpace(selected.Record.Title) != "" && strings.TrimSpace(selected.LastUserMessage) != "" && len(lines) < height {
-		initial := "initial task · " + oneLine(selected.Prompt)
+		initial := "initial task · " + format.OneLine(selected.Prompt)
 		lines = append(lines, mutedStyle.Render("       ")+truncatePlain(initial, max(8, width-7)))
 	}
 	if len(lines) < height {
@@ -1466,7 +1467,7 @@ func (m Model) renderDetails() string {
 		if selected.Runtime != nil && selected.Runtime.CurrentPath != "" {
 			path = selected.Runtime.CurrentPath
 		}
-		lines = append(lines, mutedStyle.Render(" cwd   ")+truncatePlain(oneLine(compactPath(path)), max(8, width-7)))
+		lines = append(lines, mutedStyle.Render(" cwd   ")+truncatePlain(format.OneLine(format.CompactPath(path)), max(8, width-7)))
 	}
 	if len(lines) < height {
 		container := m.workstreamName(selected.WorkstreamID)
@@ -1474,7 +1475,7 @@ func (m Model) renderDetails() string {
 		if selected.Orphaned {
 			state = "orphaned tmux runtime · no durable membership"
 		} else if selected.Runtime != nil && !selected.Runtime.LastActivityAt.IsZero() {
-			state += " · terminal activity " + relativeTime(selected.Runtime.LastActivityAt, time.Now())
+			state += " · terminal activity " + format.RelativeTime(selected.Runtime.LastActivityAt, time.Now())
 		}
 		lines = append(lines, mutedStyle.Render(" state ")+truncatePlain(state, max(8, width-7)))
 	}
@@ -1489,7 +1490,7 @@ func (m Model) renderDetails() string {
 		} else if m.previewID != selected.ID {
 			preview = "loading terminal preview…"
 		}
-		previewLines := wrapLines(sanitize(preview), width)
+		previewLines := wrapLines(format.Sanitize(preview), width)
 		if len(previewLines) == 0 {
 			previewLines = []string{"terminal preview is empty"}
 		}
@@ -1533,10 +1534,10 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 		lines = append(lines, mutedStyle.Render(" about ")+truncatePlain(description, max(1, m.width-8)))
 	}
 	if height > 2 {
-		lines = append(lines, mutedStyle.Render(" root  ")+truncatePlain(compactPath(m.launchRoot()), max(1, m.width-8)))
+		lines = append(lines, mutedStyle.Render(" root  ")+truncatePlain(format.CompactPath(m.launchRoot()), max(1, m.width-8)))
 	}
 	if height > 3 && artifact != "" {
-		lines = append(lines, mutedStyle.Render(" files ")+truncatePlain(compactPath(artifact), max(1, m.width-8)))
+		lines = append(lines, mutedStyle.Render(" files ")+truncatePlain(format.CompactPath(artifact), max(1, m.width-8)))
 	}
 	if height > 4 {
 		lines = append(lines, faintStyle.Render(" F3 organize · Shift-Tab cycle roots · Enter collapse/expand"))
@@ -1566,7 +1567,7 @@ func (m Model) renderComposer() string {
 	} else if m.notice != "" {
 		message, style = m.notice, noticeStyle
 	}
-	return m.renderRule() + "\n" + composer + "\n" + style.Render(truncatePlain(oneLine(message), m.width))
+	return m.renderRule() + "\n" + composer + "\n" + style.Render(truncatePlain(format.OneLine(message), m.width))
 }
 
 // composerPrefix names the destination Enter will commit to. It is the only
@@ -1575,7 +1576,7 @@ func (m Model) renderComposer() string {
 func (m Model) composerPrefix() string {
 	if m.replyTarget != "" {
 		target, found := m.session(m.replyTarget)
-		label := shortID(m.replyTarget)
+		label := format.ShortID(m.replyTarget)
 		style := mutedStyle.Bold(true)
 		if found {
 			label += " · " + sessionDisplayTitle(target)
@@ -1587,7 +1588,7 @@ func (m Model) composerPrefix() string {
 		}
 		return style.Render(text)
 	}
-	contextLabel := m.workstreamName(m.launchWorkstreamID()) + " · " + compactPath(m.launchRoot())
+	contextLabel := m.workstreamName(m.launchWorkstreamID()) + " · " + format.CompactPath(m.launchRoot())
 	prefixText := string(m.backend) + " · " + contextLabel + " › "
 	if lipgloss.Width(prefixText) > max(1, m.width-8) {
 		contextLabel = truncatePlain(contextLabel, max(3, m.width-lipgloss.Width(string(m.backend))-8))
@@ -1608,9 +1609,9 @@ func (m Model) settingsLines() []string {
 	}
 	lines := []string{
 		title, m.renderRule(), "",
-		mutedStyle.Render(" config   ") + truncatePlain(oneLine(compactPath(m.store.Path)), max(1, m.width-10)),
+		mutedStyle.Render(" config   ") + truncatePlain(format.OneLine(format.CompactPath(m.store.Path)), max(1, m.width-10)),
 		mutedStyle.Render(" state    ") + state,
-		mutedStyle.Render(" app data ") + truncatePlain(oneLine(compactPath(m.snapshot.StatePath)), max(1, m.width-10)),
+		mutedStyle.Render(" app data ") + truncatePlain(format.OneLine(format.CompactPath(m.snapshot.StatePath)), max(1, m.width-10)),
 		mutedStyle.Render(" startup default  ") + backendStyle(m.settings.DefaultRunner).Render(string(m.settings.DefaultRunner)),
 		"", lipgloss.NewStyle().Bold(true).Render(" composer keys"),
 		mutedStyle.Render(" commit ") + "Enter sends to the destination shown in the composer",
@@ -1624,7 +1625,7 @@ func (m Model) settingsLines() []string {
 		resolved, err := runner.ResolveCommand(backend, m.settings.Command(backend))
 		resolution := jsonCommand(resolved)
 		if err != nil {
-			resolution = "missing · " + oneLine(err.Error())
+			resolution = "missing · " + format.OneLine(err.Error())
 		}
 		lines = append(lines, mutedStyle.Render("   resolved ")+truncatePlain(resolution, max(1, m.width-12)))
 	}
@@ -1677,10 +1678,10 @@ func (m Model) renderOrganizer() string {
 	if m.errorText != "" {
 		message, style = "error: "+m.errorText, failedStyle
 	} else if message == "" && m.organizerSource != "" {
-		message = "move source · " + shortID(m.organizerSource) + " · choose a workstream and press Enter"
+		message = "move source · " + format.ShortID(m.organizerSource) + " · choose a workstream and press Enter"
 	}
 	help := m.organizerHelp()
-	lines = append(lines, m.renderRule(), style.Render(truncatePlain(oneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width)))
+	lines = append(lines, m.renderRule(), style.Render(truncatePlain(format.OneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width)))
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
@@ -1781,7 +1782,7 @@ func (m Model) renderOrganizerSessionRow(session control.Session, selected, sour
 	fixed := 35
 	task := sessionRowSummary(session, max(1, m.width-fixed))
 	plain := "    " + sourceMark + " " + icon + " " + padPlain(string(session.Backend), 8) + " " +
-		padPlain(shortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
+		padPlain(format.ShortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
 	if selected {
 		return renderSelectedOrganizerRow(plain, m.width)
 	}
@@ -1791,7 +1792,7 @@ func (m Model) renderOrganizerSessionRow(session control.Session, selected, sour
 	// a wide row overflow the pane by the couple of columns `fixed` under-counts.
 	styled := "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
 		backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " " +
-		padPlain(shortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
+		padPlain(format.ShortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
 	return padANSI(truncateANSI(styled, m.width), m.width)
 }
 
@@ -1812,7 +1813,7 @@ func (m Model) fitPane(lines []string, help string) string {
 	} else if m.notice != "" {
 		message = m.notice
 	}
-	footer := []string{m.renderRule(), style.Render(truncatePlain(oneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width))}
+	footer := []string{m.renderRule(), style.Render(truncatePlain(format.OneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width))}
 	available := max(0, m.height-len(footer))
 	offset := min(max(0, m.settingsOffset), max(0, len(lines)-available))
 	if len(lines) > available {
@@ -2006,7 +2007,7 @@ func (m Model) rootSummary(row listRow) string {
 		return "unmanaged"
 	}
 	if row.workstreamID == "" {
-		return compactPath(m.root)
+		return format.CompactPath(m.root)
 	}
 	item, ok := m.workstream(row.workstreamID)
 	if !ok || len(item.Roots) == 0 {
@@ -2123,7 +2124,7 @@ func (m Model) organizerContextLabel() string {
 		}
 		return ""
 	}
-	return item.Name + " · " + compactPath(item.ArtifactDir)
+	return item.Name + " · " + format.CompactPath(item.ArtifactDir)
 }
 
 func (m Model) selectedOrganizerWorkstream() (workstream.Workstream, bool) {
@@ -2151,7 +2152,7 @@ func (m Model) moveOrganizerSource(workstreamID string) (tea.Model, tea.Cmd) {
 	}
 	m.busy = true
 	m.organizerSelected = workstreamRowKey(workstreamID)
-	m.notice = "moving " + shortID(source.ID) + "…"
+	m.notice = "moving " + format.ShortID(source.ID) + "…"
 	if source.Orphaned {
 		return m, m.adoptSessionCmd(source.ID, workstreamID)
 	}
@@ -2560,58 +2561,6 @@ func sessionRowKey(session control.Session) string {
 	return "session:" + session.ID
 }
 
-func formatDuration(value time.Duration) string {
-	if value < time.Minute {
-		return fmt.Sprintf("%ds", max(0, int(value.Seconds())))
-	}
-	if value < time.Hour {
-		return fmt.Sprintf("%dm", int(value.Minutes()))
-	}
-	if value < 24*time.Hour {
-		return fmt.Sprintf("%dh%02dm", int(value.Hours()), int(value.Minutes())%60)
-	}
-	return fmt.Sprintf("%dd", int(value.Hours()/24))
-}
-
-func relativeTime(value, now time.Time) string {
-	delta := now.Sub(value)
-	if delta < 0 {
-		delta = 0
-	}
-	if delta < 2*time.Second {
-		return "now"
-	}
-	return formatDuration(delta) + " ago"
-}
-
-func shortID(id string) string {
-	clean := strings.ReplaceAll(id, "-", "")
-	if len(clean) <= 6 {
-		return clean
-	}
-	return clean[:6]
-}
-
-func compactPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err == nil && (path == home || strings.HasPrefix(path, home+string(filepath.Separator))) {
-		path = "~" + strings.TrimPrefix(path, home)
-	}
-	return path
-}
-
-func oneLine(value string) string { return strings.Join(strings.Fields(sanitize(value)), " ") }
-
-func sanitize(value string) string {
-	value = ansi.Strip(value)
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
-			return r
-		}
-		return -1
-	}, value)
-}
-
 func inlineSafeText(value string) string {
 	value = ansi.Strip(value)
 	return strings.Map(func(r rune) rune {
@@ -2728,7 +2677,7 @@ func jsonCommand(command []string) string {
 	if err != nil {
 		return "[]"
 	}
-	return oneLine(string(data))
+	return format.OneLine(string(data))
 }
 
 func editorCommand(path string) (*exec.Cmd, error) {

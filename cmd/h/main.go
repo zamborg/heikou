@@ -14,12 +14,12 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/env"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/home"
 	"github.com/zamborg/heikou/internal/runner"
@@ -47,14 +47,14 @@ func main() {
 	// Relocation runs at the process entry point rather than inside run so the
 	// test surface never migrates a developer's real installation.
 	if err := migrateHome(os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		fmt.Fprintln(os.Stderr, "heikou:", format.OneLine(err.Error()))
 		os.Exit(1)
 	}
 
 	ensurePilotDocs(os.Stderr)
 
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		fmt.Fprintln(os.Stderr, "heikou:", format.OneLine(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -94,46 +94,85 @@ func migrateHome(writer io.Writer) error {
 	return nil
 }
 
-func run(args []string) error {
-	return runWithGlobalOutput(args, os.Stdout)
+// app is everything a command handler needs from the process around it: two
+// places to write, and a way to reach the controller, the settings, and the
+// working directory.
+//
+// Handlers used to take these from package scope — os.Stdout directly, and a
+// controller each one built for itself out of the environment. That made every
+// verb untestable except by building the binary and running it, which is why
+// the end-to-end suite exists and why cmd/h reported almost no coverage. The
+// suite still earns its keep, because it tests what actually ships. But
+// argument handling, refusal wording and the shape of --json do not need a tmux
+// server to check, and with this struct they no longer ask for one.
+type app struct {
+	out io.Writer
+	err io.Writer
+
+	// dial is deliberately called inside each handler rather than once up
+	// front. A verb that refuses its arguments must fail on the arguments, not
+	// on a missing tmux server, so nothing may dial before the arguments are
+	// known to be good.
+	dial     func(socket string) (control.Service, error)
+	settings func() (config.Store, config.Config, error)
+	workdir  func() string
 }
 
-func runWithGlobalOutput(args []string, writer io.Writer) error {
-	if routeGlobalCommand(args, writer) {
+// newApp wires the real process. Every field here reads the environment; every
+// field is replaceable in a test.
+func newApp() *app {
+	return &app{
+		out:      os.Stdout,
+		err:      os.Stderr,
+		settings: loadSettings,
+		workdir:  mustWorkingDirectory,
+		dial: func(socket string) (control.Service, error) {
+			_, controller, _, err := newController(socket)
+			return controller, err
+		},
+	}
+}
+
+func run(args []string) error {
+	return newApp().run(args)
+}
+
+func (a *app) run(args []string) error {
+	if routeGlobalCommand(args, a.out) {
 		return nil
 	}
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return runDashboard(args)
+		return a.runDashboard(args)
 	}
 	switch args[0] {
 	case "doctor":
-		return runDoctor(args[1:])
+		return a.runDoctor(args[1:])
 	case "quickstart":
-		return runQuickstart(args[1:])
+		return a.runQuickstart(args[1:])
 	case "list", "ls":
-		return runList(args[1:])
+		return a.runList(args[1:])
 	case "spawn", "new":
-		return runSpawn(args[1:])
+		return a.runSpawn(args[1:])
 	case "send":
-		return runSend(args[1:])
+		return a.runSend(args[1:])
 	case "attach":
-		return runAttach(args[1:])
+		return a.runAttach(args[1:])
 	case "stop", "rm":
-		return runStop(args[1:])
+		return a.runStop(args[1:])
 	case "peek":
-		return runPeek(args[1:])
+		return a.runPeek(args[1:])
 	case "ws", "workstream":
-		return runWorkstreamCommand(args[1:])
+		return a.runWorkstreamCommand(args[1:])
 	case "title":
-		return runTitle(args[1:])
+		return a.runTitle(args[1:])
 	case "move":
-		return runMove(args[1:])
+		return a.runMove(args[1:])
 	case "adopt":
-		return runAdopt(args[1:])
+		return a.runAdopt(args[1:])
 	case "delete":
-		return runDelete(args[1:])
+		return a.runDelete(args[1:])
 	case "init":
-		return runInit(args[1:])
+		return a.runInit(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q; run h help", args[0])
 	}
@@ -155,17 +194,17 @@ func routeGlobalCommand(args []string, writer io.Writer) bool {
 	}
 }
 
-func runDashboard(args []string) error {
-	return runDashboardSelected(args, "")
+func (a *app) runDashboard(args []string) error {
+	return a.runDashboardSelected(args, "")
 }
 
-func runDashboardSelected(args []string, selectedSessionID string) error {
-	configStore, settings, err := loadSettings()
+func (a *app) runDashboardSelected(args []string, selectedSessionID string) error {
+	configStore, settings, err := a.settings()
 	if err != nil {
 		return err
 	}
-	flags := newFlagSet("h")
-	root := flags.String("root", mustWorkingDirectory(), "root directory for newly spawned agents")
+	flags := a.newFlagSet("h")
+	root := flags.String("root", a.workdir(), "root directory for newly spawned agents")
 	flags.StringVar(root, "C", *root, "root directory for newly spawned agents")
 	runnerValue := flags.String("runner", string(settings.DefaultRunner), "default runner: codex, claude, or no-agent")
 	flags.StringVar(runnerValue, "r", *runnerValue, "default runner: codex, claude, or no-agent")
@@ -204,7 +243,7 @@ func runDashboardSelected(args []string, selectedSessionID string) error {
 	if err := manager.Bootstrap(ctx); err != nil {
 		return err
 	}
-	provisionInstallation(ctx, controller, stateStore, os.Stderr)
+	provisionInstallation(ctx, controller, stateStore, a.err)
 
 	program := tea.NewProgram(ui.NewWithSelectedSession(controller, absRoot, backend, configStore, settings, selectedSessionID))
 	if _, err := program.Run(); err != nil {
@@ -213,9 +252,9 @@ func runDashboardSelected(args []string, selectedSessionID string) error {
 	return nil
 }
 
-func runQuickstart(args []string) error {
-	flags := newFlagSet("h quickstart")
-	root := flags.String("root", mustWorkingDirectory(), "project root for the guided session")
+func (a *app) runQuickstart(args []string) error {
+	flags := a.newFlagSet("h quickstart")
+	root := flags.String("root", a.workdir(), "project root for the guided session")
 	flags.StringVar(root, "C", *root, "project root for the guided session")
 	runnerValue := flags.String("runner", "", "guide runner: claude or codex (default: prefer claude)")
 	flags.StringVar(runnerValue, "r", *runnerValue, "guide runner: claude or codex (default: prefer claude)")
@@ -233,7 +272,7 @@ func runQuickstart(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("usage: h quickstart [-r claude|codex] [-C dir]")
 	}
-	_, settings, err := loadSettings()
+	_, settings, err := a.settings()
 	if err != nil {
 		return err
 	}
@@ -245,7 +284,7 @@ func runQuickstart(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve root: %w", err)
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -260,20 +299,20 @@ func runQuickstart(args []string) error {
 		return err
 	}
 
-	fmt.Printf("started guided %s session %s\n", backend, shortID(session.ID))
-	fmt.Fprintln(os.Stderr, "attaching now · your first lesson is Ctrl-b, release, then d")
+	fmt.Fprintf(a.out, "started guided %s session %s\n", backend, format.ShortID(session.ID))
+	fmt.Fprintln(a.err, "attaching now · your first lesson is Ctrl-b, release, then d")
 	attachContext, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
 	command, err := controller.AttachCommand(attachContext, session.ID)
 	cancelAttach()
 	if err != nil {
-		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", format.ShortID(session.ID), err)
 	}
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", format.ShortID(session.ID), err)
 	}
 
-	fmt.Fprintln(os.Stderr, "detached · opening heikou with the guide selected")
-	return runDashboardSelected([]string{
+	fmt.Fprintln(a.err, "detached · opening heikou with the guide selected")
+	return a.runDashboardSelected([]string{
 		"--runner", string(backend),
 		"--root", absRoot,
 		"--socket", *socket,
@@ -310,13 +349,13 @@ func quickstartPrompt() string {
 	return "Guide me through my first Heikou workstream and session. You are running inside the guided session created by h quickstart. Follow the embedded skill below, begin with its in-session path, teach one action at a time, and wait for me after each action.\n\n" + learnheikou.Instructions
 }
 
-func runSpawn(args []string) error {
-	_, settings, err := loadSettings()
+func (a *app) runSpawn(args []string) error {
+	_, settings, err := a.settings()
 	if err != nil {
 		return err
 	}
-	flags := newFlagSet("h spawn")
-	root := flags.String("root", mustWorkingDirectory(), "agent working directory")
+	flags := a.newFlagSet("h spawn")
+	root := flags.String("root", a.workdir(), "agent working directory")
 	flags.StringVar(root, "C", *root, "agent working directory")
 	runnerValue := flags.String("runner", string(settings.DefaultRunner), "runner: codex, claude, or no-agent")
 	flags.StringVar(runnerValue, "r", *runnerValue, "runner: codex, claude, or no-agent")
@@ -335,7 +374,7 @@ func runSpawn(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -363,17 +402,17 @@ func runSpawn(args []string) error {
 		name = session.Runtime.Name
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"id": session.ID, "runner": session.Backend, "state": cliStatus(session),
 			"workstream_id": session.WorkstreamID, "runtime_name": name, "root": session.Root,
 		})
 	}
-	fmt.Printf("started %s %s (%s)\n", session.Backend, shortID(session.ID), name)
+	fmt.Fprintf(a.out, "started %s %s (%s)\n", session.Backend, format.ShortID(session.ID), name)
 	return nil
 }
 
-func runList(args []string) error {
-	flags := newFlagSet("h list")
+func (a *app) runList(args []string) error {
+	flags := a.newFlagSet("h list")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable snapshot")
 	if err := flags.Parse(args); err != nil {
@@ -382,7 +421,7 @@ func runList(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("usage: h list")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -393,25 +432,25 @@ func runList(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, newCLISnapshot(snapshot))
+		return writeJSON(a.out, newCLISnapshot(snapshot))
 	}
 	if len(snapshot.Sessions) == 0 && len(snapshot.Orphans) == 0 {
-		fmt.Println("no heikou sessions")
+		fmt.Fprintln(a.out, "no heikou sessions")
 		return nil
 	}
-	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	writer := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tRUNNER\tSTATE\tWORKSTREAM\tRUNTIME\tROOT\tSESSION")
 	all := append(append([]control.Session(nil), snapshot.Sessions...), snapshot.Orphans...)
 	for _, session := range all {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			shortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
-			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), cliSessionSummary(session))
+			format.ShortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
+			format.Duration(session.RuntimeDuration(time.Now())), format.OneLine(format.CompactPath(session.Root)), cliSessionSummary(session))
 	}
 	return writer.Flush()
 }
 
-func runSend(args []string) error {
-	flags := newFlagSet("h send")
+func (a *app) runSend(args []string) error {
+	flags := a.newFlagSet("h send")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
 	if err := parseAnywhere(flags, args); err != nil {
@@ -420,7 +459,7 @@ func runSend(args []string) error {
 	if flags.NArg() < 2 {
 		return errors.New("usage: h send <session-id> <message>; put -- before a message that starts with a dash")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -434,14 +473,14 @@ func runSend(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{"session_id": session.ID, "status": "sent"})
+		return writeJSON(a.out, map[string]any{"session_id": session.ID, "status": "sent"})
 	}
-	fmt.Println("sent to", shortID(session.ID))
+	fmt.Fprintln(a.out, "sent to", format.ShortID(session.ID))
 	return nil
 }
 
-func runAttach(args []string) error {
-	flags := newFlagSet("h attach")
+func (a *app) runAttach(args []string) error {
+	flags := a.newFlagSet("h attach")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	if err := parseAnywhere(flags, args); err != nil {
 		return err
@@ -449,7 +488,7 @@ func runAttach(args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("usage: h attach <session-id>")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -459,7 +498,7 @@ func runAttach(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "detach back with Ctrl-\\ or Ctrl-b d")
+	fmt.Fprintln(a.err, "detach back with Ctrl-\\ or Ctrl-b d")
 	command, err := controller.AttachCommand(ctx, session.ID)
 	if err != nil {
 		return err
@@ -467,8 +506,8 @@ func runAttach(args []string) error {
 	return command.Run()
 }
 
-func runStop(args []string) error {
-	flags := newFlagSet("h stop")
+func (a *app) runStop(args []string) error {
+	flags := a.newFlagSet("h stop")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	if err := parseAnywhere(flags, args); err != nil {
 		return err
@@ -476,7 +515,7 @@ func runStop(args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("usage: h stop <session-id>")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -489,16 +528,16 @@ func runStop(args []string) error {
 	if err := controller.Stop(ctx, session.ID); err != nil {
 		return err
 	}
-	fmt.Println("stopped", shortID(session.ID))
+	fmt.Fprintln(a.out, "stopped", format.ShortID(session.ID))
 	return nil
 }
 
-func runDoctor(args []string) error {
-	configStore, settings, err := loadSettings()
+func (a *app) runDoctor(args []string) error {
+	configStore, settings, err := a.settings()
 	if err != nil {
 		return err
 	}
-	flags := newFlagSet("h doctor")
+	flags := a.newFlagSet("h doctor")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -549,7 +588,7 @@ func runDoctor(args []string) error {
 					requested = configured[0]
 				}
 			}
-			fmt.Printf("[missing] %-7s %s (%s)\n", check.name, oneLine(requested), label)
+			fmt.Fprintf(a.out, "[missing] %-7s %s (%s)\n", check.name, format.OneLine(requested), label)
 			continue
 		}
 		if check.runner {
@@ -560,33 +599,33 @@ func runDoctor(args []string) error {
 		output, err := exec.CommandContext(ctx, path, versionArguments...).CombinedOutput()
 		cancel()
 		if err != nil {
-			fmt.Printf("[warn]    %-7s %s\n", check.name, oneLine(path))
+			fmt.Fprintf(a.out, "[warn]    %-7s %s\n", check.name, format.OneLine(path))
 			continue
 		}
-		versionText := oneLine(string(output))
+		versionText := format.OneLine(string(output))
 		if check.name == "tmux" {
 			if supported, known := supportedTmuxVersion(versionText); known && !supported {
 				failed = true
-				fmt.Printf("[unsupported] %-7s %s · %s (need tmux 3.3+)\n", check.name, oneLine(path), versionText)
+				fmt.Fprintf(a.out, "[unsupported] %-7s %s · %s (need tmux 3.3+)\n", check.name, format.OneLine(path), versionText)
 				continue
 			}
 		}
-		fmt.Printf("[ok]      %-7s %s · %s\n", check.name, oneLine(path), versionText)
+		fmt.Fprintf(a.out, "[ok]      %-7s %s · %s\n", check.name, format.OneLine(path), versionText)
 	}
 	if runnersFound == 0 {
 		failed = true
-		fmt.Println("[missing] runner  install at least one of codex or claude")
+		fmt.Fprintln(a.out, "[missing] runner  install at least one of codex or claude")
 	}
-	fmt.Printf("[config]  socket  tmux -L %s\n", oneLine(*socket))
-	fmt.Printf("[config]  file    %s\n", oneLine(configStore.Path))
-	fmt.Printf("[state]   file    %s\n", oneLine(stateStore.Path))
-	fmt.Printf("[state]   files   %s\n", oneLine(stateStore.Artifacts))
-	fmt.Printf("[config]  runner  %s\n", settings.DefaultRunner)
-	fmt.Printf("[config]  root    %s\n", oneLine(mustWorkingDirectory()))
+	fmt.Fprintf(a.out, "[config]  socket  tmux -L %s\n", format.OneLine(*socket))
+	fmt.Fprintf(a.out, "[config]  file    %s\n", format.OneLine(configStore.Path))
+	fmt.Fprintf(a.out, "[state]   file    %s\n", format.OneLine(stateStore.Path))
+	fmt.Fprintf(a.out, "[state]   files   %s\n", format.OneLine(stateStore.Artifacts))
+	fmt.Fprintf(a.out, "[config]  runner  %s\n", settings.DefaultRunner)
+	fmt.Fprintf(a.out, "[config]  root    %s\n", format.OneLine(a.workdir()))
 	if failed {
 		return errors.New("required dependencies are missing")
 	}
-	fmt.Println("[next]   tour    h quickstart")
+	fmt.Fprintln(a.out, "[next]   tour    h quickstart")
 	return nil
 }
 
@@ -657,14 +696,14 @@ Composer bindings are configurable in JSON and shown in settings/help.
 Closing heikou never stops agents. Both h and H invoke the same binary.`)
 }
 
-func newFlagSet(name string) *flag.FlagSet {
+func (a *app) newFlagSet(name string) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
+	flags.SetOutput(a.err)
 	return flags
 }
 
 func defaultSocket() string {
-	return envOr("HEIKOU_TMUX_SOCKET", supervisor.DefaultSocket)
+	return env.ValueOr(env.TmuxSocket, supervisor.DefaultSocket)
 }
 
 func loadSettings() (config.Store, config.Config, error) {
@@ -781,7 +820,7 @@ func newCLISnapshot(snapshot control.Snapshot) cliSnapshotJSON {
 		title := strings.TrimSpace(session.Record.Title)
 		displayTitle := title
 		if displayTitle == "" {
-			displayTitle = oneLine(session.Prompt)
+			displayTitle = format.OneLine(session.Prompt)
 		}
 		var lastActivityAt *time.Time
 		if observed := session.LastActivity(); !observed.IsZero() {
@@ -828,8 +867,8 @@ func cliSessionSummary(session control.Session) string {
 	if title == "" {
 		title = session.Prompt
 	}
-	title = oneLine(title)
-	if latest := oneLine(session.LastUserMessage); latest != "" && latest != title {
+	title = format.OneLine(title)
+	if latest := format.OneLine(session.LastUserMessage); latest != "" && latest != title {
 		return title + " · latest: " + latest
 	}
 	return title
@@ -850,56 +889,12 @@ func sessionGroup(snapshot control.Snapshot, session control.Session) string {
 	return "Unavailable"
 }
 
-func envOr(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
-}
-
 func mustWorkingDirectory() string {
 	value, err := os.Getwd()
 	if err != nil {
 		return "."
 	}
 	return value
-}
-
-func shortID(id string) string {
-	id = strings.ReplaceAll(id, "-", "")
-	if len(id) <= 6 {
-		return id
-	}
-	return id[:6]
-}
-
-func formatDuration(value time.Duration) string {
-	if value < time.Minute {
-		return fmt.Sprintf("%ds", max(0, int(value.Seconds())))
-	}
-	if value < time.Hour {
-		return fmt.Sprintf("%dm", int(value.Minutes()))
-	}
-	return fmt.Sprintf("%dh%02dm", int(value.Hours()), int(value.Minutes())%60)
-}
-
-func compactPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err == nil && (path == home || strings.HasPrefix(path, home+string(filepath.Separator))) {
-		return "~" + strings.TrimPrefix(path, home)
-	}
-	return path
-}
-
-func oneLine(value string) string {
-	value = ansi.Strip(value)
-	value = strings.Map(func(r rune) rune {
-		if !unicode.IsControl(r) || unicode.IsSpace(r) {
-			return r
-		}
-		return -1
-	}, value)
-	return strings.Join(strings.Fields(value), " ")
 }
 
 func supportedTmuxVersion(value string) (supported, known bool) {

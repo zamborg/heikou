@@ -398,8 +398,16 @@ explicit stop outcomes.
 
 The end-to-end suite builds `h` and drives it as a subprocess against a
 throwaway `HEIKOU_HOME` and a private tmux socket, so argument parsing, refusal
-text, `--json` shape, and exit codes are tested as they ship.
+text, `--json` shape, and exit codes are tested as they ship. Alongside it, the
+in-process suite drives the same verbs directly against a stub controller, which
+is where the twenty-odd refusals and every `--json` key are checked without a
+tmux server anywhere in sight.
 
-Both need tmux, and both skip themselves without it. Set
+The tmux-dependent suites skip themselves without tmux. Set
 `HEIKOU_TEST_REQUIRE_TMUX=1` — as CI and `make race` do — to turn that skip into
 a failure, so a run cannot report green over a suite that never executed.
+
+`internal/architecture` holds the module's shape: which package may import
+which, and which concerns are allowed exactly one home. Adding a package means
+placing it in that map, and an import that contradicts the layering fails there
+rather than being discovered during a later refactor.

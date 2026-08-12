@@ -96,6 +96,11 @@ The package boundaries are:
 
 - `internal/heikou`: runner-neutral session types and the `Supervisor`
   contract;
+- `internal/env`: every environment variable name Heikou reads or sets, so that
+  one list answers which variables it honours;
+- `internal/format`: the presentation helpers every surface shares — elapsed
+  time, abbreviated ids, shortened paths, and text made safe to print on one
+  line;
 - `internal/home`: the one directory holding every Heikou file, and the
   one-time migration from the earlier XDG layout;
 - `internal/config`: the single JSON settings model and strict loader;
@@ -108,6 +113,11 @@ The package boundaries are:
 - `internal/ui`: typed screen reducers, their shared overview read model, and
   rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
+
+`internal/env`, `internal/format` and `internal/heikou` are leaves: they import
+nothing else in the module, so any layer may use them and none can create a
+cycle. That ordering is not a convention to remember — `internal/architecture`
+declares it and fails the build when a new import contradicts it.
 
 There is no Heikou daemon in V0. The private tmux server already provides the
 needed process lifetime and PTY ownership. It is isolated from the user's normal
@@ -514,23 +524,54 @@ authentication and can consume paid model usage.
 
 ### The end-to-end layer
 
-Every command handler in `cmd/h` writes to `os.Stdout` and resolves its own
-controller from the environment, so none can be called directly without faking
-the process. `cmd/h/e2e_test.go` builds the binary and drives it as a
-subprocess instead, against a throwaway `HEIKOU_HOME`, a redirected `HOME`, and
-a private tmux socket.
+`cmd/h/e2e_test.go` builds the binary and drives it as a subprocess, against a
+throwaway `HEIKOU_HOME`, a redirected `HOME`, and a private tmux socket.
 
 That shape is deliberate. The things it protects — dispatch, flag parsing, the
 exact wording of a refusal, the shape of `--json`, the exit code — are the
-contract two audiences depend on, a person at a shell and the pilot agent, and
-each one is invisible to a test that calls the handler directly. It found a
-shipped bug on its first run: `h spawn "task" -r claude` silently launched the
-default runner, because Go's `flag` package stops parsing at the first
-positional and only the newer verbs went through `parseAnywhere`.
+contract two audiences depend on, a person at a shell and the pilot agent. It
+found a shipped bug on its first run: `h spawn "task" -r claude` silently
+launched the default runner, because Go's `flag` package stops parsing at the
+first positional and only the newer verbs went through `parseAnywhere`.
 
 The cost is that `go test -cover` reports nothing for this layer, since coverage
-instrumentation does not follow a subprocess. `cmd/h`'s coverage number is
-therefore a floor and not a measure; do not read it as the state of CLI testing.
+instrumentation does not follow a subprocess. `cmd/h`'s coverage number
+therefore measures the in-process layer alone; do not read it as the state of
+CLI testing.
+
+### The in-process layer
+
+Handlers take an `app` struct carrying two writers, a dialer for
+`control.Service`, the settings loader, and the working directory. Everything a
+verb touches outside itself arrives through it, so `cmd/h/cli_test.go` can drive
+any verb with a `controltest.Stub` and no tmux server at all.
+
+The rule that layer exists to hold is that **a verb which refuses its arguments
+must never have dialled**. A bad argument is not a reason to need tmux, and
+without the rule "you forgot `--yes`" arrives as "tmux is required" on a machine
+where the server is wedged. It is asserted for every refusal, and it found the
+one place it was false: an unknown `h ws root` action passed the argument-count
+check whenever it arrived with two arguments.
+
+`internal/control/controltest` holds the only double for `control.Service`.
+Every package that needs a fake embeds it, so adding a method to the interface
+produces one build error in one file rather than the same fix repeated in each
+package's private fake.
+
+### The layering layer
+
+`internal/architecture` declares the intended package graph and checks the
+source against it. The graph was already right — acyclic, domain types in a
+leaf, the terminal UI reaching no further than `control.Service` — but nothing
+recorded it, so an import from `internal/control` back into `internal/ui` would
+have compiled and passed every test. A package missing from the map fails rather
+than defaulting to permitted, so a new package is placed in the design on
+purpose.
+
+Two narrower rules ride along, each written after the thing it prevents had
+already happened: the shared presentation helpers may be declared only in
+`internal/format`, and a `HEIKOU_` variable name may be written only in
+`internal/env`.
 
 ### The published-contract layer
 

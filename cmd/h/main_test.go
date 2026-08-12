@@ -10,6 +10,7 @@ import (
 
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/workstream"
 )
@@ -51,11 +52,12 @@ func TestRouteGlobalCommand(t *testing.T) {
 
 func TestRunRoutesLongVersionBeforeDashboardFlags(t *testing.T) {
 	var output bytes.Buffer
-	if err := runWithGlobalOutput([]string{"--version"}, &output); err != nil {
+	application := &app{out: &output, err: &output}
+	if err := application.run([]string{"--version"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := output.String(), "heikou "+version+"\n"; got != want {
-		t.Fatalf("runWithGlobalOutput() = %q, want %q", got, want)
+		t.Fatalf("run(--version) = %q, want %q", got, want)
 	}
 }
 
@@ -127,7 +129,9 @@ func TestQuickstartPromptEmbedsCanonicalSkill(t *testing.T) {
 }
 
 func TestQuickstartHelpReturnsSuccess(t *testing.T) {
-	if err := runQuickstart([]string{"-h"}); err != nil {
+	var output bytes.Buffer
+	application := &app{out: &output, err: &output, workdir: func() string { return t.TempDir() }}
+	if err := application.runQuickstart([]string{"-h"}); err != nil {
 		t.Fatalf("quickstart help: %v", err)
 	}
 }
@@ -168,7 +172,7 @@ func TestResolveWorkstreamByNameAndRejectAmbiguity(t *testing.T) {
 }
 
 func TestOneLineStripsTerminalControlSequences(t *testing.T) {
-	got := oneLine("safe\x1b]52;c;c2VjcmV0\x07 text\nnext\x1b[31m red\x1b[0m")
+	got := format.OneLine("safe\x1b]52;c;c2VjcmV0\x07 text\nnext\x1b[31m red\x1b[0m")
 	if strings.Contains(got, "\x1b") || strings.Contains(got, "c2VjcmV0") {
 		t.Fatalf("oneLine retained terminal control payload: %q", got)
 	}

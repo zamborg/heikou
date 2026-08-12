@@ -5,12 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 )
 
 // organizeTimeout bounds one durable organization action. These commands touch
@@ -70,7 +70,7 @@ func parseAnywhere(flags *flag.FlagSet, args []string) error {
 
 // resolveWorkstreamID resolves a workstream name or id prefix through the same
 // matcher `h spawn -w` uses, so every surface accepts the same shorthand.
-func resolveWorkstreamID(ctx context.Context, controller *control.Controller, query string) (string, error) {
+func resolveWorkstreamID(ctx context.Context, controller control.Service, query string) (string, error) {
 	snapshot, err := controller.Snapshot(ctx)
 	if err != nil {
 		return "", err
@@ -78,30 +78,30 @@ func resolveWorkstreamID(ctx context.Context, controller *control.Controller, qu
 	return resolveWorkstream(snapshot, query)
 }
 
-func runWorkstreamCommand(args []string) error {
+func (a *app) runWorkstreamCommand(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: h ws <list|create|rename|reorder|archive|root>")
 	}
 	switch args[0] {
 	case "list", "ls":
-		return runWorkstreamList(args[1:])
+		return a.runWorkstreamList(args[1:])
 	case "create", "new":
-		return runWorkstreamCreate(args[1:])
+		return a.runWorkstreamCreate(args[1:])
 	case "rename":
-		return runWorkstreamRename(args[1:])
+		return a.runWorkstreamRename(args[1:])
 	case "reorder":
-		return runWorkstreamReorder(args[1:])
+		return a.runWorkstreamReorder(args[1:])
 	case "archive":
-		return runWorkstreamArchive(args[1:])
+		return a.runWorkstreamArchive(args[1:])
 	case "root":
-		return runWorkstreamRoot(args[1:])
+		return a.runWorkstreamRoot(args[1:])
 	default:
 		return fmt.Errorf("unknown ws command %q; run h help", args[0])
 	}
 }
 
-func runWorkstreamList(args []string) error {
-	flags := newFlagSet("h ws list")
+func (a *app) runWorkstreamList(args []string) error {
+	flags := a.newFlagSet("h ws list")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable list")
 	if err := parseAnywhere(flags, args); err != nil {
@@ -110,7 +110,7 @@ func runWorkstreamList(args []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("usage: h ws list [--json]")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -121,10 +121,10 @@ func runWorkstreamList(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, newCLISnapshot(snapshot).Workstreams)
+		return writeJSON(a.out, newCLISnapshot(snapshot).Workstreams)
 	}
 	if len(snapshot.Workstreams) == 0 {
-		fmt.Println("no workstreams; create one with h ws create NAME -C DIR")
+		fmt.Fprintln(a.out, "no workstreams; create one with h ws create NAME -C DIR")
 		return nil
 	}
 	counts := make(map[string]int, len(snapshot.Workstreams))
@@ -133,18 +133,18 @@ func runWorkstreamList(args []string) error {
 			counts[session.WorkstreamID]++
 		}
 	}
-	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	writer := tabwriter.NewWriter(a.out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tNAME\tSESSIONS\tROOTS")
 	for _, item := range snapshot.Workstreams {
 		fmt.Fprintf(writer, "%s\t%s\t%d\t%s\n",
-			shortID(item.ID), oneLine(item.Name), counts[item.ID], strings.Join(item.Roots, ", "))
+			format.ShortID(item.ID), format.OneLine(item.Name), counts[item.ID], strings.Join(item.Roots, ", "))
 	}
 	return writer.Flush()
 }
 
-func runWorkstreamCreate(args []string) error {
-	flags := newFlagSet("h ws create")
-	root := flags.String("root", mustWorkingDirectory(), "first registered root")
+func (a *app) runWorkstreamCreate(args []string) error {
+	flags := a.newFlagSet("h ws create")
+	root := flags.String("root", a.workdir(), "first registered root")
 	flags.StringVar(root, "C", *root, "first registered root")
 	description := flags.String("description", "", "optional description")
 	flags.StringVar(description, "d", *description, "optional description")
@@ -157,7 +157,7 @@ func runWorkstreamCreate(args []string) error {
 	if name == "" {
 		return errors.New("usage: h ws create [-C dir] [-d description] <name>")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -168,18 +168,18 @@ func runWorkstreamCreate(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "created", "workstream_id": item.ID, "name": item.Name,
 			"roots": item.Roots, "artifact_dir": item.ArtifactDir,
 		})
 	}
-	fmt.Printf("created workstream %s (%s) with root %s\n", item.Name, shortID(item.ID), *root)
-	fmt.Printf("notes and artifacts: %s\n", item.ArtifactDir)
+	fmt.Fprintf(a.out, "created workstream %s (%s) with root %s\n", item.Name, format.ShortID(item.ID), *root)
+	fmt.Fprintf(a.out, "notes and artifacts: %s\n", item.ArtifactDir)
 	return nil
 }
 
-func runWorkstreamRename(args []string) error {
-	flags := newFlagSet("h ws rename")
+func (a *app) runWorkstreamRename(args []string) error {
+	flags := a.newFlagSet("h ws rename")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
 	if err := parseAnywhere(flags, args); err != nil {
@@ -188,7 +188,7 @@ func runWorkstreamRename(args []string) error {
 	if flags.NArg() < 2 {
 		return errors.New("usage: h ws rename <workstream> <new-name>")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -203,16 +203,16 @@ func runWorkstreamRename(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "renamed", "workstream_id": id, "name": name,
 		})
 	}
-	fmt.Printf("renamed %s to %s\n", shortID(id), name)
+	fmt.Fprintf(a.out, "renamed %s to %s\n", format.ShortID(id), name)
 	return nil
 }
 
-func runWorkstreamReorder(args []string) error {
-	flags := newFlagSet("h ws reorder")
+func (a *app) runWorkstreamReorder(args []string) error {
+	flags := a.newFlagSet("h ws reorder")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	up := flags.Bool("up", false, "move one position earlier")
 	down := flags.Bool("down", false, "move one position later")
@@ -223,7 +223,7 @@ func runWorkstreamReorder(args []string) error {
 	if flags.NArg() != 1 || *up == *down {
 		return errors.New("usage: h ws reorder <workstream> --up|--down")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -246,16 +246,16 @@ func runWorkstreamReorder(args []string) error {
 		status = "already at the edge"
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "reordered", "workstream_id": id, "moved": moved,
 		})
 	}
-	fmt.Printf("%s %s\n", shortID(id), status)
+	fmt.Fprintf(a.out, "%s %s\n", format.ShortID(id), status)
 	return nil
 }
 
-func runWorkstreamArchive(args []string) error {
-	flags := newFlagSet("h ws archive")
+func (a *app) runWorkstreamArchive(args []string) error {
+	flags := a.newFlagSet("h ws archive")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	confirm := flags.Bool("yes", false, "confirm archiving")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
@@ -268,7 +268,7 @@ func runWorkstreamArchive(args []string) error {
 	if !*confirm {
 		return errors.New("archiving moves every member session to Ungrouped; pass --yes to confirm")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -282,27 +282,36 @@ func runWorkstreamArchive(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{"status": "archived", "workstream_id": id})
+		return writeJSON(a.out, map[string]any{"status": "archived", "workstream_id": id})
 	}
-	fmt.Printf("archived %s; its sessions are now Ungrouped\n", shortID(id))
+	fmt.Fprintf(a.out, "archived %s; its sessions are now Ungrouped\n", format.ShortID(id))
 	return nil
 }
 
-func runWorkstreamRoot(args []string) error {
+func (a *app) runWorkstreamRoot(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: h ws root <add|set|rm> <workstream> <dir>")
 	}
 	action := args[0]
-	flags := newFlagSet("h ws root " + action)
+	flags := a.newFlagSet("h ws root " + action)
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
 	if err := parseAnywhere(flags, args[1:]); err != nil {
 		return err
 	}
 
-	want := 2
-	if action == "set" {
+	// The action is checked before the argument count, and both before the
+	// controller is dialled. An unknown action used to pass the count check
+	// whenever it happened to arrive with two arguments, so `h ws root flip X /tmp`
+	// needed a working tmux server before it would admit that flip is not a verb.
+	want := 0
+	switch action {
+	case "add", "rm", "remove":
+		want = 2
+	case "set":
 		want = 3
+	default:
+		return fmt.Errorf("unknown ws root command %q; want add, set, or rm", action)
 	}
 	if flags.NArg() != want {
 		switch action {
@@ -310,14 +319,12 @@ func runWorkstreamRoot(args []string) error {
 			return errors.New("usage: h ws root add <workstream> <dir>")
 		case "set":
 			return errors.New("usage: h ws root set <workstream> <current-dir> <new-dir>")
-		case "rm", "remove":
-			return errors.New("usage: h ws root rm <workstream> <dir>")
 		default:
-			return fmt.Errorf("unknown ws root command %q; want add, set, or rm", action)
+			return errors.New("usage: h ws root rm <workstream> <dir>")
 		}
 	}
 
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -343,16 +350,16 @@ func runWorkstreamRoot(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": status, "workstream_id": id, "root": flags.Arg(1),
 		})
 	}
-	fmt.Printf("%s root on %s\n", status, shortID(id))
+	fmt.Fprintf(a.out, "%s root on %s\n", status, format.ShortID(id))
 	return nil
 }
 
-func runTitle(args []string) error {
-	flags := newFlagSet("h title")
+func (a *app) runTitle(args []string) error {
+	flags := a.newFlagSet("h title")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	clear := flags.Bool("clear", false, "clear the durable title")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
@@ -372,7 +379,7 @@ func runTitle(args []string) error {
 		return errors.New("usage: h title <session> <title>   |   h title <session> --clear")
 	}
 
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -386,20 +393,20 @@ func runTitle(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "titled", "session_id": session.ID, "title": title,
 		})
 	}
 	if title == "" {
-		fmt.Printf("cleared the title on %s\n", shortID(session.ID))
+		fmt.Fprintf(a.out, "cleared the title on %s\n", format.ShortID(session.ID))
 		return nil
 	}
-	fmt.Printf("titled %s: %s\n", shortID(session.ID), title)
+	fmt.Fprintf(a.out, "titled %s: %s\n", format.ShortID(session.ID), title)
 	return nil
 }
 
-func runMove(args []string) error {
-	flags := newFlagSet("h move")
+func (a *app) runMove(args []string) error {
+	flags := a.newFlagSet("h move")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	target := flags.String("workstream", "", "destination workstream name or id")
 	flags.StringVar(target, "w", *target, "destination workstream name or id")
@@ -413,7 +420,7 @@ func runMove(args []string) error {
 	if flags.NArg() != 1 || (strings.TrimSpace(*target) == "") == !*ungrouped {
 		return errors.New("usage: h move <session> --workstream NAME|--ungrouped")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -433,20 +440,20 @@ func runMove(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "moved", "session_id": session.ID, "workstream_id": workstreamID,
 		})
 	}
 	if workstreamID == "" {
-		fmt.Printf("moved %s to Ungrouped\n", shortID(session.ID))
+		fmt.Fprintf(a.out, "moved %s to Ungrouped\n", format.ShortID(session.ID))
 		return nil
 	}
-	fmt.Printf("moved %s to %s\n", shortID(session.ID), shortID(workstreamID))
+	fmt.Fprintf(a.out, "moved %s to %s\n", format.ShortID(session.ID), format.ShortID(workstreamID))
 	return nil
 }
 
-func runAdopt(args []string) error {
-	flags := newFlagSet("h adopt")
+func (a *app) runAdopt(args []string) error {
+	flags := a.newFlagSet("h adopt")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	target := flags.String("workstream", "", "destination workstream name or id")
 	flags.StringVar(target, "w", *target, "destination workstream name or id")
@@ -457,7 +464,7 @@ func runAdopt(args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("usage: h adopt <orphaned-session> [-w workstream]")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -478,16 +485,16 @@ func runAdopt(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"status": "adopted", "session_id": adopted.ID, "workstream_id": workstreamID,
 		})
 	}
-	fmt.Printf("adopted %s into durable state\n", shortID(adopted.ID))
+	fmt.Fprintf(a.out, "adopted %s into durable state\n", format.ShortID(adopted.ID))
 	return nil
 }
 
-func runDelete(args []string) error {
-	flags := newFlagSet("h delete")
+func (a *app) runDelete(args []string) error {
+	flags := a.newFlagSet("h delete")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	confirm := flags.Bool("yes", false, "confirm deleting the durable record")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
@@ -500,7 +507,7 @@ func runDelete(args []string) error {
 	if !*confirm {
 		return errors.New("deleting discards the durable session record and its history; pass --yes to confirm")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -514,14 +521,14 @@ func runDelete(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{"status": "deleted", "session_id": session.ID})
+		return writeJSON(a.out, map[string]any{"status": "deleted", "session_id": session.ID})
 	}
-	fmt.Printf("deleted the durable record for %s\n", shortID(session.ID))
+	fmt.Fprintf(a.out, "deleted the durable record for %s\n", format.ShortID(session.ID))
 	return nil
 }
 
-func runPeek(args []string) error {
-	flags := newFlagSet("h peek")
+func (a *app) runPeek(args []string) error {
+	flags := a.newFlagSet("h peek")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	lines := flags.Int("lines", 80, "how many captured lines to request")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
@@ -531,7 +538,7 @@ func runPeek(args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("usage: h peek <session> [--lines N]")
 	}
-	_, controller, _, err := newController(*socket)
+	controller, err := a.dial(*socket)
 	if err != nil {
 		return err
 	}
@@ -546,7 +553,7 @@ func runPeek(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(os.Stdout, map[string]any{
+		return writeJSON(a.out, map[string]any{
 			"session_id": session.ID,
 			"state":      cliStatus(session),
 			"capture":    capture,
@@ -556,6 +563,6 @@ func runPeek(args []string) error {
 			"capture_is_current_frame_only": true,
 		})
 	}
-	fmt.Println(capture)
+	fmt.Fprintln(a.out, capture)
 	return nil
 }

@@ -1,5 +1,8 @@
 /bin/
 /dist/
+# go build ./cmd/... drops the binary in the working directory rather than bin/,
+# which is how a 7MB h once reached a commit.
+/h
 .claude/
 .DS_Store
 *.log

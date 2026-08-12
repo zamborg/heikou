@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
@@ -140,7 +141,7 @@ func (m Model) renderOrganizerContext(height int) []string {
 	lines = append(lines, notes...)
 
 	filesHeight := max(1, contentHeight-len(notes))
-	filesLabel := " FILES " + oneLine(sanitize(compactPath(item.ArtifactDir)))
+	filesLabel := " FILES " + format.OneLine(format.CompactPath(item.ArtifactDir))
 	lines = append(lines, mutedStyle.Render(truncatePlain(filesLabel, m.width)))
 	filesHeight--
 	if filesHeight > 0 {
@@ -150,7 +151,7 @@ func (m Model) renderOrganizerContext(height int) []string {
 }
 
 func (m Model) renderContextDivider(label string) string {
-	label = " " + oneLine(sanitize(label)) + " "
+	label = " " + format.OneLine(label) + " "
 	prefix := "─"
 	available := max(0, m.width-lipgloss.Width(prefix)-lipgloss.Width(label))
 	return faintStyle.Render(prefix) + lipgloss.NewStyle().Bold(true).Foreground(colorText).Render(label) +
@@ -176,7 +177,7 @@ func renderArtifactNotes(snapshot artifactContextSnapshot, width, height int) []
 			body += " · " + snapshot.NotesError
 		}
 	}
-	body = strings.ToValidUTF8(sanitize(body), "�")
+	body = strings.ToValidUTF8(format.Sanitize(body), "�")
 	wrapped := wrapLines(body, max(1, width-8))
 	if len(wrapped) == 0 {
 		wrapped = []string{"No notes yet · e to edit"}
@@ -206,7 +207,7 @@ func renderArtifactTree(snapshot artifactContextSnapshot, width, height int) []s
 		if snapshot.TreeError != "" {
 			message = "Unavailable · " + snapshot.TreeError
 		}
-		return []string{mutedStyle.Render(" └─ ") + truncatePlain(oneLine(sanitize(message)), max(1, width-4))}
+		return []string{mutedStyle.Render(" └─ ") + truncatePlain(format.OneLine(message), max(1, width-4))}
 	}
 
 	limit := min(len(snapshot.Tree), height)
@@ -218,7 +219,7 @@ func renderArtifactTree(snapshot artifactContextSnapshot, width, height int) []s
 	lines := make([]string, 0, height)
 	for _, entry := range snapshot.Tree[:limit] {
 		indent := strings.Repeat("│  ", max(0, entry.Depth-1))
-		name := oneLine(sanitize(strings.ToValidUTF8(entry.Name, "�")))
+		name := format.OneLine(strings.ToValidUTF8(entry.Name, "�"))
 		switch {
 		case entry.Symlink:
 			name += "@"
@@ -244,7 +245,7 @@ func renderArtifactTree(snapshot artifactContextSnapshot, width, height int) []s
 			}
 			status += snapshot.TreeError
 		}
-		lines = append(lines, faintStyle.Render(" └─ ")+mutedStyle.Render(truncatePlain(oneLine(sanitize(status)), max(1, width-4))))
+		lines = append(lines, faintStyle.Render(" └─ ")+mutedStyle.Render(truncatePlain(format.OneLine(status), max(1, width-4))))
 	}
 	return lines
 }

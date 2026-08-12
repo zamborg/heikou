@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +70,7 @@ func TestParseAnywhereAcceptsFlagsAroundPositionals(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			flags := newFlagSet("test")
+			flags := (&app{err: io.Discard}).newFlagSet("test")
 			root := flags.String("root", "", "root")
 			flags.StringVar(root, "C", *root, "root")
 			description := flags.String("description", "", "description")
@@ -96,7 +97,7 @@ func TestParseAnywhereAcceptsFlagsAroundPositionals(t *testing.T) {
 }
 
 func TestParseAnywhereReportsUnknownFlags(t *testing.T) {
-	flags := newFlagSet("test")
+	flags := (&app{err: io.Discard}).newFlagSet("test")
 	flags.SetOutput(nopWriter{})
 	flags.String("root", "", "root")
 	if err := parseAnywhere(flags, []string{"name", "--nope", "x"}); err == nil {
@@ -208,7 +209,7 @@ func TestPilotDocsInstallModeIsPrivate(t *testing.T) {
 // A title or workstream name may legitimately begin with a dash. It must reach
 // the command as text rather than being re-read as an unknown flag.
 func TestParseAnywhereKeepsDashLeadingPositionals(t *testing.T) {
-	flags := newFlagSet("test")
+	flags := (&app{err: io.Discard}).newFlagSet("test")
 	flags.SetOutput(nopWriter{})
 	clear := flags.Bool("clear", false, "clear")
 	if err := parseAnywhere(flags, []string{"a1b2", "--", "-fix the parser"}); err != nil {

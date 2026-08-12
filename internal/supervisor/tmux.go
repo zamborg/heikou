@@ -18,6 +18,8 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/zamborg/heikou/internal/env"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/runner"
 )
@@ -330,7 +332,7 @@ func (t *Tmux) Start(ctx context.Context, request heikou.StartRequest) (heikou.S
 		"new-session", "-d", "-P", "-F", "#{pane_id}",
 		"-s", name, "-n", string(request.Backend), "-c", root,
 		"-x", "120", "-y", "36",
-		"-e", "HEIKOU_SESSION_ID=" + id,
+		"-e", env.SessionID + "=" + id,
 	}
 	if request.Backend != heikou.BackendNoAgent {
 		encodedCommand, err := runner.EncodeCommand(command)
@@ -382,13 +384,13 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 		return err
 	}
 	if !current.Alive() {
-		return fmt.Errorf("session %s has exited", shortID(current.ID))
+		return fmt.Errorf("session %s has exited", format.ShortID(current.ID))
 	}
 	if current.PaneInMode {
-		return fmt.Errorf("session %s is in a tmux mode; attach and leave that mode before sending", shortID(current.ID))
+		return fmt.Errorf("session %s is in a tmux mode; attach and leave that mode before sending", format.ShortID(current.ID))
 	}
 	if current.InputDisabled {
-		return fmt.Errorf("session %s has tmux input disabled", shortID(current.ID))
+		return fmt.Errorf("session %s has tmux input disabled", format.ShortID(current.ID))
 	}
 
 	bufferID, err := randomToken()
@@ -429,7 +431,7 @@ func (t *Tmux) Capture(ctx context.Context, session heikou.Session, lines int) (
 
 func (t *Tmux) Stop(ctx context.Context, session heikou.Session) error {
 	if err := t.killByName(ctx, session.Name); err != nil {
-		return fmt.Errorf("stop tmux runtime %s: %w", shortID(session.ID), err)
+		return fmt.Errorf("stop tmux runtime %s: %w", format.ShortID(session.ID), err)
 	}
 	return nil
 }
@@ -593,16 +595,9 @@ func titleFor(prompt, id string) string {
 		title = string([]rune(title)[:36])
 	}
 	if title == "" {
-		title = "heikou " + shortID(id)
+		title = "heikou " + format.ShortID(id)
 	}
 	return title
-}
-
-func shortID(id string) string {
-	if len(id) <= 6 {
-		return id
-	}
-	return id[:6]
 }
 
 func unixTime(value int64) time.Time {
@@ -665,6 +660,15 @@ func cleanCapture(value string) string {
 	return strings.Join(lines, "\n")
 }
 
+// baselineEnvironmentNames are the variables the long-lived tmux server must
+// re-read from each client rather than remember, so that a credential the user
+// has since removed cannot survive into a later session.
+//
+// Only the runner overrides are listed from Heikou's own set. The rest are read
+// by the h process rather than by an agent, and HEIKOU_SESSION_ID is written
+// per session with new-session -e: refreshing that one from the attaching
+// client would replace a session's own identity with the identity of whoever
+// attached.
 var baselineEnvironmentNames = []string{
 	"DISPLAY", "KRB5CCNAME", "SSH_ASKPASS", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
 	"SSH_CONNECTION", "WINDOWID", "XAUTHORITY", "PATH", "SHELL", "USER",
@@ -674,7 +678,7 @@ var baselineEnvironmentNames = []string{
 	"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
 	"GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION",
 	"ANTHROPIC_VERTEX_PROJECT_ID", "AZURE_OPENAI_API_KEY",
-	"HEIKOU_CODEX_BIN", "HEIKOU_CLAUDE_BIN",
+	env.CodexBinary, env.ClaudeBinary,
 }
 
 func currentEnvironmentNames(serverEnvironment string) []string {

@@ -12,14 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/home"
 	"golang.org/x/sys/unix"
-)
-
-const (
-	StatePathEnv = "HEIKOU_STATE"
-	DataPathEnv  = "HEIKOU_DATA"
 )
 
 type Repository interface {
@@ -36,7 +32,7 @@ type FileStore struct {
 }
 
 func DefaultStore() (FileStore, error) {
-	statePath := strings.TrimSpace(os.Getenv(StatePathEnv))
+	statePath := env.Value(env.State)
 	if statePath == "" {
 		resolved, err := home.Path("state.json")
 		if err != nil {
@@ -49,7 +45,7 @@ func DefaultStore() (FileStore, error) {
 		return FileStore{}, fmt.Errorf("resolve state path: %w", err)
 	}
 
-	artifactBase := strings.TrimSpace(os.Getenv(DataPathEnv))
+	artifactBase := env.Value(env.Data)
 	if artifactBase == "" {
 		resolved, err := home.Path("workstreams")
 		if err != nil {

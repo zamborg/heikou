@@ -12,22 +12,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/zamborg/heikou/internal/env"
 )
 
-const (
-	// PathEnv overrides the Heikou home directory.
-	PathEnv = "HEIKOU_HOME"
-	// DirName is created under the user's home directory by default.
-	DirName = ".heikou"
-)
+// DirName is created under the user's home directory by default.
+const DirName = ".heikou"
 
 // Dir resolves the Heikou home directory without creating it.
 func Dir() (string, error) {
-	if value := strings.TrimSpace(os.Getenv(PathEnv)); value != "" {
+	if value := env.Value(env.Home); value != "" {
 		path, err := filepath.Abs(value)
 		if err != nil {
-			return "", fmt.Errorf("resolve %s: %w", PathEnv, err)
+			return "", fmt.Errorf("resolve %s: %w", env.Home, err)
 		}
 		return path, nil
 	}
@@ -87,21 +84,21 @@ type legacyLayout struct {
 
 var legacyLayouts = []legacyLayout{
 	{
-		envOverride: "HEIKOU_CONFIG",
+		envOverride: env.Config,
 		xdgBase:     "XDG_CONFIG_HOME",
 		fallback:    []string{".config"},
 		source:      []string{"heikou", "config.json"},
 		target:      "config.json",
 	},
 	{
-		envOverride: "HEIKOU_STATE",
+		envOverride: env.State,
 		xdgBase:     "XDG_STATE_HOME",
 		fallback:    []string{".local", "state"},
 		source:      []string{"heikou", "state.json"},
 		target:      "state.json",
 	},
 	{
-		envOverride: "HEIKOU_DATA",
+		envOverride: env.Data,
 		xdgBase:     "XDG_DATA_HOME",
 		fallback:    []string{".local", "share"},
 		source:      []string{"heikou", "workstreams"},
@@ -119,7 +116,7 @@ var legacyLayouts = []legacyLayout{
 // Migration fails closed. A partial move reports what already succeeded so the
 // user can finish it deliberately rather than run against a split installation.
 func Migrate() (Migration, error) {
-	if strings.TrimSpace(os.Getenv(PathEnv)) != "" {
+	if env.Value(env.Home) != "" {
 		return Migration{}, nil
 	}
 	dir, err := Dir()
@@ -145,10 +142,10 @@ func Migrate() (Migration, error) {
 	}
 	var found []pending
 	for _, layout := range legacyLayouts {
-		if strings.TrimSpace(os.Getenv(layout.envOverride)) != "" {
+		if env.Value(layout.envOverride) != "" {
 			continue
 		}
-		root := strings.TrimSpace(os.Getenv(layout.xdgBase))
+		root := env.Value(layout.xdgBase)
 		if root == "" {
 			root = filepath.Join(append([]string{base}, layout.fallback...)...)
 		}
