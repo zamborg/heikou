@@ -1,0 +1,52 @@
+name: Release
+
+# Installation is `go install …@latest`, which resolves to the newest release
+# tag and needs no artifact from us. Releasing is therefore just pushing a tag,
+# and the only thing this workflow has to protect is the one claim a tag can get
+# wrong: that the binary it produces reports the version people installed.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Tag matches the reported version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Check the tag and the source agree
+        run: ./scripts/check-version.sh "${GITHUB_REF_NAME}"
+
+      # go install compiles on the user's machine from this tag, so a tag that
+      # does not build is a broken install rather than a broken artifact. There
+      # is nothing to publish; building here is how the tag is checked.
+      - name: Build what the tag installs
+        run: go build -trimpath -o "${RUNNER_TEMP}/h" ./cmd/h
+
+      # The tag is already pushed by the time this runs, so a mismatch cannot be
+      # prevented — only reported, loudly, while it is still the newest thing
+      # that happened.
+      - name: Say what a failure means
+        if: failure()
+        run: |
+          echo "::error::Tag ${GITHUB_REF_NAME} is not installable as released."
+          echo "::error::go install github.com/zamborg/heikou/cmd/h@latest now resolves to this tag."
+          echo "::error::Delete the tag, fix the version or the build, and tag again."

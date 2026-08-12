@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -61,13 +62,26 @@ func TestRunRoutesLongVersionBeforeDashboardFlags(t *testing.T) {
 	}
 }
 
-func TestReadmeAdvertisesCurrentVersion(t *testing.T) {
+// The install command has to stay self-maintaining. @latest resolves to the
+// newest release tag, so a release needs no edit here; a pinned version would
+// quietly advertise an old release from the moment the next tag is pushed, and
+// nothing about the README would look wrong.
+func TestReadmeInstallsTheLatestRelease(t *testing.T) {
 	readme, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "github.com/zamborg/heikou/cmd/h@v" + version; !strings.Contains(string(readme), want) {
-		t.Fatalf("README install command does not advertise %q", want)
+	if want := "go install github.com/zamborg/heikou/cmd/h@latest"; !strings.Contains(string(readme), want) {
+		t.Fatalf("README install command is not %q", want)
+	}
+}
+
+// The version this binary reports is what a tag is checked against at release
+// time by scripts/check-version.sh. A value that is not semver cannot match any
+// tag, and the failure would land on a user running go install rather than here.
+func TestVersionIsSemver(t *testing.T) {
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`).MatchString(version) {
+		t.Fatalf("version %q is not semver", version)
 	}
 }
 
