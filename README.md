@@ -196,17 +196,36 @@ contain sessions launched from several registered roots, but membership never
 implicitly adds a root.
 
 Workstream state is separate from settings. It remains a versioned, locked JSON
-sidecar at `~/.local/state/heikou/state.json`; ordinary workstream files live in
-`~/.local/share/heikou/workstreams/<id>/`. State updates are serialized with a
+sidecar at `~/.heikou/state.json`; ordinary workstream files live in
+`~/.heikou/workstreams/<id>/`. State updates are serialized with a
 local advisory lock so CLI commands and the dashboard cannot overwrite one
 another. V0.3.4 uses state schema v2 for durable titles. A valid v1 file is
 validated, migrated, and atomically rewritten as v2 without manufacturing a
 domain revision; future or invalid versions are rejected.
 
+## The Heikou directory
+
+Everything Heikou owns lives in one place, `~/.heikou`:
+
+```text
+~/.heikou/
+  config.json          settings
+  state.json           durable workstream/session state
+  workstreams/<id>/    notes.md and artifacts
+```
+
+Installations created before this layout used three separate XDG directories.
+The first run of a newer binary moves them into `~/.heikou` exactly once, prints
+what it moved, and repoints the absolute artifact directories recorded in state.
+It never runs when `HEIKOU_HOME` is set, never runs when `~/.heikou` already
+exists, and leaves any individually overridden path alone. If a move fails it
+stops and reports what already succeeded rather than running against a split
+installation.
+
 ## Configuration
 
 Press `Ctrl-S` (or `F2`) in the dashboard to open the settings pane. Press `e`
-there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
+there to create/open `~/.heikou/config.json` in `$VISUAL`, `$EDITOR`, or
 `vi`. Settings are deliberately one small JSON object:
 
 ```json
@@ -251,9 +270,10 @@ cheap transport test pane.
 | --- | --- | --- |
 | `HEIKOU_DEFAULT_RUNNER` | `codex` | Initial runner in the composer |
 | `HEIKOU_TMUX_SOCKET` | `heikou` | Private tmux socket name |
-| `HEIKOU_CONFIG` | `~/.config/heikou/config.json` | Settings file override |
-| `HEIKOU_STATE` | `~/.local/state/heikou/state.json` | Durable application-state override |
-| `HEIKOU_DATA` | `~/.local/share/heikou/workstreams` | Workstream artifact-directory base |
+| `HEIKOU_HOME` | `~/.heikou` | Directory holding every Heikou file |
+| `HEIKOU_CONFIG` | `~/.heikou/config.json` | Settings file override |
+| `HEIKOU_STATE` | `~/.heikou/state.json` | Durable application-state override |
+| `HEIKOU_DATA` | `~/.heikou/workstreams` | Workstream artifact-directory base |
 | `HEIKOU_CODEX_BIN` | `codex` | Codex executable name or path |
 | `HEIKOU_CLAUDE_BIN` | `claude` | Claude executable name or path |
 

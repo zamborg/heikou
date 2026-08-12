@@ -21,6 +21,7 @@ import (
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/heikou"
+	"github.com/zamborg/heikou/internal/home"
 	"github.com/zamborg/heikou/internal/runner"
 	"github.com/zamborg/heikou/internal/supervisor"
 	"github.com/zamborg/heikou/internal/ui"
@@ -43,10 +44,52 @@ func main() {
 		return
 	}
 
+	// Relocation runs at the process entry point rather than inside run so the
+	// test surface never migrates a developer's real installation.
+	if err := migrateHome(os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		os.Exit(1)
+	}
+
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
 		os.Exit(1)
 	}
+}
+
+// migrateHome performs the one-time relocation from the pre-0.4 XDG layout into
+// the Heikou home directory. It runs before any command so that no surface ever
+// reads a half-moved installation.
+func migrateHome(writer io.Writer) error {
+	migration, err := home.Migrate()
+	if err != nil {
+		return err
+	}
+	if !migration.Migrated() {
+		return nil
+	}
+	for _, moved := range migration.Home {
+		fmt.Fprintf(writer, "heikou: moved %s to %s\n", moved.From, moved.To)
+	}
+	if migration.LegacyArtifactBase == "" {
+		return nil
+	}
+	store, err := workstream.DefaultStore()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rebased, err := store.RebaseArtifacts(ctx, migration.LegacyArtifactBase)
+	if err != nil {
+		return fmt.Errorf("repoint workstream artifact directories: %w", err)
+	}
+	if rebased == 1 {
+		fmt.Fprintln(writer, "heikou: repointed 1 workstream artifact directory")
+	} else if rebased > 1 {
+		fmt.Fprintf(writer, "heikou: repointed %d workstream artifact directories\n", rebased)
+	}
+	return nil
 }
 
 func run(args []string) error {

@@ -29,6 +29,14 @@ tests passed during the audit.
   whose required metadata cannot be parsed instead of silently dropping it from
   the normal dashboard projection. Lifecycle deletion already uses a separate,
   metadata-independent existence check.
+- [ ] Make the terminal preview honest about what `capture-pane` can return. A
+  full-screen runner on the alternate screen has no scrollback, so `-S -120`
+  yields its visible frame plus whatever normal-screen history preceded it.
+  Measured against a live `claude` pane: 85 lines returned, 60 of them shell
+  output produced before the runner started. Heikou's own sessions `exec`
+  directly and so return the bare frame. Either bound the request to the frame,
+  label the preview as a frame rather than a transcript, or both; today the
+  request implies a depth the runtime cannot supply.
 - [x] Treat a retained dead pane with missing `pane_dead_status` as “outcome
   unknown,” especially on tmux 3.3/3.4. Never default an empty status to zero or
   persist `OutcomeExited` until an exit code is actually observed.
