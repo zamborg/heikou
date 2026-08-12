@@ -21,7 +21,7 @@ daemon, manager agent, task graph, or replacement execution engine.
 - **Runner** — the `codex`, `claude`, or `no-agent` command integration used to
   launch a native agent or shell.
 - **Composer** — the dashboard input bar used to start sessions and send
-  follow-up messages.
+  follow-up messages. Its prefix names the destination `Enter` will commit to.
 - **Ungrouped** — durable sessions with no active workstream membership.
 - **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
   are never silently adopted.
@@ -79,18 +79,24 @@ cd ~/code/my-project
 h
 ```
 
-The composer is always ready:
+The composer is always ready, and it picks its destination *before* you type
+rather than when you commit. An empty composer starts a new session; `Space`
+aims it at the selected live session and pins that target. Either way the
+prefix names where the text is going and `Enter` sends it there, so the commit
+key never depends on remembering which one you meant:
 
 | Action | Result |
 | --- | --- |
 | Type a task or label, then `Enter` | Start the chosen Codex, Claude, or `no-agent` session |
-| Type a message, then `Tab` | Send it to the selected live session |
+| `Space` with an empty composer | Aim the composer at the selected live session; the prefix becomes `↳ reply …` |
+| Type a message, then `Enter` | Send it to the pinned session; moving the selection first does not redirect it |
+| `Esc` while replying | Clear the draft, then return to composing a new session |
 | `Shift-Enter` | Insert a newline; `Ctrl-J` is the fallback for terminals that cannot distinguish shifted Enter |
 | `Option-Left` / `Option-Right` | Move by word; `Option-Delete` deletes the previous word |
 | `Command-Left` / `Command-Right` | Move to the start or end of the logical line |
 | `Command-Up` / `Command-Down` | Move to the start or end of the whole draft |
-| `Tab` with an empty composer | Cycle Codex → Claude → `no-agent` |
-| `Shift-Tab` with an empty composer | Cycle the selected workstream's explicit roots |
+| `Tab` | Cycle Codex → Claude → `no-agent`, with or without composer text |
+| `Shift-Tab` | Cycle the selected workstream's explicit roots, with or without composer text |
 | `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
 | `F3` | Open the expandable workstream/session organizer |
@@ -99,10 +105,10 @@ The composer is always ready:
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
 | `Ctrl-G` | Enter resize mode; `Up` grows the snapshot, `Down` shows more sessions, `r` resets, and `Esc` exits |
 | `Enter` on a workstream | Collapse or expand its sessions |
-| `Enter` on a session | Attach its native terminal |
+| `Enter` on a session | Attach its native terminal; inactive while replying, so it cannot attach to a row other than the pinned target |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
-| `Esc` | Clear the composer; press again to leave the dashboard |
+| `Esc` | Clear the composer, then leave a reply, then leave the dashboard |
 
 The terminal application decides whether macOS modifier chords reach a TUI.
 Heikou accepts enhanced Option/Command events plus common Alt, Home/End, and
@@ -211,8 +217,7 @@ there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
     "claude": ["claude", "--dangerously-skip-permissions"]
   },
   "composer_keys": {
-    "new_session": "enter",
-    "send_message": "tab",
+    "reply": "space",
     "cycle_runner": "tab",
     "cycle_root": "shift+tab"
   }
@@ -222,14 +227,19 @@ there to create/open `~/.config/heikou/config.json` in `$VISUAL`, `$EDITOR`, or
 Commands are argv arrays, not shell strings. Fixed flags are placed before the
 task arguments Heikou adds. Callers select a runner, while the controller's
 trusted config-backed resolver loads and resolves its argv immediately before
-launch; a command action cannot supply arbitrary runner argv. The four
-`composer_keys` fields may be omitted to keep the defaults shown above;
-`new_session` and `send_message` apply when the composer has text, while
-`cycle_runner` and `cycle_root` apply when it is empty.
-`Shift-Enter` inserts a newline unless it is explicitly assigned to one of
-those actions.
+launch; a command action cannot supply arbitrary runner argv. The three
+`composer_keys` fields may be omitted to keep the defaults shown above.
+`reply` aims the empty composer at the selected session; `cycle_runner` and
+`cycle_root` act whether or not the composer has text. All three are live at
+once, so they may not share a key.
+`Enter` is the single commit key and is not configurable — that is what keeps
+the destination the one the composer displays. `Shift-Enter` inserts a newline
+unless it is explicitly assigned to one of the configurable actions.
 `Ctrl-G` is reserved for layout resize mode and cannot be assigned to a
 composer action.
+The removed `new_session` and `send_message` fields chose a commit key per
+destination. A config still carrying either one fails to load with a message
+naming `reply` as the replacement.
 The settings pane displays the active bindings and reloads JSON changes with
 `r`. Command changes affect new sessions; a changed `default_runner` applies
 the next time the dashboard opens. `no-agent` is not configurable: it asks tmux

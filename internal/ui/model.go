@@ -31,6 +31,10 @@ const (
 	commandTimeout  = 8 * time.Second
 	ungroupedKey    = "workstream:ungrouped"
 	orphanedKey     = "workstream:orphaned"
+
+	// A reply inherits the runner and root of the session it targets, so the
+	// cycle keys have nothing to act on until the composer leaves reply mode.
+	replyTargetFixedNotice = "reply uses the target's runner and root · Esc to compose a new session"
 )
 
 var (
@@ -126,6 +130,12 @@ type Model struct {
 	inputCursor    int
 	inputColumn    int
 	inputColumnSet bool
+
+	// replyTarget is the session ID the composer commits to, pinned when the
+	// reply key is pressed rather than read from the cursor at commit time, so
+	// browsing the list while drafting cannot silently redirect the message.
+	// Empty means the composer starts a new session.
+	replyTarget string
 
 	screen         screenKind
 	overlay        overlayKind
@@ -281,6 +291,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.organizerSource != "" {
 			if _, found := m.session(m.organizerSource); !found {
 				m.organizerSource = ""
+			}
+		}
+		// A pinned target that died can no longer receive the draft, and leaving
+		// the prefix pointing at it would promise delivery the composer cannot
+		// keep. Drop back to new-session mode and say so once.
+		if m.replyTarget != "" {
+			if target, found := m.session(m.replyTarget); !found || !target.Alive() {
+				m.replyTarget = ""
+				m.notice = "reply target ended · composing a new session"
 			}
 		}
 		m.restoreSelection()
@@ -546,34 +565,33 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	draft := m.inputValue()
 	prompt := strings.TrimSpace(draft)
-	if prompt != "" {
-		switch bindingStroke {
-		case m.settings.NewSessionKey():
-			m.busy = true
-			m.notice = "starting " + string(m.backend) + "…"
-			return m, m.startCmd(draft)
-		case m.settings.SendMessageKey():
-			selected, ok := m.selectedSession()
-			if !ok || !selected.Alive() {
-				m.errorText = "select a live session before sending"
-				return m, nil
-			}
-			m.busy = true
-			m.notice = "sending to " + shortID(selected.ID) + "…"
-			return m, m.sendCmd(selected.ID, m.inputValue())
+	// The destination is chosen before typing and stays visible in the composer
+	// prefix, so these bindings only ever change or announce the destination.
+	// Enter alone commits, and it commits to whatever the prefix shows.
+	switch bindingStroke {
+	case m.settings.ReplyKey():
+		// Only an untouched composer is a mode switch; afterwards the key is
+		// ordinary text, which is what makes a leading space typeable at all.
+		if m.replyTarget == "" && len(m.input) == 0 {
+			return m.beginReply()
 		}
-	} else {
-		switch bindingStroke {
-		case m.settings.CycleRunnerKey():
-			m.backend = m.backend.Next()
-			m.notice = "new sessions use " + string(m.backend)
-			return m, nil
-		case m.settings.CycleRootKey():
-			if m.cycleSelectedRoot(1) {
-				m.notice = "launch root · " + compactPath(m.launchRoot())
-			}
+	case m.settings.CycleRunnerKey():
+		if m.replyTarget != "" {
+			m.notice = replyTargetFixedNotice
 			return m, nil
 		}
+		m.backend = m.backend.Next()
+		m.notice = "new sessions use " + string(m.backend)
+		return m, nil
+	case m.settings.CycleRootKey():
+		if m.replyTarget != "" {
+			m.notice = replyTargetFixedNotice
+			return m, nil
+		}
+		if m.cycleSelectedRoot(1) {
+			m.notice = "launch root · " + compactPath(m.launchRoot())
+		}
+		return m, nil
 	}
 	if m.handleComposerShortcut(bindingStroke) {
 		m.notice = ""
@@ -595,6 +613,11 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.input) > 0 {
 			m.clearInput()
 			m.notice = "composer cleared"
+			return m, nil
+		}
+		if m.replyTarget != "" {
+			m.replyTarget = ""
+			m.notice = "composing a new session"
 			return m, nil
 		}
 		return m, tea.Quit
@@ -670,6 +693,11 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		if prompt != "" {
+			return m.commitComposer(draft)
+		}
+		// An empty composer in reply mode keeps the pinned target, so Enter must
+		// not attach to whatever the cursor happens to sit on instead.
+		if m.replyTarget != "" {
 			return m, nil
 		}
 		row, ok := m.selectedRow()
@@ -704,6 +732,39 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notice = ""
 	}
 	return m, nil
+}
+
+// beginReply pins the selected session as the composer's destination. The pin
+// is taken here, while the composer is still empty, so the message can only
+// ever reach the session named in the prefix the user typed under.
+func (m Model) beginReply() (tea.Model, tea.Cmd) {
+	selected, ok := m.selectedSession()
+	if !ok || !selected.Alive() {
+		m.errorText = "select a live session before replying"
+		return m, nil
+	}
+	m.replyTarget = selected.ID
+	m.notice = "replying to " + shortID(selected.ID) + " · Esc to compose a new session"
+	return m, nil
+}
+
+// commitComposer routes the draft to the destination the composer has been
+// displaying, which is the whole point of choosing that destination up front.
+func (m Model) commitComposer(draft string) (tea.Model, tea.Cmd) {
+	if m.replyTarget == "" {
+		m.busy = true
+		m.notice = "starting " + string(m.backend) + "…"
+		return m, m.startCmd(draft)
+	}
+	target, ok := m.session(m.replyTarget)
+	if !ok || !target.Alive() {
+		m.replyTarget = ""
+		m.errorText = "reply target is no longer live · composing a new session"
+		return m, nil
+	}
+	m.busy = true
+	m.notice = "sending to " + shortID(target.ID) + "…"
+	return m, m.sendCmd(target.ID, draft)
 }
 
 func (m Model) handleSettingsKey(stroke string) (tea.Model, tea.Cmd) {
@@ -1482,17 +1543,14 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 }
 
 func (m Model) renderComposer() string {
-	contextLabel := m.workstreamName(m.launchWorkstreamID()) + " · " + compactPath(m.launchRoot())
-	prefixText := string(m.backend) + " · " + contextLabel + " › "
-	if lipgloss.Width(prefixText) > max(1, m.width-8) {
-		contextLabel = truncatePlain(contextLabel, max(3, m.width-lipgloss.Width(string(m.backend))-8))
-		prefixText = string(m.backend) + " · " + contextLabel + " › "
-	}
-	prefix := backendStyle(m.backend).Bold(true).Render(prefixText)
+	prefix := m.composerPrefix()
 	composer := strings.Join(m.renderComposerInput(prefix), "\n")
-	help := fmt.Sprintf("%s new · %s send · %s runner · %s root · Shift-Enter newline · Ctrl-G resize · ? help",
-		helpKeyLabel(m.settings.NewSessionKey()), helpKeyLabel(m.settings.SendMessageKey()),
-		helpKeyLabel(m.settings.CycleRunnerKey()), helpKeyLabel(m.settings.CycleRootKey()))
+	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Shift-Enter newline · Ctrl-G resize · ? help",
+		helpKeyLabel(m.settings.ReplyKey()), helpKeyLabel(m.settings.CycleRunnerKey()),
+		helpKeyLabel(m.settings.CycleRootKey()))
+	if m.replyTarget != "" {
+		help = "Enter send · Esc compose a new session · Shift-Enter newline · Ctrl-G resize · ? help"
+	}
 	if m.resizeMode {
 		help = "RESIZE · ↑ bigger snapshot · ↓ more sessions · PgUp/PgDn faster · r reset · Ctrl-G/Esc done"
 	}
@@ -1504,6 +1562,33 @@ func (m Model) renderComposer() string {
 		message, style = m.notice, noticeStyle
 	}
 	return m.renderRule() + "\n" + composer + "\n" + style.Render(truncatePlain(oneLine(message), m.width))
+}
+
+// composerPrefix names the destination Enter will commit to. It is the only
+// thing distinguishing a new session from a reply, so it has to read as a
+// different bar rather than a subtle variation on the same one.
+func (m Model) composerPrefix() string {
+	if m.replyTarget != "" {
+		target, found := m.session(m.replyTarget)
+		label := shortID(m.replyTarget)
+		style := mutedStyle.Bold(true)
+		if found {
+			label += " · " + sessionDisplayTitle(target)
+			style = backendStyle(target.Backend).Bold(true)
+		}
+		text := "↳ reply " + label + " › "
+		if lipgloss.Width(text) > max(1, m.width-8) {
+			text = truncatePlain(text, max(4, m.width-8))
+		}
+		return style.Render(text)
+	}
+	contextLabel := m.workstreamName(m.launchWorkstreamID()) + " · " + compactPath(m.launchRoot())
+	prefixText := string(m.backend) + " · " + contextLabel + " › "
+	if lipgloss.Width(prefixText) > max(1, m.width-8) {
+		contextLabel = truncatePlain(contextLabel, max(3, m.width-lipgloss.Width(string(m.backend))-8))
+		prefixText = string(m.backend) + " · " + contextLabel + " › "
+	}
+	return backendStyle(m.backend).Bold(true).Render(prefixText)
 }
 
 func (m Model) renderSettings() string {
@@ -1523,8 +1608,9 @@ func (m Model) settingsLines() []string {
 		mutedStyle.Render(" app data ") + truncatePlain(oneLine(compactPath(m.snapshot.StatePath)), max(1, m.width-10)),
 		mutedStyle.Render(" startup default  ") + backendStyle(m.settings.DefaultRunner).Render(string(m.settings.DefaultRunner)),
 		"", lipgloss.NewStyle().Bold(true).Render(" composer keys"),
-		mutedStyle.Render(" text   ") + helpKeyLabel(m.settings.NewSessionKey()) + " new session · " + helpKeyLabel(m.settings.SendMessageKey()) + " send message",
-		mutedStyle.Render(" empty  ") + helpKeyLabel(m.settings.CycleRunnerKey()) + " cycle runner · " + helpKeyLabel(m.settings.CycleRootKey()) + " cycle root",
+		mutedStyle.Render(" commit ") + "Enter sends to the destination shown in the composer",
+		mutedStyle.Render(" empty  ") + helpKeyLabel(m.settings.ReplyKey()) + " reply to selection",
+		mutedStyle.Render(" any    ") + helpKeyLabel(m.settings.CycleRunnerKey()) + " cycle runner · " + helpKeyLabel(m.settings.CycleRootKey()) + " cycle root",
 		"", lipgloss.NewStyle().Bold(true).Render(" launch commands"),
 	}
 	for _, backend := range []heikou.Backend{heikou.BackendCodex, heikou.BackendClaude} {

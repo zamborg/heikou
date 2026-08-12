@@ -31,12 +31,13 @@ type Config struct {
 	ComposerKeys  ComposerKeys        `json:"composer_keys"`
 }
 
-// ComposerKeys controls the actions whose meaning changes with composer
-// context. NewSession and SendMessage apply when the composer contains text;
-// CycleRunner and CycleRoot apply when it is empty.
+// ComposerKeys controls the composer bindings whose target is chosen before
+// typing rather than at the moment of commit. Reply aims the composer at the
+// selected session while the composer is still empty; CycleRunner and CycleRoot
+// change what the next launch uses. Enter is the single commit key and is not
+// configurable, so the destination is always the one the composer displays.
 type ComposerKeys struct {
-	NewSession  string `json:"new_session"`
-	SendMessage string `json:"send_message"`
+	Reply       string `json:"reply"`
 	CycleRunner string `json:"cycle_runner"`
 	CycleRoot   string `json:"cycle_root"`
 }
@@ -53,8 +54,7 @@ func Default() Config {
 			string(heikou.BackendClaude): {"claude"},
 		},
 		ComposerKeys: ComposerKeys{
-			NewSession:  "enter",
-			SendMessage: "tab",
+			Reply:       "space",
 			CycleRunner: "tab",
 			CycleRoot:   "shift+tab",
 		},
@@ -192,26 +192,20 @@ func (c Config) Command(backend heikou.Backend) []string {
 	return append([]string(nil), c.Commands[string(backend)]...)
 }
 
-// NewSessionKey returns the normalized key used to start a session when the
-// composer contains text.
-func (c Config) NewSessionKey() string {
-	return c.ComposerKeys.NewSession
-}
-
-// SendMessageKey returns the normalized key used to send composer text to the
+// ReplyKey returns the normalized key that aims the empty composer at the
 // selected live session.
-func (c Config) SendMessageKey() string {
-	return c.ComposerKeys.SendMessage
+func (c Config) ReplyKey() string {
+	return c.ComposerKeys.Reply
 }
 
-// CycleRunnerKey returns the normalized key used to cycle the runner while the
-// composer is empty.
+// CycleRunnerKey returns the normalized key used to cycle the runner for the
+// next launch.
 func (c Config) CycleRunnerKey() string {
 	return c.ComposerKeys.CycleRunner
 }
 
-// CycleRootKey returns the normalized key used to cycle the launch root while
-// the composer is empty.
+// CycleRootKey returns the normalized key used to cycle the launch root for the
+// next launch.
 func (c Config) CycleRootKey() string {
 	return c.ComposerKeys.CycleRoot
 }
@@ -219,10 +213,15 @@ func (c Config) CycleRootKey() string {
 // optionalComposerKeysJSON preserves the distinction between an omitted key,
 // which inherits its default, and an explicitly empty key, which is invalid.
 type optionalComposerKeysJSON struct {
-	NewSession  optionalKeyJSON `json:"new_session"`
-	SendMessage optionalKeyJSON `json:"send_message"`
+	Reply       optionalKeyJSON `json:"reply"`
 	CycleRunner optionalKeyJSON `json:"cycle_runner"`
 	CycleRoot   optionalKeyJSON `json:"cycle_root"`
+
+	// These two selected a commit key per destination. Enter is now the only
+	// commit key, so they are decoded solely to fail with a message that names
+	// their replacement instead of a bare unknown-field error.
+	NewSession  optionalKeyJSON `json:"new_session"`
+	SendMessage optionalKeyJSON `json:"send_message"`
 }
 
 type optionalKeyJSON struct {
@@ -258,13 +257,24 @@ func decodeComposerKeys(data []byte) (optionalComposerKeysJSON, error) {
 }
 
 func (keys optionalComposerKeysJSON) apply(target *ComposerKeys) error {
+	for _, removed := range []struct {
+		name  string
+		value optionalKeyJSON
+	}{
+		{name: "new_session", value: keys.NewSession},
+		{name: "send_message", value: keys.SendMessage},
+	} {
+		if removed.value.set {
+			return fmt.Errorf("%s: removed; Enter now commits to whichever destination the composer shows. "+
+				"Delete this field, and use \"reply\" to choose the key that aims the composer at the selected session (default \"space\")", removed.name)
+		}
+	}
 	values := []struct {
 		name   string
 		value  optionalKeyJSON
 		target *string
 	}{
-		{name: "new_session", value: keys.NewSession, target: &target.NewSession},
-		{name: "send_message", value: keys.SendMessage, target: &target.SendMessage},
+		{name: "reply", value: keys.Reply, target: &target.Reply},
 		{name: "cycle_runner", value: keys.CycleRunner, target: &target.CycleRunner},
 		{name: "cycle_root", value: keys.CycleRoot, target: &target.CycleRoot},
 	}
@@ -281,17 +291,11 @@ func (keys optionalComposerKeysJSON) apply(target *ComposerKeys) error {
 		}
 		*item.target = normalized
 	}
-	if target.CycleRunner == "enter" {
-		return errors.New("cycle_runner: key \"enter\" is reserved for empty-composer attach and expand")
-	}
-	if target.CycleRoot == "enter" {
-		return errors.New("cycle_root: key \"enter\" is reserved for empty-composer attach and expand")
-	}
-	if target.NewSession == target.SendMessage {
-		return fmt.Errorf("new_session and send_message conflict on %q when the composer contains text", target.NewSession)
-	}
-	if target.CycleRunner == target.CycleRoot {
-		return fmt.Errorf("cycle_runner and cycle_root conflict on %q when the composer is empty", target.CycleRunner)
+	for _, pair := range [][2]int{{0, 1}, {0, 2}, {1, 2}} {
+		first, second := values[pair[0]], values[pair[1]]
+		if *first.target == *second.target {
+			return fmt.Errorf("%s and %s conflict on %q", first.name, second.name, *first.target)
+		}
 	}
 	return nil
 }
@@ -370,11 +374,13 @@ var namedComposerKeys = map[string]struct{}{
 
 // These keys already have dashboard-wide navigation, editing, lifecycle, or
 // panel behavior. Letting a composer binding claim one would make one of the
-// two actions unreachable. Question mark is included for the help panel.
+// two actions unreachable. Question mark is included for the help panel, and
+// Enter because it is the single commit key for every composer destination.
 var reservedComposerKeys = map[string]struct{}{
 	"?":         {},
 	"backspace": {},
 	"ctrl+a":    {},
+	"enter":     {},
 	"ctrl+c":    {},
 	"ctrl+e":    {},
 	"ctrl+g":    {},

@@ -547,20 +547,20 @@ Usage:
   h doctor                             check local dependencies
 
 Dashboard:
-  Type + Enter      start a new session (default binding)
-  Type + Tab        send to the selected live session (default binding)
+  Enter             send the draft where the composer prefix says it goes
+  Empty Space       aim the composer at the selected live session
   Shift-Enter       insert a composer newline (Ctrl-J fallback)
   Option-←/→        move by word; Option-Delete deletes a word
   Command-←/→       move to logical line start/end
   Command-↑/↓       move to whole-draft start/end
-  Empty Tab         switch the new-session runner (default binding)
-  Empty Shift-Tab   cycle workstream roots (default binding)
+  Tab               switch the new-session runner (default binding)
+  Shift-Tab         cycle workstream roots (default binding)
   F1 / Empty ?      open scrollable help and the noun glossary
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
   F3                open the expandable workstream/session organizer
   Up / Down         select a session; move draft lines when multiline
   Ctrl-G            resize snapshot/context with Up/Down; r resets
-  Empty Enter       collapse a workstream or attach a session
+  Empty Enter       collapse a workstream or attach a session (not while replying)
   Organizer Shift-↑/↓ reorder a named workstream persistently
   Organizer r       rename a workstream or edit/clear a session title
   Organizer R       refresh selected notes and artifact context
@@ -569,7 +569,7 @@ Dashboard:
   Ctrl-b d          detach the native terminal back to heikou
   Ctrl-\            alternate one-chord detach shortcut
   Ctrl-X twice      stop runtime; repeat once pane-free to delete record
-  Esc               clear the composer, then quit
+  Esc               clear the composer, leave a reply, then quit
 
 Composer bindings are configurable in JSON and shown in settings/help.
 Closing heikou never stops agents. Both h and H invoke the same binary.`)

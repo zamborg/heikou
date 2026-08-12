@@ -103,7 +103,7 @@ func (m Model) helpContentLines() []string {
 		{"Runtime", "The tmux pane currently associated with a session. It supplies live process observations and may be live, retained after exit, or unavailable."},
 		{"Root", "An explicitly registered directory used as the working directory for a new launch. A workstream may have several."},
 		{"Runner", "The native program Heikou launches: Codex, Claude, or a no-agent interactive shell."},
-		{"Composer", "The input bar at the bottom of the dashboard. Its configured keys act differently when the bar is empty or contains text."},
+		{"Composer", "The input bar at the bottom of the dashboard. Its prefix names the destination Enter commits to: a new session, or the live session it is aimed at."},
 		{"Ungrouped", "Durable sessions that currently have no workstream membership."},
 		{"Orphaned", "tmux panes carrying a Heikou ID that is unknown to durable state. They remain outside workstreams until explicitly adopted."},
 	} {
@@ -115,15 +115,15 @@ func (m Model) helpContentLines() []string {
 		key         string
 		description string
 	}{
-		{helpKeyLabel(m.settings.NewSessionKey()) + " + text", "Start a new session in the selected workstream and displayed root."},
-		{helpKeyLabel(m.settings.SendMessageKey()) + " + text", "Send a follow-up to the selected live session; its row then shows this newest Heikou-routed message."},
-		{helpKeyLabel(m.settings.CycleRunnerKey()) + " · empty", "Cycle Codex, Claude, and no-agent for the next launch."},
-		{helpKeyLabel(m.settings.CycleRootKey()) + " · empty", "Cycle the registered roots of the selected workstream."},
+		{"Enter · text", "Commit the draft to the destination named in the composer prefix: a new session, or the session being replied to."},
+		{helpKeyLabel(m.settings.ReplyKey()) + " · empty", "Aim the composer at the selected live session. The target is pinned here, so moving the selection afterwards does not redirect the draft. Its row then shows this newest Heikou-routed message."},
+		{helpKeyLabel(m.settings.CycleRunnerKey()), "Cycle Codex, Claude, and no-agent for the next launch, with or without composer text."},
+		{helpKeyLabel(m.settings.CycleRootKey()), "Cycle the registered roots of the selected workstream, with or without composer text."},
 		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead."},
 		{"PgUp / PgDn", "Move through the dashboard list one viewport at a time."},
 		{"← / → · empty", "Collapse or expand the selected workstream."},
 		{"← / → · text", "Move the composer cursor."},
-		{"Enter · empty", "Collapse a workstream, or attach to an available session runtime."},
+		{"Enter · empty", "Collapse a workstream, or attach to an available session runtime. Inactive while replying, so it cannot attach to a row other than the pinned target."},
 		{"Shift-Enter / Ctrl-J", "Insert a composer newline unless that chord is explicitly rebound to another composer action."},
 		{"Option-← / Option-→", "Move one word; Option-Delete removes the previous word."},
 		{"Command-← / Command-→", "Move to the start or end of the logical line; Command-↑ / Command-↓ jumps across the whole draft."},
@@ -136,12 +136,14 @@ func (m Model) helpContentLines() []string {
 		{"F3", "Open the workstream organizer."},
 		{"Ctrl-S / F2", "Open settings."},
 		{"F1 / ?", "Open this help panel."},
-		{"Esc", "Clear composer text; when already empty, quit the dashboard."},
+		{"Esc", "Clear composer text; when already empty, leave a reply and compose a new session; when neither applies, quit the dashboard."},
 		{"Ctrl-C", "Quit the dashboard immediately without stopping runtimes."},
 	}
 	for _, binding := range composerBindings {
 		lines = appendHelpBinding(lines, m.width, binding.key, binding.description)
 	}
+	lines = appendHelpParagraph(lines, m.width,
+		"The composer picks its destination before you type, not when you commit. An empty composer starts a new session; pressing the reply key aims it at the selected live session and pins that target. Either way the prefix names the destination and Enter sends there, so the commit key never depends on remembering which one you meant.")
 	lines = appendHelpParagraph(lines, m.width,
 		"The macOS terminal decides which modifier chords reach Heikou. Enhanced Option/Command events and common Alt, Home/End, and Ctrl-key fallbacks are supported; use Ctrl-J when Shift-Enter is reported as ordinary Enter.")
 
@@ -157,7 +159,7 @@ func (m Model) helpContentLines() []string {
 		{"← / →", "Collapse or expand a workstream, or move from a session row to its parent."},
 		{"Shift-↑ / Shift-↓", "Move a named workstream one position up or down; the order is durable."},
 		{"m", "Mark or unmark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
-		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach/send."},
+		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach or reply."},
 		{"Lower pane", "Preview the selected workstream's notes.md and shallow artifact-directory tree; a session shows its parent workstream context."},
 		{"Ctrl-G", "Resize the lower notes/files pane with Up or Down; r restores automatic sizing and Esc exits resize mode."},
 		{"n", "Create a workstream."},
