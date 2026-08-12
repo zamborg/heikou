@@ -116,7 +116,7 @@ func (m Model) helpContentLines() []string {
 		description string
 	}{
 		{"Enter · text", "Commit the draft to the destination named in the composer prefix: a new session, or the session being replied to."},
-		{helpKeyLabel(m.settings.ReplyKey()) + " · empty", "Aim the composer at the selected live session. The target is pinned here, so moving the selection afterwards does not redirect the draft. Its row then shows this newest Heikou-routed message."},
+		{helpKeyLabel(m.settings.ReplyKey()) + " · empty", "Aim the composer at the selected live session. The target is pinned here, so moving the selection afterwards does not redirect the draft. Its row then shows this newest Heikou-routed message. The pin covers that one message: once it sends, the composer returns to composing a new session, so press this again to follow up."},
 		{helpKeyLabel(m.settings.CycleRunnerKey()), "Cycle Codex, Claude, and no-agent for the next launch, with or without composer text."},
 		{helpKeyLabel(m.settings.CycleRootKey()), "Cycle the registered roots of the selected workstream, with or without composer text."},
 		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead."},

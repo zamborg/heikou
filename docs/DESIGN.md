@@ -382,6 +382,10 @@ cycle keys that no longer have to reserve themselves for the empty composer.
 The target is pinned when `Space` is pressed rather than read from the cursor
 at commit time, so navigating the list while drafting cannot silently redirect
 a message. A pinned target that stops being live releases the mode and says so.
+The pin covers one message rather than the conversation: a delivered reply
+releases it and the composer returns to composing a new session, since a
+follow-up is one `Space` away while an accidental second reply is not
+recoverable. A refused send keeps both the pin and the draft for the retry.
 
 When a workstream header is selected, empty `Enter` collapses/expands it instead
 of attaching. The composer always renders either the workstream and exact root a

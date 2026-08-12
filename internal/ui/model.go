@@ -349,7 +349,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.clearInput()
-		m.notice = "message sent · " + shortID(message.id)
+		// The pin exists to protect one message in flight, so a delivered reply
+		// consumes it. Holding the target past the send would aim the next Enter
+		// at a conversation the user is done with, and staying is the mode that
+		// needs the extra keystroke rather than leaving.
+		m.replyTarget = ""
+		m.notice = "message sent · " + shortID(message.id) + " · composing a new session"
 		m.confirmStop, m.confirmDelete = "", ""
 		return m, tea.Batch(m.requestSnapshot(), m.requestPreview(message.id))
 
