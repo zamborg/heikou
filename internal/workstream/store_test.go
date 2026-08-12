@@ -391,3 +391,54 @@ func TestRebaseArtifactsIgnoresEmptyPreviousBase(t *testing.T) {
 		t.Fatalf("rebased %d workstreams for an empty base, want 0", rebased)
 	}
 }
+
+// Exists is the one-time-setup signal, so it must stay false for an
+// installation that has only ever been read from. A read or a no-op mutation
+// that created the file would make first-run setup fire at the wrong moment,
+// or never fire at all.
+func TestFileStoreExistsTracksDurableWrites(t *testing.T) {
+	base := t.TempDir()
+	store := FileStore{Path: filepath.Join(base, "state", "state.json"), Artifacts: filepath.Join(base, "data")}
+
+	if store.Exists() {
+		t.Fatal("a store with no state file reports Exists")
+	}
+	if _, err := store.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.Exists() {
+		t.Fatal("Load created durable state")
+	}
+	if _, err := store.Mutate(context.Background(), func(*State) (bool, error) { return false, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if store.Exists() {
+		t.Fatal("a no-op mutation created durable state")
+	}
+
+	now := time.Unix(1_700_000_900, 0).UTC()
+	id := "018f0000-0000-4000-8000-0000000000b1"
+	if _, err := store.Mutate(context.Background(), func(state *State) (bool, error) {
+		state.Workstreams = append(state.Workstreams, Workstream{
+			ID: id, Name: "Seeded", ArtifactDir: filepath.Join(base, "data", id),
+			Roots: []string{base}, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		})
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Exists() {
+		t.Fatal("a real mutation did not produce durable state")
+	}
+
+	// Removing everything still leaves the file, so setup stays done.
+	if _, err := store.Mutate(context.Background(), func(state *State) (bool, error) {
+		state.Workstreams = nil
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Exists() {
+		t.Fatal("emptying state made the installation look new again")
+	}
+}

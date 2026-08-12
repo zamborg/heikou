@@ -217,14 +217,15 @@ installed as `AGENTS.md`, a `CLAUDE.md` pointer, and
 `skills/manage-heikou/SKILL.md`; existing files are never overwritten, so user
 edits survive an upgrade and `h init --force` is the explicit refresh.
 
-A new installation is seeded once with a `heikou-managers` workstream rooted
-only at the home directory, so a pilot can be launched from the dashboard
-without hand-built setup. Seeding is recorded in a small `.provisioned` marker
-rather than inferred from the workstream's presence, and the distinction is the
-whole point: keying off presence would resurrect a workstream the user deleted
-on purpose. A damaged marker is read as already-provisioned for the same reason,
-because silently overriding a deletion is worse than skipping convenience setup.
-`h init --force` clears the marker when re-provisioning is what the user wants.
+A new installation is seeded with a `heikou-managers` workstream rooted only at
+the home directory, so a pilot can be launched from the dashboard without
+hand-built setup. The signal is `FileStore.Exists`: reads never create the state
+file and no-op mutations never write it, so its absence means nothing has ever
+been recorded here. Keying off the workstream's own presence would have
+resurrected one the user deleted on purpose, and a separate provisioning marker
+would have been a second source of truth for a question the state file already
+answers. An installation that already has state is never seeded implicitly;
+`h init` is the explicit opt-in and the way back after a deletion.
 
 A pilot receives no authority. It shells out to `h` and is therefore the local
 human at that boundary, holding no grant and leaving `localHumanAuthorizer`

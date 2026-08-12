@@ -67,6 +67,15 @@ func DefaultStore() (FileStore, error) {
 func (s FileStore) StatePath() string    { return s.Path }
 func (s FileStore) ArtifactBase() string { return s.Artifacts }
 
+// Exists reports whether durable state has ever been written. Reads do not
+// create the file and no-op mutations do not write it, so this is false only
+// for an installation that has never recorded anything — which makes it the
+// honest signal for one-time setup, with no second marker to keep in sync.
+func (s FileStore) Exists() bool {
+	info, err := os.Stat(s.Path)
+	return err == nil && !info.IsDir()
+}
+
 func (s FileStore) Load(ctx context.Context) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return State{}, fmt.Errorf("create state directory: %w", err)

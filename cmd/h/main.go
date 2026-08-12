@@ -195,7 +195,7 @@ func runDashboardSelected(args []string, selectedSessionID string) error {
 	if !rootInfo.IsDir() {
 		return fmt.Errorf("root %q is not a directory", absRoot)
 	}
-	manager, controller, _, err := newController(*socket)
+	manager, controller, stateStore, err := newController(*socket)
 	if err != nil {
 		return err
 	}
@@ -204,7 +204,7 @@ func runDashboardSelected(args []string, selectedSessionID string) error {
 	if err := manager.Bootstrap(ctx); err != nil {
 		return err
 	}
-	provisionInstallation(ctx, controller, os.Stderr)
+	provisionInstallation(ctx, controller, stateStore, os.Stderr)
 
 	program := tea.NewProgram(ui.NewWithSelectedSession(controller, absRoot, backend, configStore, settings, selectedSessionID))
 	if _, err := program.Run(); err != nil {

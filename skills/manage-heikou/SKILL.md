@@ -35,7 +35,7 @@ result, not a success.
 
 A new installation is seeded once with `heikou-managers`, rooted only at the
 Heikou home directory. It is where pilots run. If the user removes it, it stays
-removed; `h init --force` is the only way it comes back.
+removed; `h init` is the only way it comes back.
 
 ```sh
 h ws create NAME -C DIR [-d DESCRIPTION]   # DIR becomes the first root

@@ -61,9 +61,9 @@ Use it when the user asks for another agent to help manage Heikou. Do not use it
 for project work; a session that should edit a repository belongs in a
 workstream rooted at that repository.
 
-It is seeded exactly once. If the user deletes or archives it, that decision
-stands and Heikou will not recreate it — `h init --force` is the explicit way
-back. Do not recreate it on your own initiative.
+It is seeded only on a brand-new installation. If the user deletes or archives
+it, that decision stands and Heikou will not recreate it; `h init` is the
+explicit way back. Do not recreate it on your own initiative.
 
 ## Notes are your durable memory
 

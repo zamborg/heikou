@@ -63,17 +63,14 @@ func runInit(args []string) error {
 		fmt.Printf("%s already has its instructions; pass --force to refresh them\n", dir)
 	}
 
-	// --force is the explicit way to ask for setup again, including a managers
-	// workstream that was removed. Without it, a removed workstream stays removed.
-	if *force {
-		if err := forgetProvisioning(); err != nil {
-			return err
-		}
-	}
-	socket := defaultSocket()
-	if _, controller, _, err := newController(socket); err == nil {
+	// h init is the explicit opt-in. An installation that already has state is
+	// never seeded implicitly, so this is how a user asks for the managers
+	// workstream, and how they get it back after deleting it.
+	if _, controller, _, err := newController(defaultSocket()); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), organizeTimeout)
-		provisionInstallation(ctx, controller, os.Stdout)
+		if err := reprovisionManagersWorkstream(ctx, controller, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		}
 		cancel()
 	}
 	fmt.Printf("\nStart a pilot by running an agent in %s:\n\n", dir)

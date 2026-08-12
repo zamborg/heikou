@@ -192,10 +192,11 @@ A new installation is also seeded with one workstream named `heikou-managers`,
 rooted only at `~/.heikou`, so there is somewhere to launch pilots from the
 dashboard without building it by hand.
 
-It is created **once, ever**. If you delete or archive it, that decision stands
-and Heikou will not put it back; `h init --force` is the explicit way to
-re-provision. The record of what has been seeded lives in `~/.heikou/.provisioned`
-and is deliberately separate from whether the workstream currently exists.
+It is seeded only on an installation that has never written durable state, and
+the state file is what marks that: reads never create it and no-op mutations
+never write it. So deleting or archiving the workstream keeps it deleted, and an
+installation you have already organized is never seeded behind your back. `h init`
+is the explicit way to create it, or to get it back.
 
 Start a pilot by running an agent in that directory:
 
