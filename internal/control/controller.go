@@ -338,7 +338,7 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 		ID: id, Backend: request.Backend, InitialPrompt: prompt, InitialRoot: root,
 		CreatedAt: now, Launch: workstream.LaunchIntent{Status: workstream.LaunchPending},
 	}
-	state, err := c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
 		if _, exists := state.Session(id); exists {
 			return false, fmt.Errorf("session id %s already exists", id)
 		}
@@ -413,6 +413,7 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 
 	boundAt := c.now()
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var state workstream.State
 	state, err = c.store.Mutate(persistCtx, func(state *workstream.State) (bool, error) {
 		for index := range state.Sessions {
 			if state.Sessions[index].ID != id {
@@ -528,7 +529,10 @@ func (c *Controller) deleteSessionLocked(ctx context.Context, id string) error {
 		return fmt.Errorf("check runtime before deleting session %q: %w", id, err)
 	}
 	if exists {
-		return fmt.Errorf("cannot delete session %q while its tmux runtime exists", id)
+		// Every other refusal names the way forward, and this message is shown
+		// to the user verbatim, so it says how to proceed rather than only what
+		// went wrong.
+		return fmt.Errorf("cannot delete session %q while its tmux runtime exists; stop it first", id)
 	}
 
 	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
