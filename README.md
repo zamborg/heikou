@@ -383,30 +383,26 @@ extension seams, and next steps. Future product ideas live separately in the
 
 ## Development
 
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) is the full version. The short one:
+
 ```sh
-make build
 make check
 ```
 
-`make check` runs the same gates as CI, in the same order: formatting, `go mod
-tidy`, `go vet`, staticcheck, version agreement, tests, tests under the race
-detector, and a build. Running it locally should mean a pull request has nothing
-left to discover.
+That runs the same gates as CI, in the same order, so a green `make check`
+should mean a pull request has nothing left to discover.
 
-### Releasing
+**There is nothing to build before pushing.** No binaries, generated code, or
+vendored dependencies are committed; users compile from source at `go install`,
+and the agent instruction files reach the binary through `//go:embed` at compile
+time. Editing `SKILL.md` or a help string is the whole change.
 
-Releasing is pushing a tag. `go install …@latest` resolves to the newest one, so
-there are no binaries to build and no install command to update.
-
-The one thing that can go wrong is tagging without bumping, which ships a binary
-whose `h --version` disagrees with the tag people installed. Pushing a `v*` tag
-runs `scripts/check-version.sh`, which requires the tag and the `version`
-variable in [`cmd/h/main.go`](cmd/h/main.go) to match, and fails the tag if they
-do not. `make check` runs the same script for the checks it can make without a
-tag: that the version is valid semver, and that the README still installs
-`@latest`.
-
-So the order is: bump `version`, merge, then tag the commit that carries it.
+**Releasing is bumping `version` in [`cmd/h/main.go`](cmd/h/main.go).** `@latest`
+resolves to the newest tag rather than to `main`, so a change merged without a
+bump reaches nobody while nothing looks wrong. When CI passes on a `main` commit
+whose `version` has no tag, the `Tag` workflow creates and pushes it; when the
+version is unchanged it reports how far `main` has drifted ahead of the last
+release. Nobody tags, builds, or uploads by hand.
 
 The integration suite uses a randomly named private tmux server and a fake PTY
 agent. It verifies caller-owned identity, lifecycle preservation, nonzero exits,
