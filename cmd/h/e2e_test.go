@@ -155,6 +155,17 @@ func (c *cli) shutdown() {
 
 func (c *cli) run(args ...string) result {
 	c.t.Helper()
+	outcome, err := c.execute(args...)
+	if err != nil {
+		c.t.Fatalf("h %s: %v", strings.Join(args, " "), err)
+	}
+	return outcome
+}
+
+// execute runs the binary without touching *testing.T, so it is safe to call
+// from a goroutine. It returns an error only when the process could not run at
+// all; a nonzero exit is a result, not an error.
+func (c *cli) execute(args ...string) (result, error) {
 	command := exec.Command(c.binary, args...)
 	command.Dir = c.project
 	command.Env = append(os.Environ(),
@@ -180,13 +191,13 @@ func (c *cli) run(args ...string) result {
 	if err := command.Run(); err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) {
-			c.t.Fatalf("h %s: %v", strings.Join(args, " "), err)
+			return result{}, err
 		}
 		outcome.code = exit.ExitCode()
 	}
 	outcome.stdout = stdout.String()
 	outcome.stderr = stderr.String()
-	return outcome
+	return outcome, nil
 }
 
 // mustRun fails the test when the command did not succeed, reporting both
@@ -595,6 +606,66 @@ func TestCLIRefusesAmbiguousPrefixesRatherThanGuessing(t *testing.T) {
 	}
 	if !names["Backend renamed"] || !names["Backlog"] {
 		t.Fatalf("unexpected workstreams after rename: %v", names)
+	}
+}
+
+// TestCLIConcurrentWritersDoNotLoseUpdates exercises the advisory lock across
+// processes, which is the only place it does any work. The in-process test in
+// internal/workstream covers goroutines sharing one FileStore; nothing covered
+// separate processes racing for the same state file.
+//
+// That race is now ordinary rather than exotic: the pilot runs h while the
+// user has a dashboard open, so two independent writers are the normal case.
+func TestCLIConcurrentWritersDoNotLoseUpdates(t *testing.T) {
+	harness := newCLI(t)
+	// One write first, so every racing process contends for an existing file
+	// rather than for its creation.
+	harness.mustRun("ws", "create", "first", "-C", harness.project)
+
+	const writers = 8
+	outcomes := make([]result, writers)
+	failures := make([]error, writers)
+	var waiting sync.WaitGroup
+	for index := 0; index < writers; index++ {
+		waiting.Add(1)
+		go func(index int) {
+			defer waiting.Done()
+			outcomes[index], failures[index] = harness.execute(
+				"ws", "create", fmt.Sprintf("stream-%02d", index), "-C", harness.project)
+		}(index)
+	}
+	waiting.Wait()
+
+	for index, err := range failures {
+		if err != nil {
+			t.Fatalf("writer %d could not run: %v", index, err)
+		}
+		if outcomes[index].code != 0 {
+			t.Errorf("writer %d exited %d; the lock should serialise writers, not reject them\nstderr: %s",
+				index, outcomes[index].code, outcomes[index].stderr)
+		}
+	}
+
+	// Every name must have survived. A lost update here would mean one writer
+	// read the state, another committed, and the first wrote over it.
+	snapshot := harness.snapshot()
+	found := map[string]bool{}
+	for _, workstream := range snapshot.Workstreams {
+		found[workstream.Name] = true
+	}
+	for index := 0; index < writers; index++ {
+		name := fmt.Sprintf("stream-%02d", index)
+		if !found[name] {
+			t.Errorf("workstream %q was lost; %d of %d survived", name, len(snapshot.Workstreams), writers+1)
+		}
+	}
+	if len(snapshot.Workstreams) != writers+1 {
+		t.Errorf("want %d workstreams, got %d", writers+1, len(snapshot.Workstreams))
+	}
+	// The revision counter has to have advanced once per committed write.
+	if snapshot.Revision < uint64(writers+1) {
+		t.Errorf("revision = %d after %d writes; it should count every commit",
+			snapshot.Revision, writers+1)
 	}
 }
 
