@@ -1780,10 +1780,14 @@ func (m Model) renderOrganizerSessionRow(session control.Session, selected, sour
 	if selected {
 		return renderSelectedOrganizerRow(plain, m.width)
 	}
-	plain = padPlain(truncatePlain(plain, m.width), m.width)
-	return "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
+	// Bounded the same way as the narrow branch above. The styled row carries
+	// ANSI, so it has to go through the ANSI-aware pair; truncating the plain
+	// string instead measured the right thing and then threw it away, which let
+	// a wide row overflow the pane by the couple of columns `fixed` under-counts.
+	styled := "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
 		backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " " +
 		padPlain(shortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
+	return padANSI(truncateANSI(styled, m.width), m.width)
 }
 
 func renderSelectedOrganizerRow(plain string, width int) string {
@@ -2220,10 +2224,6 @@ func (m *Model) clearInput() {
 
 func (m Model) inputValue() string     { return strings.Join(m.input, "") }
 func (m Model) organizerValue() string { return strings.Join(m.organizerInput, "") }
-
-func (m Model) renderInput(width int) string {
-	return m.renderTextInput(m.input, m.inputCursor, width)
-}
 
 func (m Model) renderTextInput(clusters []string, cursor, width int) string {
 	if width <= 0 {

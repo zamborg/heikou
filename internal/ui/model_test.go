@@ -196,6 +196,36 @@ func TestMediumSessionRowsRestoreRunnerWithoutCrowdingOutTitle(t *testing.T) {
 	}
 }
 
+// TestWideRowsStayInsideThePane covers the rich layout, which the narrow and
+// medium cases above never reach because both run below
+// sessionRowRichMinWidth. The unselected wide organizer row used to compute its
+// truncation into a variable and then return a string built without it, so a
+// long title overflowed the pane by the columns its fixed-prefix budget
+// under-counts.
+func TestWideRowsStayInsideThePane(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000005", "", heikou.BackendNoAgent, "initial task", "/tmp", time.Now())
+	session.Record.Title = strings.Repeat("a very long title ", 12)
+
+	for _, width := range []int{sessionRowRichMinWidth, 80, 120} {
+		model.width = width
+		for _, selected := range []bool{false, true} {
+			for _, source := range []bool{false, true} {
+				row := model.renderOrganizerSessionRow(session, selected, source)
+				if got := ansi.StringWidth(row); got != width {
+					t.Errorf("organizer row width = %d, want %d (selected=%v, source=%v): %q",
+						got, width, selected, source, ansi.Strip(row))
+				}
+			}
+			row := model.renderSessionRow(session, selected)
+			if got := ansi.StringWidth(row); got != width {
+				t.Errorf("dashboard row width = %d, want %d (selected=%v): %q",
+					got, width, selected, ansi.Strip(row))
+			}
+		}
+	}
+}
+
 func TestSelectedRowHasExplicitMarkerAndContinuousWidth(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	model.width = 80
@@ -1719,7 +1749,7 @@ func TestCtrlXStopsRuntimeBeforeDeletingDurableRecord(t *testing.T) {
 	if cmd != nil || model.confirmDelete != session.ID {
 		t.Fatal("first Ctrl-X did not arm durable record deletion")
 	}
-	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	_, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
 	if cmd == nil {
 		t.Fatal("second Ctrl-X did not delete durable record")
 	}
