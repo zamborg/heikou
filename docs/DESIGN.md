@@ -96,6 +96,8 @@ The package boundaries are:
 
 - `internal/heikou`: runner-neutral session types and the `Supervisor`
   contract;
+- `internal/home`: the one directory holding every Heikou file, and the
+  one-time migration from the earlier XDG layout;
 - `internal/config`: the single JSON settings model and strict loader;
 - `internal/workstream`: durable workstream/session/membership types and the
   versioned atomic store;
@@ -181,7 +183,7 @@ agent request.
 
 ### Settings
 
-V0 has one settings file, normally `~/.config/heikou/config.json`. It contains a
+V0 has one settings file, normally `~/.heikou/config.json`. It contains a
 default runner, argv arrays for Codex and Claude, and three composer bindings:
 `reply`, `cycle_runner`, and `cycle_root`. Arrays preserve the exact
 executable/flag boundary and avoid shell parsing. `reply` acts only on an empty
@@ -201,11 +203,27 @@ daemon-owned settings in this iteration.
 ### Durable workstreams
 
 Workstream state is application data, not configuration. It normally lives at
-`~/.local/state/heikou/state.json`, independently of `internal/config`, with
-ordinary artifacts at `~/.local/share/heikou/workstreams/<id>/`. The JSON
+`~/.heikou/state.json`, independently of `internal/config`, with ordinary
+artifacts at `~/.heikou/workstreams/<id>/`. The JSON
 sidecar remains versioned, mode `0600`, written by temp-file/fsync/rename, and
 guarded by an advisory lock. Storage remains behind a repository interface so a
 later SQLite implementation does not change the domain contract.
+
+`internal/home` owns that location and nothing else. Both `internal/config` and
+`internal/workstream` resolve their paths through it, so the directory is
+described in one place rather than derived independently three times. Keeping
+settings, state, and artifacts in a single directory is also what makes the
+directory a coherent working root for an agent that maintains Heikou's own
+state: it can see its instructions, its notes, and its artifacts without being
+handed three unrelated paths.
+
+Relocation from the earlier three-directory XDG layout is an explicit one-time
+migration at the process entry point, not a permanent dual-read fallback. It is
+suppressed by `HEIKOU_HOME`, by an existing home directory, and per-path by any
+individual override. Because `Workstream.ArtifactDir` is persisted absolute,
+moving artifacts also repoints those recorded directories; that rewrite
+deliberately leaves each workstream's revision and timestamps untouched, because
+relocating files is not a domain edit.
 State schema v2 adds the optional durable session title. The loader uses an
 explicit ordered v1-to-v2 migration: it strictly validates the claimed v1
 shape, migrates in memory, and atomically installs v2 while preserving the

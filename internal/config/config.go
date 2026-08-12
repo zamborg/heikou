@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zamborg/heikou/internal/heikou"
+	"github.com/zamborg/heikou/internal/home"
 )
 
 const (
@@ -69,15 +70,11 @@ func DefaultStore() (Store, error) {
 		}
 		return Store{Path: path}, nil
 	}
-	base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Store{}, fmt.Errorf("locate home directory: %w", err)
-		}
-		base = filepath.Join(home, ".config")
+	target, err := home.Path("config.json")
+	if err != nil {
+		return Store{}, err
 	}
-	path, err := filepath.Abs(filepath.Join(base, "heikou", "config.json"))
+	path, err := filepath.Abs(target)
 	if err != nil {
 		return Store{}, fmt.Errorf("resolve config path: %w", err)
 	}

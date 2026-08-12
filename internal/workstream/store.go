@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zamborg/heikou/internal/heikou"
+	"github.com/zamborg/heikou/internal/home"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,15 +38,11 @@ type FileStore struct {
 func DefaultStore() (FileStore, error) {
 	statePath := strings.TrimSpace(os.Getenv(StatePathEnv))
 	if statePath == "" {
-		base := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
-		if base == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return FileStore{}, fmt.Errorf("locate home directory: %w", err)
-			}
-			base = filepath.Join(home, ".local", "state")
+		resolved, err := home.Path("state.json")
+		if err != nil {
+			return FileStore{}, err
 		}
-		statePath = filepath.Join(base, "heikou", "state.json")
+		statePath = resolved
 	}
 	statePath, err := filepath.Abs(statePath)
 	if err != nil {
@@ -54,15 +51,11 @@ func DefaultStore() (FileStore, error) {
 
 	artifactBase := strings.TrimSpace(os.Getenv(DataPathEnv))
 	if artifactBase == "" {
-		base := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-		if base == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return FileStore{}, fmt.Errorf("locate home directory: %w", err)
-			}
-			base = filepath.Join(home, ".local", "share")
+		resolved, err := home.Path("workstreams")
+		if err != nil {
+			return FileStore{}, err
 		}
-		artifactBase = filepath.Join(base, "heikou", "workstreams")
+		artifactBase = resolved
 	}
 	artifactBase, err = filepath.Abs(artifactBase)
 	if err != nil {
@@ -133,6 +126,42 @@ func (s FileStore) Mutate(ctx context.Context, mutate func(*State) (bool, error)
 		return State{}, err
 	}
 	return state, nil
+}
+
+// RebaseArtifacts repoints workstream artifact directories that still live
+// inside a previous artifact base. Artifact directories are persisted absolute,
+// so relocating them on disk would otherwise strand every notes.md and artifact
+// tree behind a path no longer present.
+//
+// It deliberately leaves Revision and UpdatedAt alone. Nothing about the
+// workstream changed; only where Heikou keeps its files did, and claiming a
+// domain edit for a relocation would be dishonest to anything reading revisions.
+func (s FileStore) RebaseArtifacts(ctx context.Context, previousBase string) (int, error) {
+	previousBase = strings.TrimSpace(previousBase)
+	if previousBase == "" {
+		return 0, nil
+	}
+	previousBase = filepath.Clean(previousBase)
+	rebased := 0
+	_, err := s.Mutate(ctx, func(state *State) (bool, error) {
+		rebased = 0
+		for index := range state.Workstreams {
+			item := &state.Workstreams[index]
+			relative, err := filepath.Rel(previousBase, filepath.Clean(item.ArtifactDir))
+			if err != nil || relative == ".." ||
+				strings.HasPrefix(relative, ".."+string(filepath.Separator)) ||
+				filepath.IsAbs(relative) {
+				continue
+			}
+			item.ArtifactDir = filepath.Join(s.Artifacts, relative)
+			rebased++
+		}
+		return rebased > 0, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rebased, nil
 }
 
 // WithLifecycleLock serializes operations that cross the durable store and
