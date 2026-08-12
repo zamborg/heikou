@@ -5,7 +5,7 @@ BIN_DIR ?= $(PREFIX)/bin
 GO ?= go
 STATICCHECK ?= honnef.co/go/tools/cmd/staticcheck@2025.1.1
 
-.PHONY: build install test race fmt fmt-check tidy-check vet staticcheck check clean
+.PHONY: build install test race fmt fmt-check tidy-check vet staticcheck version-check check clean
 
 build:
 	mkdir -p bin
@@ -46,9 +46,12 @@ vet:
 staticcheck:
 	$(GO) run $(STATICCHECK) ./...
 
+version-check:
+	@./scripts/check-version.sh
+
 # The same gates CI runs, in the same order. A local `make check` that is
 # weaker than CI just moves the discovery of a break to the pull request.
-check: fmt-check tidy-check vet staticcheck test race build
+check: fmt-check tidy-check vet staticcheck version-check test race build
 
 clean:
 	rm -f bin/h

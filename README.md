@@ -34,9 +34,12 @@ are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
 bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.6
+go install github.com/zamborg/heikou/cmd/h@latest
 h doctor
 ```
+
+`@latest` resolves to the newest release tag, so this command never goes stale.
+Substitute an explicit tag when you need a particular release.
 
 Go does not run package-defined post-install hooks. After successful checks,
 `h doctor` prints the next step: `h quickstart`.
@@ -386,8 +389,24 @@ make check
 ```
 
 `make check` runs the same gates as CI, in the same order: formatting, `go mod
-tidy`, `go vet`, staticcheck, tests, tests under the race detector, and a build.
-Running it locally should mean a pull request has nothing left to discover.
+tidy`, `go vet`, staticcheck, version agreement, tests, tests under the race
+detector, and a build. Running it locally should mean a pull request has nothing
+left to discover.
+
+### Releasing
+
+Releasing is pushing a tag. `go install …@latest` resolves to the newest one, so
+there are no binaries to build and no install command to update.
+
+The one thing that can go wrong is tagging without bumping, which ships a binary
+whose `h --version` disagrees with the tag people installed. Pushing a `v*` tag
+runs `scripts/check-version.sh`, which requires the tag and the `version`
+variable in [`cmd/h/main.go`](cmd/h/main.go) to match, and fails the tag if they
+do not. `make check` runs the same script for the checks it can make without a
+tag: that the version is valid semver, and that the README still installs
+`@latest`.
+
+So the order is: bump `version`, merge, then tag the commit that carries it.
 
 The integration suite uses a randomly named private tmux server and a fake PTY
 agent. It verifies caller-owned identity, lifecycle preservation, nonzero exits,

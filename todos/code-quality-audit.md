@@ -9,8 +9,11 @@ tests passed during the audit.
 
 ### P0 · release gate
 
-- [ ] Automate the release check that source version, README install command, and
-  tag agree. Until then, merge and pass CI before creating the advertised tag.
+- [x] Automate the release check that source version, README install command, and
+  tag agree. The README installs `@latest`, so the install command no longer
+  carries a version to go stale. `scripts/check-version.sh` checks the source on
+  every pull request and under `make check`, and checks it against the tag when
+  one is pushed.
 - [x] Add CI for gofmt, vet, normal tests, race tests, a build, and real tmux
   integration.
 - [x] Make durable deletion fail closed when a matching tmux pane has malformed
