@@ -1,8 +1,10 @@
 # Heikou pilot
 
-Status: proposed, design-reviewed. This is an installation-level manager built
-on today's CLI and authority model. It is not the workstream manager described
-in [the manager mode map](../docs/manager-mode-map.html).
+Status: slices 1 and 2 shipped. The pilot is an installation-level manager built
+on today's CLI and authority model, driven by an ordinary agent running in
+`~/.heikou`. It is not the workstream manager described in
+[the manager mode map](../docs/manager-mode-map.html). The remaining slices —
+a Heikou-owned headless loop and any UI — are still open.
 
 ## The idea
 
@@ -39,7 +41,7 @@ owns and validates. Nothing about organizing them requires knowing whether an
 agent is currently thinking — which is the unsolved prerequisite blocking
 bounded autonomy in [session-status-titles.md](session-status-titles.md).
 
-## What is actually missing today
+## The gap this closed
 
 The read surface is already sufficient. `h list --json` returns workstream `id`,
 `name`, `description`, `artifact_dir`, `roots`, and `revision`, plus per-session
@@ -47,32 +49,32 @@ The read surface is already sufficient. `h list --json` returns workstream `id`,
 `workstream_id`, `root`, `available`, `alive`, `orphaned`, `exit_code`,
 `runtime_seconds`, and `last_activity_at`. An agent can orient from that alone.
 
-The write surface has a hole. `Controller` implements every organization action
-with full validation through the typed command plane, but eleven of them are
-reachable **only as keystrokes in the F3 organizer**:
+The write surface had a hole. `Controller` implemented every organization
+action with full validation through the typed command plane, but eleven of them
+were reachable **only as keystrokes in the F3 organizer**. Slice 1 gave each one
+a verb:
 
-| Controller action | CLI verb today |
+| Controller action | CLI verb |
 | --- | --- |
 | `Start` | `h spawn` |
 | `Send` | `h send` |
 | `Stop` | `h stop` |
 | `AttachCommand` | `h attach` |
-| `CreateWorkstream` | *none* |
-| `RenameWorkstream` | *none* |
-| `ReorderWorkstream` | *none* |
-| `ArchiveWorkstream` | *none* |
-| `MoveSession` | *none* |
-| `AdoptSession` | *none* |
-| `SetSessionTitle` | *none* |
-| `AddRoot` | *none* |
-| `ReplaceRoot` | *none* |
-| `RemoveRoot` | *none* |
-| `DeleteSession` | *none* |
+| `CreateWorkstream` | `h ws create` |
+| `RenameWorkstream` | `h ws rename` |
+| `ReorderWorkstream` | `h ws reorder` |
+| `ArchiveWorkstream` | `h ws archive --yes` |
+| `MoveSession` | `h move` |
+| `AdoptSession` | `h adopt` |
+| `SetSessionTitle` | `h title` |
+| `AddRoot` | `h ws root add` |
+| `ReplaceRoot` | `h ws root set` |
+| `RemoveRoot` | `h ws root rm` |
+| `DeleteSession` | `h delete --yes` |
 
-A pilot today could start and message sessions but could not organize
-anything, which is the entire job. Completing this surface is the first slice
-and the blocking one. It is independently valuable: it makes Heikou scriptable
-by humans, not just by agents.
+Before that, a pilot could start and message sessions but could not organize
+anything, which is the entire job. The surface is independently valuable: it
+makes Heikou scriptable by humans, not just by agents.
 
 ## The pilot is not a tmux session
 
@@ -294,11 +296,15 @@ Heikou-rendered confirmation described above.
 
 ## Acceptance order
 
-1. [ ] Add the workstream and session CLI verbs in Slice 1 with tests covering
+1. [x] Add the workstream and session CLI verbs in Slice 1 with tests covering
    name/ID-prefix resolution, `--json` results, and the existing validation
-   errors surfacing as clean CLI failures.
-2. [ ] Add `skills/manage-heikou` and its embed, with a test asserting the
+   errors surfacing as clean CLI failures. Flags are also accepted on either
+   side of a positional argument, because the Go default silently folded them
+   into workstream names.
+2. [x] Add `skills/manage-heikou` and its embed, with a test asserting the
    instructions name the CLI-only mutation rule and the no-hand-editing rule.
+   Installed into the Heikou home as `AGENTS.md`, a `CLAUDE.md` pointer, and
+   `skills/manage-heikou/SKILL.md`, never overwriting an edited file.
 3. [ ] Add the pilot seam and its `pilot` settings block, with strict decoding,
    a rejected-argv test, and the `Snapshot.Sessions` exclusion assertion.
 4. [ ] Add `h pilot` for a headless conversation from the CLI, including

@@ -7,7 +7,7 @@ not become an undifferentiated backlog.
 | Idea | Status |
 | --- | --- |
 | [Code-quality and reliability audit](code-quality-audit.md) | Active backlog |
-| [Heikou pilot](heikou-pilot.md) | Design-reviewed; CLI verb surface is its blocking slice |
+| [Heikou pilot](heikou-pilot.md) | CLI verbs and agent instructions shipped; pilot loop and UI deferred |
 | [Composable composer modules](composer-modules.md) | Proposed |
 | [Session status, titles, and recency](session-status-titles.md) | Durable titles shipped in V0.3.4; semantic status deferred |
 

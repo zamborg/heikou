@@ -51,6 +51,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	ensurePilotDocs(os.Stderr)
+
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
 		os.Exit(1)
@@ -118,6 +120,20 @@ func runWithGlobalOutput(args []string, writer io.Writer) error {
 		return runAttach(args[1:])
 	case "stop", "rm":
 		return runStop(args[1:])
+	case "peek":
+		return runPeek(args[1:])
+	case "ws", "workstream":
+		return runWorkstreamCommand(args[1:])
+	case "title":
+		return runTitle(args[1:])
+	case "move":
+		return runMove(args[1:])
+	case "adopt":
+		return runAdopt(args[1:])
+	case "delete":
+		return runDelete(args[1:])
+	case "init":
+		return runInit(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q; run h help", args[0])
 	}
@@ -586,8 +602,30 @@ Usage:
   h list [--json]                      list sessions
   h send [--json] ID MESSAGE           send a follow-up through tmux
   h attach ID                          enter the native agent terminal
+  h peek ID [--lines N]                print the pane's current frame
   h stop ID                            stop runtime; keep the durable record
   h doctor                             check local dependencies
+
+Organize (the same actions the F3 organizer performs):
+  h ws list [--json]                   list workstreams, roots, session counts
+  h ws create NAME [-C DIR] [-d DESC]  create a workstream; DIR is its first root
+  h ws rename WS NAME                  rename a workstream
+  h ws reorder WS --up|--down          move it in the dashboard's display order
+  h ws archive WS --yes                archive it; members become Ungrouped
+  h ws root add WS DIR                 register a launch root
+  h ws root set WS OLD NEW             replace a registered root
+  h ws root rm WS DIR                  unregister a root; files are untouched
+  h title ID TITLE | h title ID --clear
+                                        set or clear a durable session title
+  h move ID --workstream WS|--ungrouped
+                                        change workstream membership
+  h adopt ID [-w WORKSTREAM]           claim an orphaned tmux pane
+  h delete ID --yes                    delete a durable record with no runtime
+
+Pilot:
+  h init [--force]                     write the agent instructions into ~/.heikou
+
+Workstreams and sessions accept a full id, an id prefix, or a workstream name.
 
 Dashboard:
   Enter             send the draft where the composer prefix says it goes

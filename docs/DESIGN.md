@@ -209,6 +209,22 @@ sidecar remains versioned, mode `0600`, written by temp-file/fsync/rename, and
 guarded by an advisory lock. Storage remains behind a repository interface so a
 later SQLite implementation does not change the domain contract.
 
+That directory is also where the **pilot** lives. Every organizing action the
+controller exposes now has a CLI verb, so an ordinary agent running in
+`~/.heikou` can maintain Heikou's durable state through the same typed command
+plane the dashboard uses. Its instructions are embedded in the binary and
+installed as `AGENTS.md`, a `CLAUDE.md` pointer, and
+`skills/manage-heikou/SKILL.md`; existing files are never overwritten, so user
+edits survive an upgrade and `h init --force` is the explicit refresh.
+
+A pilot receives no authority. It shells out to `h` and is therefore the local
+human at that boundary, holding no grant and leaving `localHumanAuthorizer`
+unchanged. Adding one does not enable session actors, and an authorizer rule
+would be theater: a process with a shell can call any verb regardless of the
+label attached to it. Scope comes from what the instructions teach and from
+which verbs demand `--yes`. That is a guardrail against agent mistakes, not a
+sandbox, and the distinction is deliberate.
+
 `internal/home` owns that location and nothing else. Both `internal/config` and
 `internal/workstream` resolve their paths through it, so the directory is
 described in one place rather than derived independently three times. Keeping
