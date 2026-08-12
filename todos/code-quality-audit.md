@@ -21,7 +21,7 @@ tests passed during the audit.
 
 ### P1 · operational reliability
 
-- [ ] Add a redacted, rotating diagnostic log under the XDG state directory.
+- [ ] Add a redacted, rotating diagnostic log inside the Heikou home directory.
   Record operation, version, socket, session ID, duration, exit status, and
   cancellation cause; never record prompts, messages, argv payloads, or
   environment values.
@@ -88,6 +88,12 @@ tests passed during the audit.
   and organizer navigation consistent.
 - The long-lived tmux server refreshes removed credentials, with a regression
   test proving stale values do not leak into later sessions.
+- The package graph is acyclic with domain types in a leaf, and
+  `internal/architecture` fails the build on an import that contradicts it.
+- Shared presentation helpers and environment variable names each have one
+  declaring package, enforced by the same tests.
+- CLI verbs take their writers and controller through an `app` struct, so a
+  refusal is checked without dialling tmux and every verb is drivable in-process.
 
 ## Ordered cleanup
 
