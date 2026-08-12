@@ -34,7 +34,7 @@ are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
 bundle.
 
 ```sh
-go install github.com/zamborg/heikou/cmd/h@v0.3.4
+go install github.com/zamborg/heikou/cmd/h@v0.3.6
 h doctor
 ```
 
