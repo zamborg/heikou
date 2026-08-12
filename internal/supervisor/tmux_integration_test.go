@@ -14,11 +14,25 @@ import (
 	"github.com/zamborg/heikou/internal/runner"
 )
 
-func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
-	tmuxBinary, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
+// requireTmux returns the tmux binary. Without tmux these tests cannot run at
+// all, so they skip — except where the environment insists tmux be present,
+// which is how CI refuses to report a green run over an integration suite that
+// silently never executed.
+func requireTmux(t *testing.T) string {
+	t.Helper()
+	binary, err := exec.LookPath("tmux")
+	if err == nil {
+		return binary
 	}
+	if os.Getenv("HEIKOU_TEST_REQUIRE_TMUX") != "" {
+		t.Fatalf("HEIKOU_TEST_REQUIRE_TMUX is set but tmux was not found on PATH: %v", err)
+	}
+	t.Skip("tmux is not installed")
+	return ""
+}
+
+func TestTmuxLifecycleAndLiteralMessageDelivery(t *testing.T) {
+	tmuxBinary := requireTmux(t)
 	versionOutput, err := exec.Command(tmuxBinary, "-V").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -194,10 +208,7 @@ func TestTmuxMayOmitDeadMetadata(t *testing.T) {
 }
 
 func TestRuntimeExistsFindsPaneWithMalformedProjectionMetadata(t *testing.T) {
-	tmuxBinary, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
-	}
+	tmuxBinary := requireTmux(t)
 	token, err := randomToken()
 	if err != nil {
 		t.Fatal(err)
@@ -238,10 +249,7 @@ func TestRuntimeExistsFindsPaneWithMalformedProjectionMetadata(t *testing.T) {
 }
 
 func TestBootstrapRemovesCredentialUnsetAfterServerStart(t *testing.T) {
-	tmuxBinary, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
-	}
+	tmuxBinary := requireTmux(t)
 	token, err := randomToken()
 	if err != nil {
 		t.Fatal(err)
@@ -292,10 +300,7 @@ func TestBootstrapRemovesCredentialUnsetAfterServerStart(t *testing.T) {
 }
 
 func TestNoAgentStartsDefaultShellWithoutInjectingLabel(t *testing.T) {
-	tmuxBinary, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
-	}
+	tmuxBinary := requireTmux(t)
 	token, err := randomToken()
 	if err != nil {
 		t.Fatal(err)

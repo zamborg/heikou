@@ -17,13 +17,22 @@ import (
 // the state file and, for adopt, one tmux lookup; none of them wait on an agent.
 const organizeTimeout = 8 * time.Second
 
-// parseAnywhere accepts flags before or after positional arguments.
+// parseAnywhere accepts flags before or after positional arguments. Every
+// command that takes a positional parses through it, so the CLI reads the same
+// way everywhere — an agent composing a line has no per-verb rule to remember.
 //
 // Go's flag package stops parsing at the first positional, so
 // `h ws create "API work" -C ~/proj` would silently fold "-C ~/proj" into the
-// workstream name rather than setting its root. These commands are written by
-// people and by agents composing a line in natural order, and a silent wrong
-// result is far worse here than a parse error.
+// workstream name rather than setting its root, and `h spawn "task" -r claude`
+// would launch the default runner while reporting the prompt it was given.
+// These commands are written by people and by agents composing a line in
+// natural order, and a silent wrong result is far worse here than a parse
+// error.
+//
+// The cost is that a positional which genuinely begins with a dash must follow
+// an explicit `--`. That trade is deliberate: an unknown leading-dash token
+// fails loudly and names the fix, where the old behaviour quietly sent the
+// wrong message or started the wrong runner.
 func parseAnywhere(flags *flag.FlagSet, args []string) error {
 	var options, positional []string
 	for index := 0; index < len(args); index++ {
@@ -281,7 +290,7 @@ func runWorkstreamArchive(args []string) error {
 
 func runWorkstreamRoot(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: h ws root <add|set|rm> ...")
+		return errors.New("usage: h ws root <add|set|rm> <workstream> <dir>")
 	}
 	action := args[0]
 	flags := newFlagSet("h ws root " + action)

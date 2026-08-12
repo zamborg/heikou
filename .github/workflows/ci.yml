@@ -13,11 +13,27 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The end-to-end and tmux suites skip themselves when tmux is missing. On a
+  # runner that is a failure, not a reason to report green over a suite that
+  # never ran.
+  HEIKOU_TEST_REQUIRE_TMUX: "1"
+
 jobs:
   verify:
-    name: Verify
-    runs-on: ubuntu-latest
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # Heikou drives tmux and the filesystem directly, and its users are
+          # largely on macOS. Linux alone would not have caught a difference in
+          # either.
+          - macos-latest
 
     steps:
       - name: Check out source
@@ -29,14 +45,35 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Install tmux
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes tmux
-          tmux -V
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: command -v tmux >/dev/null 2>&1 || brew install tmux
+
+      - name: Report tmux version
+        run: tmux -V
 
       - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needs to run on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "go.mod or go.sum is out of date; run go mod tidy"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
@@ -49,3 +86,24 @@ jobs:
 
       - name: Build
         run: go build -trimpath -o "${RUNNER_TEMP}/h" ./cmd/h
+
+  staticcheck:
+    name: Staticcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Pinned rather than @latest: a new staticcheck release should be a
+      # deliberate upgrade with its findings reviewed, not a build that turns
+      # red on a morning nobody touched the code.
+      - name: Staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
