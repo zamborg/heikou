@@ -324,12 +324,12 @@ func runSpawn(args []string) error {
 	workstreamQuery := flags.String("workstream", "", "workstream name or id (default: Ungrouped)")
 	flags.StringVar(workstreamQuery, "w", *workstreamQuery, "workstream name or id (default: Ungrouped)")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
-	if err := flags.Parse(args); err != nil {
+	if err := parseAnywhere(flags, args); err != nil {
 		return err
 	}
 	prompt := strings.TrimSpace(strings.Join(flags.Args(), " "))
 	if prompt == "" {
-		return errors.New("usage: h spawn [-r codex|claude|no-agent] [-C dir] <task-or-label>")
+		return errors.New("usage: h spawn [-r codex|claude|no-agent] [-C dir] <task-or-label>; put -- before a task that starts with a dash")
 	}
 	backend, err := heikou.ParseBackend(*runnerValue)
 	if err != nil {
@@ -414,11 +414,11 @@ func runSend(args []string) error {
 	flags := newFlagSet("h send")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
 	jsonOutput := flags.Bool("json", false, "write a machine-readable result")
-	if err := flags.Parse(args); err != nil {
+	if err := parseAnywhere(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() < 2 {
-		return errors.New("usage: h send <session-id> <message>")
+		return errors.New("usage: h send <session-id> <message>; put -- before a message that starts with a dash")
 	}
 	_, controller, _, err := newController(*socket)
 	if err != nil {
@@ -443,7 +443,7 @@ func runSend(args []string) error {
 func runAttach(args []string) error {
 	flags := newFlagSet("h attach")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
-	if err := flags.Parse(args); err != nil {
+	if err := parseAnywhere(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -470,7 +470,7 @@ func runAttach(args []string) error {
 func runStop(args []string) error {
 	flags := newFlagSet("h stop")
 	socket := flags.String("socket", defaultSocket(), "private tmux socket name")
-	if err := flags.Parse(args); err != nil {
+	if err := parseAnywhere(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {

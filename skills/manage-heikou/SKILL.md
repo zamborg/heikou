@@ -13,6 +13,20 @@ target a non-default tmux socket. Workstreams and sessions may be named by full
 id, id prefix, or — for workstreams — name or name prefix. An ambiguous prefix
 is an error rather than a guess.
 
+Flags may appear before or after positional arguments, so you can write a
+command in whatever order reads naturally. The one exception is text that
+itself begins with a dash — a title or a message — which must follow an
+explicit `--`:
+
+```sh
+h title SESSION -- "-w is not a flag here"
+h send SESSION -- "-y"
+```
+
+Without the `--` the command fails rather than guessing, which is the intended
+behaviour: quietly sending the wrong message or starting the wrong runner is
+worse than an error you can see.
+
 ## Orient
 
 ```sh
