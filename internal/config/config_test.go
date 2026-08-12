@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/heikou"
 )
 
@@ -251,8 +252,8 @@ func TestEnvironmentOverridesExecutableAndDefaultOnly(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(DefaultRunnerEnv, "claude")
-	t.Setenv(ClaudeBinaryEnv, "/custom/claude")
+	t.Setenv(env.DefaultRunner, "claude")
+	t.Setenv(env.ClaudeBinary, "/custom/claude")
 	settings, err := (Store{Path: path}).Load()
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +288,7 @@ func TestEnsureCreatesPrivateEditableJSON(t *testing.T) {
 
 func clearSettingsEnvironment(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{DefaultRunnerEnv, CodexBinaryEnv, ClaudeBinaryEnv} {
+	for _, name := range []string{env.DefaultRunner, env.CodexBinary, env.ClaudeBinary} {
 		t.Setenv(name, "")
 	}
 }

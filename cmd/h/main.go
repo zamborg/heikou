@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/home"
@@ -663,7 +664,7 @@ func newFlagSet(name string) *flag.FlagSet {
 }
 
 func defaultSocket() string {
-	return envOr("HEIKOU_TMUX_SOCKET", supervisor.DefaultSocket)
+	return env.ValueOr(env.TmuxSocket, supervisor.DefaultSocket)
 }
 
 func loadSettings() (config.Store, config.Config, error) {
@@ -847,13 +848,6 @@ func sessionGroup(snapshot control.Snapshot, session control.Session) string {
 		}
 	}
 	return "Unavailable"
-}
-
-func envOr(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func mustWorkingDirectory() string {

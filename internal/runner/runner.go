@@ -11,12 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/heikou"
-)
-
-const (
-	CodexBinaryEnv  = "HEIKOU_CODEX_BIN"
-	ClaudeBinaryEnv = "HEIKOU_CLAUDE_BIN"
 )
 
 type Adapter interface {
@@ -29,10 +25,7 @@ type codexAdapter struct{}
 
 func (codexAdapter) Backend() heikou.Backend { return heikou.BackendCodex }
 func (codexAdapter) Binary() string {
-	if value := strings.TrimSpace(os.Getenv(CodexBinaryEnv)); value != "" {
-		return value
-	}
-	return "codex"
+	return env.ValueOr(env.CodexBinary, "codex")
 }
 func (codexAdapter) Arguments(prompt, _, _ string) []string {
 	return []string{"--", prompt}
@@ -42,10 +35,7 @@ type claudeAdapter struct{}
 
 func (claudeAdapter) Backend() heikou.Backend { return heikou.BackendClaude }
 func (claudeAdapter) Binary() string {
-	if value := strings.TrimSpace(os.Getenv(ClaudeBinaryEnv)); value != "" {
-		return value
-	}
-	return "claude"
+	return env.ValueOr(env.ClaudeBinary, "claude")
 }
 func (claudeAdapter) Arguments(prompt, title, sessionID string) []string {
 	return []string{"--session-id", sessionID, "--name", title, "--", prompt}
@@ -158,7 +148,7 @@ func ExecEncoded(backendValue, encodedPrompt, encodedTitle, encodedCommand strin
 		return fmt.Errorf("find %s runner %q: %w", backend, command[0], err)
 	}
 	args := append([]string{path}, command[1:]...)
-	args = append(args, adapter.Arguments(prompt, title, os.Getenv("HEIKOU_SESSION_ID"))...)
+	args = append(args, adapter.Arguments(prompt, title, os.Getenv(env.SessionID))...)
 	return syscall.Exec(path, args, os.Environ())
 }
 

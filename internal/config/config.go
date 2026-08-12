@@ -13,15 +13,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/zamborg/heikou/internal/env"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/home"
-)
-
-const (
-	PathEnv          = "HEIKOU_CONFIG"
-	DefaultRunnerEnv = "HEIKOU_DEFAULT_RUNNER"
-	CodexBinaryEnv   = "HEIKOU_CODEX_BIN"
-	ClaudeBinaryEnv  = "HEIKOU_CLAUDE_BIN"
 )
 
 // Config is intentionally the whole V0 settings model. Commands are argv
@@ -63,10 +57,10 @@ func Default() Config {
 }
 
 func DefaultStore() (Store, error) {
-	if value := strings.TrimSpace(os.Getenv(PathEnv)); value != "" {
+	if value := env.Value(env.Config); value != "" {
 		path, err := filepath.Abs(value)
 		if err != nil {
-			return Store{}, fmt.Errorf("resolve %s: %w", PathEnv, err)
+			return Store{}, fmt.Errorf("resolve %s: %w", env.Config, err)
 		}
 		return Store{Path: path}, nil
 	}
@@ -404,18 +398,18 @@ var reservedComposerKeys = map[string]struct{}{
 }
 
 func applyEnvironment(settings Config) (Config, error) {
-	if value := strings.TrimSpace(os.Getenv(DefaultRunnerEnv)); value != "" {
+	if value := env.Value(env.DefaultRunner); value != "" {
 		backend, err := heikou.ParseBackend(value)
 		if err != nil {
-			return Config{}, fmt.Errorf("%s: %w", DefaultRunnerEnv, err)
+			return Config{}, fmt.Errorf("%s: %w", env.DefaultRunner, err)
 		}
 		settings.DefaultRunner = backend
 	}
 	for backend, name := range map[heikou.Backend]string{
-		heikou.BackendCodex:  CodexBinaryEnv,
-		heikou.BackendClaude: ClaudeBinaryEnv,
+		heikou.BackendCodex:  env.CodexBinary,
+		heikou.BackendClaude: env.ClaudeBinary,
 	} {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		if value := env.Value(name); value != "" {
 			command := settings.Command(backend)
 			if len(command) == 0 {
 				command = []string{value}

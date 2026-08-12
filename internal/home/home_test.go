@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zamborg/heikou/internal/env"
 )
 
 // isolate points every path input at a temporary home so a test can never touch
@@ -12,7 +14,7 @@ func isolate(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
 	t.Setenv("HOME", base)
-	t.Setenv(PathEnv, "")
+	t.Setenv(env.Home, "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
@@ -46,7 +48,7 @@ func TestDirDefaultsToDotHeikou(t *testing.T) {
 func TestDirHonorsOverride(t *testing.T) {
 	isolate(t)
 	custom := t.TempDir()
-	t.Setenv(PathEnv, custom)
+	t.Setenv(env.Home, custom)
 	dir, err := Dir()
 	if err != nil {
 		t.Fatalf("Dir: %v", err)
@@ -155,7 +157,7 @@ func TestMigrateSkips(t *testing.T) {
 			name: "an explicit home override is owned by its caller",
 			setup: func(t *testing.T, base string) {
 				writeFile(t, filepath.Join(base, ".config", "heikou", "config.json"), `{}`)
-				t.Setenv(PathEnv, t.TempDir())
+				t.Setenv(env.Home, t.TempDir())
 			},
 		},
 		{
