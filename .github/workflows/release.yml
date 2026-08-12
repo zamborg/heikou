@@ -4,6 +4,11 @@ name: Release
 # tag and needs no artifact from us. Releasing is therefore just pushing a tag,
 # and the only thing this workflow has to protect is the one claim a tag can get
 # wrong: that the binary it produces reports the version people installed.
+#
+# Tags normally come from the Tag workflow, which checks all of this *before*
+# creating them. This is the net under a tag pushed by hand: it cannot prevent a
+# bad one, only report it loudly while it is still the newest thing that
+# happened.
 on:
   push:
     tags:

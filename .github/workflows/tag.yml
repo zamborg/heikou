@@ -1,0 +1,81 @@
+name: Tag
+
+# `go install …@latest` resolves to the newest tag, not to main. So a change
+# merged to main reaches nobody until a tag exists for it, and nothing about the
+# repository looks wrong in the meantime — the code is on main, the install
+# command still works, and it still installs the previous release.
+#
+# This closes that gap. Bumping `version` in cmd/h/main.go is the whole release
+# ritual; merging it is what ships.
+#
+# It runs after CI rather than on the push, so a commit is only ever tagged once
+# its tests have passed. GitHub does not start a workflow from an event created
+# with the default token, which is why the tag is verified here before it is
+# created rather than by the Release workflow afterwards: a tag is public the
+# moment it exists, and checking it after the fact is checking too late.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag main when the version changes
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the commit CI passed on
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          # Tags and full history: the tag is created here, and the drift
+          # notice below counts commits since the last one.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide whether this commit is a release
+        id: decide
+        run: |
+          set -eu
+          version="$(sed -n 's/^var version = "\([^"]*\)"$/\1/p' cmd/h/main.go)"
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            ahead="$(git rev-list --count "${tag}..HEAD")"
+            if [ "$ahead" -gt 0 ]; then
+              echo "::notice::main is ${ahead} commit(s) ahead of ${tag}. Those changes do not reach anyone until \`version\` in cmd/h/main.go is bumped; go install …@latest still installs ${tag}."
+            fi
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The same check the Release workflow runs, but before the tag exists
+      # rather than after, so a version that cannot be released is never tagged.
+      - name: Check the version
+        if: steps.decide.outputs.release == 'true'
+        run: ./scripts/check-version.sh "${{ steps.decide.outputs.tag }}"
+
+      - name: Tag and push
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "heikou ${TAG}"
+          git push origin "${TAG}"
+          echo "::notice::Tagged ${TAG}. go install github.com/zamborg/heikou/cmd/h@latest now installs it."
