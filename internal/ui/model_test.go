@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,12 +14,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/control/controltest"
 	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
+// fakeController records the calls these tests assert on and inherits the rest
+// from controltest.Stub, so a new method on control.Service breaks the stub
+// rather than every fake in the repository.
 type fakeController struct {
+	controltest.Stub
+
 	snapshot               control.Snapshot
 	startRequest           control.StartRequest
 	adoptSession           string
@@ -45,9 +50,6 @@ type fakeController struct {
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
-func (f *fakeController) Find(context.Context, string) (control.Session, error) {
-	return control.Session{}, nil
-}
 func (f *fakeController) Start(_ context.Context, request control.StartRequest) (control.Session, error) {
 	f.startRequest = request
 	return control.Session{ID: "018f0000-0000-4000-8000-000000000099", Backend: request.Backend, Prompt: request.Prompt, Root: request.Root, WorkstreamID: request.WorkstreamID, Durable: true, Status: control.StatusLive}, nil
@@ -67,13 +69,6 @@ func (f *fakeController) DeleteSession(_ context.Context, id string) error {
 	f.deleted = id
 	return nil
 }
-func (f *fakeController) AttachCommand(context.Context, string) (*exec.Cmd, error) {
-	return exec.Command("true"), nil
-}
-func (f *fakeController) CreateWorkstream(context.Context, string, string, []string) (workstream.Workstream, error) {
-	return workstream.Workstream{}, nil
-}
-func (f *fakeController) RenameWorkstream(context.Context, string, string) error { return nil }
 func (f *fakeController) SetSessionTitle(_ context.Context, id, title string) error {
 	f.titledSession, f.titleValue = id, title
 	return nil
@@ -82,7 +77,6 @@ func (f *fakeController) ReorderWorkstream(_ context.Context, id string, delta i
 	f.reorderedWorkstream, f.reorderedDelta = id, delta
 	return !f.reorderNoop, nil
 }
-func (f *fakeController) ArchiveWorkstream(context.Context, string) error { return nil }
 func (f *fakeController) MoveSession(_ context.Context, sessionID, workstreamID string) error {
 	f.movedSession, f.movedTarget = sessionID, workstreamID
 	return nil
@@ -92,7 +86,6 @@ func (f *fakeController) AdoptSession(_ context.Context, sessionID, workstreamID
 	f.adoptSession, f.adoptTarget = sessionID, workstreamID
 	return control.Session{}, nil
 }
-func (f *fakeController) AddRoot(context.Context, string, string) error { return nil }
 func (f *fakeController) ReplaceRoot(_ context.Context, workstreamID, current, replacement string) error {
 	f.replacedRootWorkstream, f.replacedRootCurrent, f.replacedRootValue = workstreamID, current, replacement
 	return nil

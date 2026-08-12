@@ -31,7 +31,7 @@ const (
 //
 // A failure is reported and does not abort the command: not being able to seed
 // a convenience workstream is no reason to refuse to open the dashboard.
-func provisionInstallation(ctx context.Context, controller *control.Controller, store workstream.FileStore, writer io.Writer) {
+func provisionInstallation(ctx context.Context, controller control.Service, store workstream.FileStore, writer io.Writer) {
 	if store.Exists() {
 		return
 	}
@@ -43,7 +43,7 @@ func provisionInstallation(ctx context.Context, controller *control.Controller, 
 // seedManagersWorkstream creates the workstream rooted only at the Heikou home
 // directory, so sessions started there can see AGENTS.md and the state they are
 // meant to maintain.
-func seedManagersWorkstream(ctx context.Context, controller *control.Controller, writer io.Writer) error {
+func seedManagersWorkstream(ctx context.Context, controller control.Service, writer io.Writer) error {
 	dir, err := home.Ensure()
 	if err != nil {
 		return err
@@ -60,7 +60,7 @@ func seedManagersWorkstream(ctx context.Context, controller *control.Controller,
 // established installation is never seeded implicitly — injecting a workstream
 // into state someone already organized would be presumptuous — so this is how a
 // user asks for it, and how they get it back after deleting it.
-func reprovisionManagersWorkstream(ctx context.Context, controller *control.Controller, writer io.Writer) error {
+func reprovisionManagersWorkstream(ctx context.Context, controller control.Service, writer io.Writer) error {
 	snapshot, err := controller.Snapshot(ctx)
 	if err != nil {
 		return err

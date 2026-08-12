@@ -52,11 +52,12 @@ func TestRouteGlobalCommand(t *testing.T) {
 
 func TestRunRoutesLongVersionBeforeDashboardFlags(t *testing.T) {
 	var output bytes.Buffer
-	if err := runWithGlobalOutput([]string{"--version"}, &output); err != nil {
+	application := &app{out: &output, err: &output}
+	if err := application.run([]string{"--version"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := output.String(), "heikou "+version+"\n"; got != want {
-		t.Fatalf("runWithGlobalOutput() = %q, want %q", got, want)
+		t.Fatalf("run(--version) = %q, want %q", got, want)
 	}
 }
 
@@ -128,7 +129,9 @@ func TestQuickstartPromptEmbedsCanonicalSkill(t *testing.T) {
 }
 
 func TestQuickstartHelpReturnsSuccess(t *testing.T) {
-	if err := runQuickstart([]string{"-h"}); err != nil {
+	var output bytes.Buffer
+	application := &app{out: &output, err: &output, workdir: func() string { return t.TempDir() }}
+	if err := application.runQuickstart([]string{"-h"}); err != nil {
 		t.Fatalf("quickstart help: %v", err)
 	}
 }
