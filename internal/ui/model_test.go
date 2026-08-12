@@ -1429,68 +1429,242 @@ func TestOpeningHelpCancelsDestructiveConfirmations(t *testing.T) {
 
 func TestConfiguredComposerKeysDriveActions(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
-	model.settings.ComposerKeys = config.ComposerKeys{
-		NewSession: "ctrl+shift+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
+	model.settings.ComposerKeys = config.ComposerKeys{Reply: "ctrl+shift+n", CycleRunner: "f6", CycleRoot: "alt+r"}
+	session := testDurableSession("018f0000-0000-4000-8000-000000000054", "", heikou.BackendCodex, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	if model.replyTarget != "" {
+		t.Fatal("default Space still aimed the composer after rebinding")
 	}
-	model.insertText("custom launch")
+	if model.inputValue() != " " {
+		t.Fatalf("rebound Space did not fall through to text: %q", model.inputValue())
+	}
+	model.clearInput()
+
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "N", Mod: tea.ModCtrl | tea.ModShift}))
+	model = updated.(Model)
+	if model.replyTarget != session.ID {
+		t.Fatalf("configured Ctrl-Shift-N did not aim the composer: %q", model.replyTarget)
+	}
+	model.insertText("follow up")
 	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	model = updated.(Model)
-	if cmd != nil || controller.startRequest.Prompt != "" {
-		t.Fatal("default Enter still started a session after rebinding")
-	}
-	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "N", Mod: tea.ModCtrl | tea.ModShift}))
-	model = updated.(Model)
 	if cmd == nil {
-		t.Fatal("configured Ctrl-N did not start a session")
+		t.Fatal("Enter did not commit the reply")
 	}
-	message := cmd()
-	if controller.startRequest.Prompt != "custom launch" {
-		t.Fatalf("start prompt = %q", controller.startRequest.Prompt)
-	}
-	updated, _ = model.Update(message)
+	updated, _ = model.Update(cmd())
 	model = updated.(Model)
+	if controller.sentSession != session.ID || controller.sentText != "follow up" {
+		t.Fatalf("send = session %q text %q", controller.sentSession, controller.sentText)
+	}
 
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	model = updated.(Model)
 	if model.backend != heikou.BackendCodex {
 		t.Fatal("default Tab still cycled runner after rebinding")
 	}
+	model.replyTarget = ""
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF6}))
 	if updated.(Model).backend != heikou.BackendClaude {
 		t.Fatal("configured F6 did not cycle runner")
 	}
 }
 
-func TestConfiguredSendKeyUsesComposerContext(t *testing.T) {
+// The whole point of choosing the destination first is that the commit key is
+// unambiguous: Enter starts a session or replies purely by composer state.
+func TestEnterCommitsToWhicheverDestinationTheComposerShows(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
-	model.settings.ComposerKeys = config.ComposerKeys{
-		NewSession: "ctrl+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
-	}
 	session := testDurableSession("018f0000-0000-4000-8000-000000000055", "", heikou.BackendCodex, "original", "/tmp", time.Now())
 	model.snapshot.Sessions = []control.Session{session}
 	model.setSnapshot(model.snapshot)
 	model.selected = sessionRowKey(session)
 	model.restoreSelection()
-	model.insertText("follow up")
-	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
+
+	model.insertText("start me")
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
 	if cmd == nil {
-		t.Fatal("configured Shift-Enter did not send")
+		t.Fatal("Enter did not start a session from an unaimed composer")
 	}
-	_ = updated
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if controller.startRequest.Prompt != "start me" || controller.sentText != "" {
+		t.Fatalf("start = %q, send = %q", controller.startRequest.Prompt, controller.sentText)
+	}
+	// Starting moves the selection onto the brand-new session, which this fake
+	// snapshot does not carry; re-select the live one before aiming at it.
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	if model.replyTarget != session.ID {
+		t.Fatalf("Space did not aim the composer at the selection: %q", model.replyTarget)
+	}
+	if len(model.input) != 0 {
+		t.Fatalf("the aiming Space leaked into the composer: %q", model.inputValue())
+	}
+	model.insertText("reply me")
+	updated, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Enter did not send from an aimed composer")
+	}
 	_ = cmd()
-	if controller.sentSession != session.ID || controller.sentText != "follow up" {
+	if controller.sentSession != session.ID || controller.sentText != "reply me" {
 		t.Fatalf("send = session %q text %q", controller.sentSession, controller.sentText)
+	}
+	if controller.startRequest.Prompt != "start me" {
+		t.Fatalf("the reply also started a session: %q", controller.startRequest.Prompt)
+	}
+}
+
+// A pinned target is what stops list navigation from silently redirecting a
+// half-written message to whichever row the cursor drifted onto.
+func TestReplyTargetIsPinnedAgainstLaterSelectionChanges(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	first := testDurableSession("018f0000-0000-4000-8000-000000000056", "", heikou.BackendCodex, "first", "/tmp", now)
+	second := testDurableSession("018f0000-0000-4000-8000-000000000057", "", heikou.BackendCodex, "second", "/tmp", now)
+	model.snapshot.Sessions = []control.Session{first, second}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(first)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	model.insertText("for the first one")
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	model = updated.(Model)
+	if selected, ok := model.selectedSession(); !ok || selected.ID != second.ID {
+		t.Fatal("Down did not move the selection while drafting")
+	}
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Enter did not send")
+	}
+	_ = cmd()
+	if controller.sentSession != first.ID {
+		t.Fatalf("send went to %q, want the pinned target %q", controller.sentSession, first.ID)
+	}
+}
+
+func TestReplyModeSurvivesEscapeLadderAndShowsItsTarget(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 24
+	session := testDurableSession("018f0000-0000-4000-8000-000000000058", "", heikou.BackendClaude, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	model.insertText("drafting")
+	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "reply "+shortID(session.ID)) {
+		t.Fatalf("composer does not name its reply target:\n%s", plain)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	if len(model.input) != 0 || model.replyTarget != session.ID {
+		t.Fatalf("first Esc should clear text but keep the target: input %q target %q", model.inputValue(), model.replyTarget)
+	}
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	if model.replyTarget != "" || cmd != nil {
+		t.Fatalf("second Esc should leave reply mode without quitting: target %q", model.replyTarget)
+	}
+	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, string(heikou.BackendCodex)+" · ") {
+		t.Fatalf("composer did not return to the new-session prefix:\n%s", plain)
+	}
+}
+
+// A dead target cannot receive the draft, so the prefix must stop promising it.
+func TestReplyModeReleasesATargetThatStopped(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	session := testDurableSession("018f0000-0000-4000-8000-000000000059", "", heikou.BackendCodex, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+
+	stopped := session
+	stopped.Runtime = nil
+	stopped.Status = control.StatusExited
+	model.snapshotFetch.generation, model.snapshotFetch.activeGeneration = 1, 1
+	updated, _ = model.Update(snapshotMsg{
+		generation: 1,
+		snapshot:   control.Snapshot{Sessions: []control.Session{stopped}, StatePath: "/tmp/heikou-test-state.json"},
+	})
+	model = updated.(Model)
+	if model.replyTarget != "" {
+		t.Fatalf("reply target survived its runtime: %q", model.replyTarget)
+	}
+	if !strings.Contains(model.notice, "reply target ended") {
+		t.Fatalf("notice = %q; want it to explain the released target", model.notice)
+	}
+}
+
+func TestReplyKeyRequiresALiveSelection(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-000000000060", "Core", []string{"/tmp"}, time.Now())
+	model.snapshot.Workstreams = []workstream.Workstream{container}
+	model.setSnapshot(model.snapshot)
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	if model.replyTarget != "" {
+		t.Fatalf("a workstream row became a reply target: %q", model.replyTarget)
+	}
+	if !strings.Contains(model.errorText, "live session") {
+		t.Fatalf("error = %q; want it to ask for a live session", model.errorText)
+	}
+	if len(model.input) != 0 {
+		t.Fatalf("the refused Space leaked into the composer: %q", model.inputValue())
+	}
+}
+
+// Enter is no longer overloaded, so cycling is safe mid-draft — which is the
+// point at which you actually discover you want a different runner.
+func TestCycleKeysWorkWhileTheComposerHasText(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-000000000061", "Multi repo", []string{"/tmp/api", "/tmp/web"}, now)
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}})
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.insertText("half a thought")
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	model = updated.(Model)
+	if model.backend != heikou.BackendClaude {
+		t.Fatalf("Tab did not cycle the runner mid-draft: %q", model.backend)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	model = updated.(Model)
+	if got := model.launchRoot(); got != "/tmp/web" {
+		t.Fatalf("Shift-Tab did not cycle the root mid-draft: %q", got)
+	}
+	if model.inputValue() != "half a thought" {
+		t.Fatalf("cycling disturbed the draft: %q", model.inputValue())
 	}
 }
 
 func TestSettingsRendersComposerBindings(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	model.width, model.height, model.screen = 80, 24, screenSettings
-	model.settings.ComposerKeys = config.ComposerKeys{
-		NewSession: "ctrl+n", SendMessage: "shift+enter", CycleRunner: "f6", CycleRoot: "alt+r",
-	}
+	model.settings.ComposerKeys = config.ComposerKeys{Reply: "ctrl+n", CycleRunner: "f6", CycleRoot: "alt+r"}
 	plain := ansi.Strip(model.View().Content)
-	for _, want := range []string{"composer keys", "Ctrl+N", "Shift+Enter", "F6", "Alt+R"} {
+	for _, want := range []string{"composer keys", "Enter", "Ctrl+N", "F6", "Alt+R"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("settings view is missing %q:\n%s", want, plain)
 		}

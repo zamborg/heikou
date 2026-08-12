@@ -182,10 +182,14 @@ agent request.
 ### Settings
 
 V0 has one settings file, normally `~/.config/heikou/config.json`. It contains a
-default runner, argv arrays for Codex and Claude, and four composer bindings:
-`new_session`, `send_message`, `cycle_runner`, and `cycle_root`. Arrays preserve
-the exact executable/flag boundary and avoid shell parsing. Composer bindings
-are context-aware: the first pair applies with text and the second while empty.
+default runner, argv arrays for Codex and Claude, and three composer bindings:
+`reply`, `cycle_runner`, and `cycle_root`. Arrays preserve the exact
+executable/flag boundary and avoid shell parsing. `reply` acts only on an empty
+composer, where it is a mode switch rather than text; the cycle bindings act
+regardless of composer content. All three are live simultaneously and therefore
+may not share a key. `Enter` is the sole commit key and is deliberately not
+configurable, since a rebindable commit key would reintroduce the ambiguity the
+visible-destination model exists to remove.
 Environment compatibility variables override JSON values; explicit CLI flags
 select the runner and root. Command changes apply to new sessions only.
 
@@ -312,17 +316,32 @@ a fresh session/preview read.
 The primary dashboard is a grouped projection with selectable, collapsible
 workstream rows, member session rows, a synthetic Ungrouped inbox, and a
 separate Orphaned tmux section. Dashboard, Workstream Organizer, Settings, and
-Help each render an unmistakable mode badge. The composer deliberately avoids
-modal focus:
+Help each render an unmistakable mode badge. The composer chooses its
+destination before the draft is typed rather than at the moment it is
+committed:
 
-- non-empty `Enter` always creates a new session;
-- non-empty `Tab` sends to the selected session;
-- empty `Enter` attaches; and
-- empty `Tab` cycles Codex, Claude, and `no-agent`.
+- an empty composer is aimed at a new session;
+- empty `Space` aims it at the selected live session and pins that target;
+- `Enter` commits the draft to whichever of those the prefix names;
+- empty `Enter` attaches, and is inactive while aimed at a session; and
+- `Tab` and `Shift-Tab` cycle the runner and root with or without text.
+
+This is a deliberate reversal. An earlier iteration dispatched on the commit
+key — `Enter` created and `Tab` sent — which asked the user to hold the
+destination in memory and revealed the choice only after it fired. The failure
+was also asymmetric: a mistaken send is a no-op, while a mistaken create spawns
+a real session. Making the destination a visible, pinned mode moves that state
+onto the screen and makes a wrong choice correctable before it commits. The
+cost is one small mode; the benefit is a single unambiguous commit key, and
+cycle keys that no longer have to reserve themselves for the empty composer.
+
+The target is pinned when `Space` is pressed rather than read from the cursor
+at commit time, so navigating the list while drafting cannot silently redirect
+a message. A pinned target that stops being live releases the mode and says so.
 
 When a workstream header is selected, empty `Enter` collapses/expands it instead
-of attaching. `Shift-Tab` cycles that workstream's explicit roots. The composer
-always renders the workstream and exact root that a typed `Enter` will use.
+of attaching. The composer always renders either the workstream and exact root a
+new session will use, or the session a reply will reach.
 `F3` opens a two-pane organizer. Its upper pane is an expandable tree containing
 named workstreams, Ungrouped, Orphaned, and their session rows. `Enter` on a
 workstream expands/collapses it unless a move source is active, when it instead

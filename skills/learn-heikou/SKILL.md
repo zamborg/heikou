@@ -42,8 +42,13 @@ Explain this loop in plain language:
 7. Immediately practice detaching: press `Ctrl-b`, release both keys, then
    press `d`. This is a sequence, not one simultaneous chord. `Ctrl-\` is the
    one-chord alternative. The agent keeps running.
-8. With the live session selected, type a follow-up and press `Tab` to send it.
-   Press `Enter` with an empty composer to attach again.
+8. With the live session selected, press `Space` on the empty composer. The
+   prefix changes to `↳ reply …`, naming the session the draft will reach.
+   Type a follow-up and press `Enter` to send it. Point out that `Enter` sent
+   to that session rather than starting a new one purely because the prefix
+   said so, and that the target was fixed when `Space` was pressed, so moving
+   the selection mid-draft cannot redirect it. Press `Esc` to leave reply mode,
+   then `Enter` with an empty composer to attach again.
 9. Open `F3`, select the named workstream, and press `e` to edit its `notes.md`.
    Record decisions, useful commands, and next steps there. These notes persist
    independently of any one agent session and appear in the organizer's lower
@@ -54,7 +59,8 @@ Explain this loop in plain language:
     the native provider conversation or tmux runtime.
 
 If this guide itself is running inside a Heikou session, start at step 7. Ask
-the user to detach, send `I made it back` with `Tab`, and reattach with `Enter`.
+the user to detach, send `I made it back` with `Space` then `Enter`, and
+reattach with `Esc` followed by `Enter`.
 Then help them organize the guided session: detach again and open `F3`. The
 guided session is already marked as the move source. Only if that marker is
 absent, select the session under Ungrouped and press `m` before continuing.
@@ -68,7 +74,9 @@ Recommend this default rhythm:
 
 1. Select or create a workstream for the outcome being pursued.
 2. Confirm the composer shows the intended workstream, runner, and root.
-3. Launch focused sessions with `Enter` and send follow-ups with `Tab`.
+3. Read the composer prefix before committing: it names the destination, and
+   `Enter` always goes there. `Space` on an empty composer aims it at the
+   selected session; `Esc` returns it to starting a new one.
 4. Detach instead of terminating when switching between sessions.
 5. Put durable context in workstream notes rather than relying on terminal
    scrollback or an agent's memory.
@@ -91,8 +99,9 @@ the dashboard with that session selected, then press `Enter` to attach.
 | Title or clear a durable session | Select it in `F3`, press `r`, then save a title or an empty value |
 | Refresh notes and artifacts | Select their workstream in `F3` and press `R` |
 | Start a session | Type a task, then `Enter` |
-| Send to the selected live session | Type a message, then `Tab` |
-| Attach to a selected session | `Enter` with an empty composer |
+| Send to the selected live session | `Space` on an empty composer, type a message, then `Enter` |
+| Leave a reply and compose a new session | `Esc` (twice if the draft is non-empty) |
+| Attach to a selected session | `Enter` with an empty composer, when not replying |
 | Detach back to Heikou | `Ctrl-b`, release, then `d`; or `Ctrl-\` |
 | Leave the dashboard without stopping agents | `Ctrl-C`, or `Esc` with an empty composer |
 | Stop a runtime but keep its record | Select it and press `Ctrl-X` twice |

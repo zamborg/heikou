@@ -24,8 +24,7 @@ func TestMissingSettingsUseDefaults(t *testing.T) {
 		t.Fatalf("claude command = %#v", got)
 	}
 	if got := settings.ComposerKeys; got != (ComposerKeys{
-		NewSession:  "enter",
-		SendMessage: "tab",
+		Reply:       "space",
 		CycleRunner: "tab",
 		CycleRoot:   "shift+tab",
 	}) {
@@ -43,7 +42,7 @@ func TestLegacySettingsInheritComposerKeyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.NewSessionKey() != "enter" || settings.SendMessageKey() != "tab" ||
+	if settings.ReplyKey() != "space" ||
 		settings.CycleRunnerKey() != "tab" || settings.CycleRootKey() != "shift+tab" {
 		t.Fatalf("legacy composer defaults = %#v", settings.ComposerKeys)
 	}
@@ -54,8 +53,7 @@ func TestSettingsLoadAndNormalizeComposerKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	data := `{
   "composer_keys": {
-    "new_session": " SHIFT + CTRL + N ",
-    "send_message": " Shift + Enter ",
+    "reply": " SHIFT + CTRL + N ",
     "cycle_runner": " F6 ",
     "cycle_root": " ALT + R "
   }
@@ -68,14 +66,13 @@ func TestSettingsLoadAndNormalizeComposerKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := settings.ComposerKeys, (ComposerKeys{
-		NewSession:  "ctrl+shift+n",
-		SendMessage: "shift+enter",
+		Reply:       "ctrl+shift+n",
 		CycleRunner: "f6",
 		CycleRoot:   "alt+r",
 	}); got != want {
 		t.Fatalf("composer keys = %#v, want %#v", got, want)
 	}
-	if settings.NewSessionKey() != "ctrl+shift+n" || settings.SendMessageKey() != "shift+enter" ||
+	if settings.ReplyKey() != "ctrl+shift+n" ||
 		settings.CycleRunnerKey() != "f6" || settings.CycleRootKey() != "alt+r" {
 		t.Fatalf("composer accessors disagree with loaded settings: %#v", settings.ComposerKeys)
 	}
@@ -84,7 +81,7 @@ func TestSettingsLoadAndNormalizeComposerKeys(t *testing.T) {
 func TestPartialComposerKeysInheritDefaults(t *testing.T) {
 	clearSettingsEnvironment(t)
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"composer_keys":{"new_session":"ctrl+n"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"composer_keys":{"reply":"ctrl+n"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := (Store{Path: path}).Load()
@@ -92,8 +89,7 @@ func TestPartialComposerKeysInheritDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ComposerKeys{
-		NewSession:  "ctrl+n",
-		SendMessage: "tab",
+		Reply:       "ctrl+n",
 		CycleRunner: "tab",
 		CycleRoot:   "shift+tab",
 	}
@@ -102,51 +98,83 @@ func TestPartialComposerKeysInheritDefaults(t *testing.T) {
 	}
 }
 
-func TestComposerKeysMayBeSharedAcrossContexts(t *testing.T) {
+// Every composer binding is now live at once — the cycle keys no longer wait
+// for an empty composer — so two of them sharing a key makes one unreachable.
+func TestComposerKeysRejectSharedBindings(t *testing.T) {
 	clearSettingsEnvironment(t)
-	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"composer_keys":{"new_session":"f6","send_message":"tab","cycle_runner":"tab","cycle_root":"f6"}}`
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
+	for name, data := range map[string]string{
+		"reply and runner": `{"composer_keys":{"reply":"f6","cycle_runner":"f6"}}`,
+		"reply and root":   `{"composer_keys":{"reply":"f6","cycle_root":"f6"}}`,
+		"runner and root":  `{"composer_keys":{"cycle_runner":"f6","cycle_root":"f6"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := (Store{Path: path}).Load()
+			if err == nil {
+				t.Fatal("Load() error = nil; want a conflict")
+			}
+			if !strings.Contains(err.Error(), "conflict on \"f6\"") {
+				t.Fatalf("Load() error = %v; want a conflict naming the shared key", err)
+			}
+		})
 	}
-	settings, err := (Store{Path: path}).Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if settings.SendMessageKey() != settings.CycleRunnerKey() {
-		t.Fatal("tab should be reusable between non-empty and empty composer contexts")
-	}
-	if settings.NewSessionKey() != settings.CycleRootKey() {
-		t.Fatal("keys should be reusable between non-empty and empty composer contexts")
+}
+
+// new_session and send_message picked a commit key per destination. Enter is
+// now the only commit key, so the fields must fail with a message that points
+// at their replacement rather than a bare unknown-field error.
+func TestRemovedComposerKeysNameTheirReplacement(t *testing.T) {
+	clearSettingsEnvironment(t)
+	for _, field := range []string{"new_session", "send_message"} {
+		t.Run(field, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			data := `{"composer_keys":{"` + field + `":"enter"}}`
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := (Store{Path: path}).Load()
+			if err == nil {
+				t.Fatal("Load() error = nil; want a removal error")
+			}
+			for _, want := range []string{field, "removed", "reply", "space"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Load() error = %v; want it to mention %q", err, want)
+				}
+			}
+		})
 	}
 }
 
 func TestSettingsRejectInvalidComposerKeys(t *testing.T) {
 	clearSettingsEnvironment(t)
 	tests := map[string]string{
-		"empty":                     `{"composer_keys":{"new_session":"  "}}`,
-		"empty chord part":          `{"composer_keys":{"new_session":"ctrl++n"}}`,
-		"internal whitespace":       `{"composer_keys":{"new_session":"page down"}}`,
-		"reserved quit":             `{"composer_keys":{"new_session":"CTRL + C"}}`,
-		"reserved navigation":       `{"composer_keys":{"cycle_runner":"up"}}`,
-		"reserved editor":           `{"composer_keys":{"send_message":"backspace"}}`,
-		"reserved lifecycle":        `{"composer_keys":{"new_session":"ctrl+x"}}`,
-		"reserved resize mode":      `{"composer_keys":{"new_session":"ctrl+g"}}`,
-		"reserved help":             `{"composer_keys":{"cycle_root":"?"}}`,
-		"reserved shifted help":     `{"composer_keys":{"cycle_root":"shift+/"}}`,
-		"reserved f1 help":          `{"composer_keys":{"cycle_root":"f1"}}`,
-		"empty runner enter":        `{"composer_keys":{"cycle_runner":"enter"}}`,
-		"empty root enter":          `{"composer_keys":{"cycle_root":"enter"}}`,
-		"nonempty context conflict": `{"composer_keys":{"new_session":" TAB "}}`,
-		"empty context conflict":    `{"composer_keys":{"cycle_root":" TAB "}}`,
-		"missing base key":          `{"composer_keys":{"new_session":"ctrl+shift"}}`,
-		"multiple base keys":        `{"composer_keys":{"new_session":"ctrl+n+m"}}`,
-		"repeated modifier":         `{"composer_keys":{"new_session":"ctrl+ctrl+n"}}`,
-		"unsupported key name":      `{"composer_keys":{"new_session":"launch"}}`,
-		"null key":                  `{"composer_keys":{"new_session":null}}`,
-		"non-string key":            `{"composer_keys":{"new_session":6}}`,
-		"unknown nested field":      `{"composer_keys":{"new_session":"f6","surprise":"f7"}}`,
-		"wrong object shape":        `{"composer_keys":"enter"}`,
+		"empty":                 `{"composer_keys":{"reply":"  "}}`,
+		"empty chord part":      `{"composer_keys":{"reply":"ctrl++n"}}`,
+		"internal whitespace":   `{"composer_keys":{"reply":"page down"}}`,
+		"reserved quit":         `{"composer_keys":{"reply":"CTRL + C"}}`,
+		"reserved navigation":   `{"composer_keys":{"cycle_runner":"up"}}`,
+		"reserved editor":       `{"composer_keys":{"reply":"backspace"}}`,
+		"reserved lifecycle":    `{"composer_keys":{"reply":"ctrl+x"}}`,
+		"reserved resize mode":  `{"composer_keys":{"reply":"ctrl+g"}}`,
+		"reserved help":         `{"composer_keys":{"cycle_root":"?"}}`,
+		"reserved shifted help": `{"composer_keys":{"cycle_root":"shift+/"}}`,
+		"reserved f1 help":      `{"composer_keys":{"cycle_root":"f1"}}`,
+		"reserved commit key":   `{"composer_keys":{"reply":"enter"}}`,
+		"runner enter":          `{"composer_keys":{"cycle_runner":"enter"}}`,
+		"root enter":            `{"composer_keys":{"cycle_root":"enter"}}`,
+		"reply conflict":        `{"composer_keys":{"reply":" TAB "}}`,
+		"cycle conflict":        `{"composer_keys":{"cycle_root":" TAB "}}`,
+		"missing base key":      `{"composer_keys":{"reply":"ctrl+shift"}}`,
+		"multiple base keys":    `{"composer_keys":{"reply":"ctrl+n+m"}}`,
+		"repeated modifier":     `{"composer_keys":{"reply":"ctrl+ctrl+n"}}`,
+		"unsupported key name":  `{"composer_keys":{"reply":"launch"}}`,
+		"null key":              `{"composer_keys":{"reply":null}}`,
+		"non-string key":        `{"composer_keys":{"reply":6}}`,
+		"unknown nested field":  `{"composer_keys":{"reply":"f6","surprise":"f7"}}`,
+		"wrong object shape":    `{"composer_keys":"enter"}`,
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -4,11 +4,18 @@ Status: proposed; do not implement as part of V0 settings.
 
 ## The idea
 
-The bottom input in Heikou is the **composer**. Today it has two hard-coded
-commits: `Enter` starts a task and `Tab` sends text to the selected session. It
-could become a small host for built-in modules that recognize an initial
-trigger, render contextual suggestions, and turn the composed value into a
-typed action.
+The bottom input in Heikou is the **composer**. Today it has one commit key,
+`Enter`, which delivers to whichever destination the composer is aimed at:
+a new session by default, or a session pinned by pressing `Space` on an empty
+composer. It could become a small host for built-in modules that recognize an
+initial trigger, render contextual suggestions, and turn the composed value
+into a typed action.
+
+The reply key is already an instance of this shape: a trigger that only
+activates at the start of a fresh composer, changes the prefix, and redirects
+where `Commit` sends. A module system should subsume it rather than sit beside
+it — `@a1b2 look again` below is the same action reached by typing instead of
+by a mode.
 
 Possible modules:
 
@@ -90,4 +97,5 @@ Acceptance criteria for that experiment:
 - results appear quickly from recent roots plus bounded filesystem search;
 - accepting a result updates the header and only future sessions;
 - `Esc` returns the exact original composer text; and
-- the existing Enter/Tab behavior is unchanged for all non-matching text.
+- `Enter` still commits to the destination named in the prefix for all
+  non-matching text, whether that is a new session or a pinned reply target.
