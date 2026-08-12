@@ -89,7 +89,7 @@ key never depends on remembering which one you meant:
 | --- | --- |
 | Type a task or label, then `Enter` | Start the chosen Codex, Claude, or `no-agent` session |
 | `Space` with an empty composer | Aim the composer at the selected live session; the prefix becomes `↳ reply …` |
-| Type a message, then `Enter` | Send it to the pinned session; moving the selection first does not redirect it |
+| Type a message, then `Enter` | Send it to the pinned session; moving the selection first does not redirect it. Once it lands, the composer returns to composing a new session — press `Space` again to follow up |
 | `Esc` while replying | Clear the draft, then return to composing a new session |
 | `Shift-Enter` | Insert a newline; `Ctrl-J` is the fallback for terminals that cannot distinguish shifted Enter |
 | `Option-Left` / `Option-Right` | Move by word; `Option-Delete` deletes the previous word |

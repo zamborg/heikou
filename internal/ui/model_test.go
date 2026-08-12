@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1582,6 +1583,71 @@ func TestReplyTargetIsPinnedAgainstLaterSelectionChanges(t *testing.T) {
 	_ = cmd()
 	if controller.sentSession != first.ID {
 		t.Fatalf("send went to %q, want the pinned target %q", controller.sentSession, first.ID)
+	}
+}
+
+// The pin covers one message, not the rest of the conversation: once the reply
+// lands, the composer owes the next Enter a fresh, visible destination.
+func TestADeliveredReplyReleasesItsTarget(t *testing.T) {
+	model, controller := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 24
+	session := testDurableSession("018f0000-0000-4000-8000-000000000061", "", heikou.BackendCodex, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	model.insertText("reply me")
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Enter did not send from an aimed composer")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if controller.sentSession != session.ID || controller.sentText != "reply me" {
+		t.Fatalf("send = session %q text %q", controller.sentSession, controller.sentText)
+	}
+	if model.replyTarget != "" {
+		t.Fatalf("the composer stayed aimed after sending: %q", model.replyTarget)
+	}
+	if len(model.input) != 0 {
+		t.Fatalf("the sent draft survived: %q", model.inputValue())
+	}
+	plain := ansi.Strip(model.View().Content)
+	if strings.Contains(plain, "↳ reply ") {
+		t.Fatalf("composer kept the reply prefix after sending:\n%s", plain)
+	}
+	if !strings.Contains(plain, string(heikou.BackendCodex)+" · ") {
+		t.Fatalf("composer did not return to the new-session prefix:\n%s", plain)
+	}
+}
+
+// A refused send leaves the message undelivered, so the destination and the
+// text both have to survive for the retry the user is about to make.
+func TestAFailedReplyKeepsItsTargetAndDraft(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 24
+	session := testDurableSession("018f0000-0000-4000-8000-000000000062", "", heikou.BackendCodex, "original", "/tmp", time.Now())
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	model.insertText("reply me")
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	updated, _ = model.Update(sendMsg{id: session.ID, err: errors.New("tmux refused the keys")})
+	model = updated.(Model)
+	if model.replyTarget != session.ID {
+		t.Fatalf("a failed send released the target: %q", model.replyTarget)
+	}
+	if model.inputValue() != "reply me" {
+		t.Fatalf("a failed send cleared the draft: %q", model.inputValue())
 	}
 }
 
