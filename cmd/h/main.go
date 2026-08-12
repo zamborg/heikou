@@ -14,12 +14,11 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/home"
 	"github.com/zamborg/heikou/internal/runner"
@@ -47,14 +46,14 @@ func main() {
 	// Relocation runs at the process entry point rather than inside run so the
 	// test surface never migrates a developer's real installation.
 	if err := migrateHome(os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		fmt.Fprintln(os.Stderr, "heikou:", format.OneLine(err.Error()))
 		os.Exit(1)
 	}
 
 	ensurePilotDocs(os.Stderr)
 
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+		fmt.Fprintln(os.Stderr, "heikou:", format.OneLine(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -260,16 +259,16 @@ func runQuickstart(args []string) error {
 		return err
 	}
 
-	fmt.Printf("started guided %s session %s\n", backend, shortID(session.ID))
+	fmt.Printf("started guided %s session %s\n", backend, format.ShortID(session.ID))
 	fmt.Fprintln(os.Stderr, "attaching now · your first lesson is Ctrl-b, release, then d")
 	attachContext, cancelAttach := context.WithTimeout(context.Background(), 5*time.Second)
 	command, err := controller.AttachCommand(attachContext, session.ID)
 	cancelAttach()
 	if err != nil {
-		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", format.ShortID(session.ID), err)
 	}
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", shortID(session.ID), err)
+		return fmt.Errorf("attach guide %s: %w (the session is still available in h)", format.ShortID(session.ID), err)
 	}
 
 	fmt.Fprintln(os.Stderr, "detached · opening heikou with the guide selected")
@@ -368,7 +367,7 @@ func runSpawn(args []string) error {
 			"workstream_id": session.WorkstreamID, "runtime_name": name, "root": session.Root,
 		})
 	}
-	fmt.Printf("started %s %s (%s)\n", session.Backend, shortID(session.ID), name)
+	fmt.Printf("started %s %s (%s)\n", session.Backend, format.ShortID(session.ID), name)
 	return nil
 }
 
@@ -404,8 +403,8 @@ func runList(args []string) error {
 	all := append(append([]control.Session(nil), snapshot.Sessions...), snapshot.Orphans...)
 	for _, session := range all {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			shortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
-			formatDuration(session.RuntimeDuration(time.Now())), oneLine(compactPath(session.Root)), cliSessionSummary(session))
+			format.ShortID(session.ID), session.Backend, cliStatus(session), sessionGroup(snapshot, session),
+			format.Duration(session.RuntimeDuration(time.Now())), format.OneLine(format.CompactPath(session.Root)), cliSessionSummary(session))
 	}
 	return writer.Flush()
 }
@@ -436,7 +435,7 @@ func runSend(args []string) error {
 	if *jsonOutput {
 		return writeJSON(os.Stdout, map[string]any{"session_id": session.ID, "status": "sent"})
 	}
-	fmt.Println("sent to", shortID(session.ID))
+	fmt.Println("sent to", format.ShortID(session.ID))
 	return nil
 }
 
@@ -489,7 +488,7 @@ func runStop(args []string) error {
 	if err := controller.Stop(ctx, session.ID); err != nil {
 		return err
 	}
-	fmt.Println("stopped", shortID(session.ID))
+	fmt.Println("stopped", format.ShortID(session.ID))
 	return nil
 }
 
@@ -549,7 +548,7 @@ func runDoctor(args []string) error {
 					requested = configured[0]
 				}
 			}
-			fmt.Printf("[missing] %-7s %s (%s)\n", check.name, oneLine(requested), label)
+			fmt.Printf("[missing] %-7s %s (%s)\n", check.name, format.OneLine(requested), label)
 			continue
 		}
 		if check.runner {
@@ -560,29 +559,29 @@ func runDoctor(args []string) error {
 		output, err := exec.CommandContext(ctx, path, versionArguments...).CombinedOutput()
 		cancel()
 		if err != nil {
-			fmt.Printf("[warn]    %-7s %s\n", check.name, oneLine(path))
+			fmt.Printf("[warn]    %-7s %s\n", check.name, format.OneLine(path))
 			continue
 		}
-		versionText := oneLine(string(output))
+		versionText := format.OneLine(string(output))
 		if check.name == "tmux" {
 			if supported, known := supportedTmuxVersion(versionText); known && !supported {
 				failed = true
-				fmt.Printf("[unsupported] %-7s %s · %s (need tmux 3.3+)\n", check.name, oneLine(path), versionText)
+				fmt.Printf("[unsupported] %-7s %s · %s (need tmux 3.3+)\n", check.name, format.OneLine(path), versionText)
 				continue
 			}
 		}
-		fmt.Printf("[ok]      %-7s %s · %s\n", check.name, oneLine(path), versionText)
+		fmt.Printf("[ok]      %-7s %s · %s\n", check.name, format.OneLine(path), versionText)
 	}
 	if runnersFound == 0 {
 		failed = true
 		fmt.Println("[missing] runner  install at least one of codex or claude")
 	}
-	fmt.Printf("[config]  socket  tmux -L %s\n", oneLine(*socket))
-	fmt.Printf("[config]  file    %s\n", oneLine(configStore.Path))
-	fmt.Printf("[state]   file    %s\n", oneLine(stateStore.Path))
-	fmt.Printf("[state]   files   %s\n", oneLine(stateStore.Artifacts))
+	fmt.Printf("[config]  socket  tmux -L %s\n", format.OneLine(*socket))
+	fmt.Printf("[config]  file    %s\n", format.OneLine(configStore.Path))
+	fmt.Printf("[state]   file    %s\n", format.OneLine(stateStore.Path))
+	fmt.Printf("[state]   files   %s\n", format.OneLine(stateStore.Artifacts))
 	fmt.Printf("[config]  runner  %s\n", settings.DefaultRunner)
-	fmt.Printf("[config]  root    %s\n", oneLine(mustWorkingDirectory()))
+	fmt.Printf("[config]  root    %s\n", format.OneLine(mustWorkingDirectory()))
 	if failed {
 		return errors.New("required dependencies are missing")
 	}
@@ -781,7 +780,7 @@ func newCLISnapshot(snapshot control.Snapshot) cliSnapshotJSON {
 		title := strings.TrimSpace(session.Record.Title)
 		displayTitle := title
 		if displayTitle == "" {
-			displayTitle = oneLine(session.Prompt)
+			displayTitle = format.OneLine(session.Prompt)
 		}
 		var lastActivityAt *time.Time
 		if observed := session.LastActivity(); !observed.IsZero() {
@@ -828,8 +827,8 @@ func cliSessionSummary(session control.Session) string {
 	if title == "" {
 		title = session.Prompt
 	}
-	title = oneLine(title)
-	if latest := oneLine(session.LastUserMessage); latest != "" && latest != title {
+	title = format.OneLine(title)
+	if latest := format.OneLine(session.LastUserMessage); latest != "" && latest != title {
 		return title + " · latest: " + latest
 	}
 	return title
@@ -863,43 +862,6 @@ func mustWorkingDirectory() string {
 		return "."
 	}
 	return value
-}
-
-func shortID(id string) string {
-	id = strings.ReplaceAll(id, "-", "")
-	if len(id) <= 6 {
-		return id
-	}
-	return id[:6]
-}
-
-func formatDuration(value time.Duration) string {
-	if value < time.Minute {
-		return fmt.Sprintf("%ds", max(0, int(value.Seconds())))
-	}
-	if value < time.Hour {
-		return fmt.Sprintf("%dm", int(value.Minutes()))
-	}
-	return fmt.Sprintf("%dh%02dm", int(value.Hours()), int(value.Minutes())%60)
-}
-
-func compactPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err == nil && (path == home || strings.HasPrefix(path, home+string(filepath.Separator))) {
-		return "~" + strings.TrimPrefix(path, home)
-	}
-	return path
-}
-
-func oneLine(value string) string {
-	value = ansi.Strip(value)
-	value = strings.Map(func(r rune) rune {
-		if !unicode.IsControl(r) || unicode.IsSpace(r) {
-			return r
-		}
-		return -1
-	}, value)
-	return strings.Join(strings.Fields(value), " ")
 }
 
 func supportedTmuxVersion(value string) (supported, known bool) {

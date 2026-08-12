@@ -10,6 +10,7 @@ import (
 
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/workstream"
 )
@@ -168,7 +169,7 @@ func TestResolveWorkstreamByNameAndRejectAmbiguity(t *testing.T) {
 }
 
 func TestOneLineStripsTerminalControlSequences(t *testing.T) {
-	got := oneLine("safe\x1b]52;c;c2VjcmV0\x07 text\nnext\x1b[31m red\x1b[0m")
+	got := format.OneLine("safe\x1b]52;c;c2VjcmV0\x07 text\nnext\x1b[31m red\x1b[0m")
 	if strings.Contains(got, "\x1b") || strings.Contains(got, "c2VjcmV0") {
 		t.Fatalf("oneLine retained terminal control payload: %q", got)
 	}

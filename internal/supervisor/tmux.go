@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/runner"
 )
@@ -382,13 +383,13 @@ func (t *Tmux) Send(ctx context.Context, session heikou.Session, message string)
 		return err
 	}
 	if !current.Alive() {
-		return fmt.Errorf("session %s has exited", shortID(current.ID))
+		return fmt.Errorf("session %s has exited", format.ShortID(current.ID))
 	}
 	if current.PaneInMode {
-		return fmt.Errorf("session %s is in a tmux mode; attach and leave that mode before sending", shortID(current.ID))
+		return fmt.Errorf("session %s is in a tmux mode; attach and leave that mode before sending", format.ShortID(current.ID))
 	}
 	if current.InputDisabled {
-		return fmt.Errorf("session %s has tmux input disabled", shortID(current.ID))
+		return fmt.Errorf("session %s has tmux input disabled", format.ShortID(current.ID))
 	}
 
 	bufferID, err := randomToken()
@@ -429,7 +430,7 @@ func (t *Tmux) Capture(ctx context.Context, session heikou.Session, lines int) (
 
 func (t *Tmux) Stop(ctx context.Context, session heikou.Session) error {
 	if err := t.killByName(ctx, session.Name); err != nil {
-		return fmt.Errorf("stop tmux runtime %s: %w", shortID(session.ID), err)
+		return fmt.Errorf("stop tmux runtime %s: %w", format.ShortID(session.ID), err)
 	}
 	return nil
 }
@@ -593,16 +594,9 @@ func titleFor(prompt, id string) string {
 		title = string([]rune(title)[:36])
 	}
 	if title == "" {
-		title = "heikou " + shortID(id)
+		title = "heikou " + format.ShortID(id)
 	}
 	return title
-}
-
-func shortID(id string) string {
-	if len(id) <= 6 {
-		return id
-	}
-	return id[:6]
 }
 
 func unixTime(value int64) time.Time {

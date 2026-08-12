@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/home"
 	"github.com/zamborg/heikou/internal/workstream"
 )
@@ -35,7 +36,7 @@ func provisionInstallation(ctx context.Context, controller *control.Controller, 
 		return
 	}
 	if err := seedManagersWorkstream(ctx, controller, writer); err != nil {
-		fmt.Fprintln(writer, "heikou:", oneLine(err.Error()))
+		fmt.Fprintln(writer, "heikou:", format.OneLine(err.Error()))
 	}
 }
 

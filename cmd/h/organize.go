@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 )
 
 // organizeTimeout bounds one durable organization action. These commands touch
@@ -137,7 +138,7 @@ func runWorkstreamList(args []string) error {
 	fmt.Fprintln(writer, "ID\tNAME\tSESSIONS\tROOTS")
 	for _, item := range snapshot.Workstreams {
 		fmt.Fprintf(writer, "%s\t%s\t%d\t%s\n",
-			shortID(item.ID), oneLine(item.Name), counts[item.ID], strings.Join(item.Roots, ", "))
+			format.ShortID(item.ID), format.OneLine(item.Name), counts[item.ID], strings.Join(item.Roots, ", "))
 	}
 	return writer.Flush()
 }
@@ -173,7 +174,7 @@ func runWorkstreamCreate(args []string) error {
 			"roots": item.Roots, "artifact_dir": item.ArtifactDir,
 		})
 	}
-	fmt.Printf("created workstream %s (%s) with root %s\n", item.Name, shortID(item.ID), *root)
+	fmt.Printf("created workstream %s (%s) with root %s\n", item.Name, format.ShortID(item.ID), *root)
 	fmt.Printf("notes and artifacts: %s\n", item.ArtifactDir)
 	return nil
 }
@@ -207,7 +208,7 @@ func runWorkstreamRename(args []string) error {
 			"status": "renamed", "workstream_id": id, "name": name,
 		})
 	}
-	fmt.Printf("renamed %s to %s\n", shortID(id), name)
+	fmt.Printf("renamed %s to %s\n", format.ShortID(id), name)
 	return nil
 }
 
@@ -250,7 +251,7 @@ func runWorkstreamReorder(args []string) error {
 			"status": "reordered", "workstream_id": id, "moved": moved,
 		})
 	}
-	fmt.Printf("%s %s\n", shortID(id), status)
+	fmt.Printf("%s %s\n", format.ShortID(id), status)
 	return nil
 }
 
@@ -284,7 +285,7 @@ func runWorkstreamArchive(args []string) error {
 	if *jsonOutput {
 		return writeJSON(os.Stdout, map[string]any{"status": "archived", "workstream_id": id})
 	}
-	fmt.Printf("archived %s; its sessions are now Ungrouped\n", shortID(id))
+	fmt.Printf("archived %s; its sessions are now Ungrouped\n", format.ShortID(id))
 	return nil
 }
 
@@ -347,7 +348,7 @@ func runWorkstreamRoot(args []string) error {
 			"status": status, "workstream_id": id, "root": flags.Arg(1),
 		})
 	}
-	fmt.Printf("%s root on %s\n", status, shortID(id))
+	fmt.Printf("%s root on %s\n", status, format.ShortID(id))
 	return nil
 }
 
@@ -391,10 +392,10 @@ func runTitle(args []string) error {
 		})
 	}
 	if title == "" {
-		fmt.Printf("cleared the title on %s\n", shortID(session.ID))
+		fmt.Printf("cleared the title on %s\n", format.ShortID(session.ID))
 		return nil
 	}
-	fmt.Printf("titled %s: %s\n", shortID(session.ID), title)
+	fmt.Printf("titled %s: %s\n", format.ShortID(session.ID), title)
 	return nil
 }
 
@@ -438,10 +439,10 @@ func runMove(args []string) error {
 		})
 	}
 	if workstreamID == "" {
-		fmt.Printf("moved %s to Ungrouped\n", shortID(session.ID))
+		fmt.Printf("moved %s to Ungrouped\n", format.ShortID(session.ID))
 		return nil
 	}
-	fmt.Printf("moved %s to %s\n", shortID(session.ID), shortID(workstreamID))
+	fmt.Printf("moved %s to %s\n", format.ShortID(session.ID), format.ShortID(workstreamID))
 	return nil
 }
 
@@ -482,7 +483,7 @@ func runAdopt(args []string) error {
 			"status": "adopted", "session_id": adopted.ID, "workstream_id": workstreamID,
 		})
 	}
-	fmt.Printf("adopted %s into durable state\n", shortID(adopted.ID))
+	fmt.Printf("adopted %s into durable state\n", format.ShortID(adopted.ID))
 	return nil
 }
 
@@ -516,7 +517,7 @@ func runDelete(args []string) error {
 	if *jsonOutput {
 		return writeJSON(os.Stdout, map[string]any{"status": "deleted", "session_id": session.ID})
 	}
-	fmt.Printf("deleted the durable record for %s\n", shortID(session.ID))
+	fmt.Printf("deleted the durable record for %s\n", format.ShortID(session.ID))
 	return nil
 }
 

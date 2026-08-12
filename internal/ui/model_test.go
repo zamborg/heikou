@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/workstream"
 )
@@ -168,7 +169,7 @@ func TestNarrowSessionRowsPreserveStatusAndTitleBeforeMetadata(t *testing.T) {
 		if !strings.Contains(plain, "live") || !strings.Contains(plain, session.Record.Title) {
 			t.Errorf("%s row lost status or title at 40 columns: %q", name, plain)
 		}
-		if strings.Contains(plain, "codex") || strings.Contains(plain, shortID(session.ID)) {
+		if strings.Contains(plain, "codex") || strings.Contains(plain, format.ShortID(session.ID)) {
 			t.Errorf("%s row retained lower-priority metadata ahead of the title: %q", name, plain)
 		}
 	}
@@ -191,7 +192,7 @@ func TestMediumSessionRowsRestoreRunnerWithoutCrowdingOutTitle(t *testing.T) {
 		if !strings.Contains(plain, "codex") || !strings.Contains(plain, session.Record.Title) {
 			t.Errorf("%s row did not restore runner alongside the title: %q", name, plain)
 		}
-		if strings.Contains(plain, shortID(session.ID)) {
+		if strings.Contains(plain, format.ShortID(session.ID)) {
 			t.Errorf("%s row restored the short ID before the rich-layout threshold: %q", name, plain)
 		}
 	}
@@ -1663,7 +1664,7 @@ func TestReplyModeSurvivesEscapeLadderAndShowsItsTarget(t *testing.T) {
 	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
 	model = updated.(Model)
 	model.insertText("drafting")
-	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "reply "+shortID(session.ID)) {
+	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "reply "+format.ShortID(session.ID)) {
 		t.Fatalf("composer does not name its reply target:\n%s", plain)
 	}
 	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))

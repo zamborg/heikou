@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/home"
 	manageheikou "github.com/zamborg/heikou/skills/manage-heikou"
 )
@@ -69,7 +70,7 @@ func runInit(args []string) error {
 	if _, controller, _, err := newController(defaultSocket()); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), organizeTimeout)
 		if err := reprovisionManagersWorkstream(ctx, controller, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "heikou:", oneLine(err.Error()))
+			fmt.Fprintln(os.Stderr, "heikou:", format.OneLine(err.Error()))
 		}
 		cancel()
 	}
@@ -88,7 +89,7 @@ func runInit(args []string) error {
 // is no reason to refuse to list sessions.
 func ensurePilotDocs(writer io.Writer) {
 	if _, _, err := installPilotDocs(false); err != nil {
-		fmt.Fprintln(writer, "heikou: could not install pilot instructions:", oneLine(err.Error()))
+		fmt.Fprintln(writer, "heikou: could not install pilot instructions:", format.OneLine(err.Error()))
 	}
 }
 
