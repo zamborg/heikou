@@ -419,6 +419,12 @@ xterm format is the one Codex cannot read. The `extkeys` terminal feature is the
 outer half of the same path, letting tmux ask the user's own terminal for those
 keys in the first place.
 
+The format option arrived in tmux 3.5, above the supported floor, so it is sent
+on its own and its failure is tolerated. Bundling it would abort the rest of the
+batch on an older server, which would trade a Codex nicety for every other
+option. What an older server still gets is the part that matters most: the key
+is distinguishable from Enter, so it cannot silently submit.
+
 A pane fixes its key mode when it starts, so this reaches new sessions only;
 changing the options under a running pane does not move it. The
 `bootstrapVersion` marker exists for exactly this class of change: bumping it is

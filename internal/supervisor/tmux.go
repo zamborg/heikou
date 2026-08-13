@@ -108,11 +108,9 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 		// in the legacy mode receives a bare CR for Shift-Enter -- so the key
 		// meant to open a line sends the message instead. "always" takes the
 		// negotiation away from the runner and encodes modified keys for every
-		// pane, and csi-u is the one of tmux's two wire formats that both
-		// runners parse. Panes read this when they start: an existing session
-		// keeps whatever mode it booted with.
+		// pane. Panes read this when they start: an existing session keeps
+		// whatever mode it booted with.
 		{"set-option", "-s", "extended-keys", "always"},
-		{"set-option", "-s", "extended-keys-format", "csi-u"},
 		{"set-option", "-as", "terminal-features", ",xterm*:extkeys"},
 		{"bind-key", "-n", "C-\\", "detach-client"},
 		{"set-option", "-s", "@heikou_bootstrap_version", bootstrapVersion},
@@ -121,6 +119,14 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 	if _, err := t.run(ctx, nil, args...); err != nil {
 		return fmt.Errorf("configure tmux server: %w", err)
 	}
+	// csi-u is the one of tmux's two wire formats Codex can read, but the
+	// option naming it arrived in tmux 3.5, above the 3.3 floor Heikou
+	// supports. It is sent alone, and its failure is not one: inside the batch
+	// above an unknown option would abort every command after it, and an older
+	// server that keeps the xterm format still gains the rest. Shift-Enter is
+	// then at least distinguishable from Enter, which is the part that
+	// mattered; only Codex's ability to read it waits on tmux 3.5.
+	_, _ = t.run(ctx, nil, "set-option", "-s", "extended-keys-format", "csi-u")
 	return nil
 }
 
