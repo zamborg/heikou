@@ -105,6 +105,7 @@ text, and move mark, then parks on Ungrouped. Quitting is `Ctrl-C`.
 | Title or clear a durable session | Select it, press `Ctrl-R`, then save a title or an empty value |
 | Move a session into a workstream | `Ctrl-T` on the session, select the workstream, `Ctrl-T` again |
 | Reorder a named workstream | Select it, then `Shift-Up` / `Shift-Down` |
+| Add, edit, or remove a root | Select the workstream, press `Ctrl-O` to open its roots; `Ctrl-O` again walks to the next one and then to an empty slot that adds. `Enter` saves; an empty draft removes after one more `Enter` |
 | Start a session | Type a task, then `Enter` |
 | Send to the selected live session | `Space` on an empty composer, type a message, then `Enter` |
 | Leave a reply and compose a new session | `Esc`; the draft goes with it |

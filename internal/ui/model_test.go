@@ -37,9 +37,13 @@ type fakeController struct {
 	sentSession            string
 	sentText               string
 	captureText            string
+	addedRootWorkstream    string
+	addedRootValue         string
+	addRootErr             error
 	replacedRootWorkstream string
 	replacedRootCurrent    string
 	replacedRootValue      string
+	replaceRootErr         error
 	removedRootWorkstream  string
 	removedRootValue       string
 	reorderedWorkstream    string
@@ -97,9 +101,13 @@ func (f *fakeController) AdoptSession(_ context.Context, sessionID, workstreamID
 	f.adoptSession, f.adoptTarget = sessionID, workstreamID
 	return control.Session{}, nil
 }
+func (f *fakeController) AddRoot(_ context.Context, workstreamID, root string) error {
+	f.addedRootWorkstream, f.addedRootValue = workstreamID, root
+	return f.addRootErr
+}
 func (f *fakeController) ReplaceRoot(_ context.Context, workstreamID, current, replacement string) error {
 	f.replacedRootWorkstream, f.replacedRootCurrent, f.replacedRootValue = workstreamID, current, replacement
-	return nil
+	return f.replaceRootErr
 }
 func (f *fakeController) RemoveRoot(_ context.Context, workstreamID, root string) error {
 	f.removedRootWorkstream, f.removedRootValue = workstreamID, root
@@ -2113,5 +2121,285 @@ func assertViewFits(t *testing.T, content string, width, height int) {
 		if got := ansi.StringWidth(line); got > width {
 			t.Fatalf("line %d width = %d, terminal width %d: %q", index, got, width, ansi.Strip(line))
 		}
+	}
+}
+
+// ctrlO is the roots chord. Roots are the one organize action with three verbs
+// on one chord, so most of these tests are about the composer saying which of
+// the three Enter is about to perform.
+var ctrlO = tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl})
+
+func rootsModel(t *testing.T, roots ...string) (Model, *fakeController, workstream.Workstream) {
+	t.Helper()
+	model, controller := newTestModel("/tmp/cwd", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-0000000000c1", "Core", roots, now)
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}})
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	return model, controller, container
+}
+
+func TestCtrlOOpensTheRootTheDashboardHasSelected(t *testing.T) {
+	model, _, container := rootsModel(t, "/tmp/one", "/tmp/two")
+	model.rootIndex[container.ID] = 1
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	if model.composerEdit != composerEditRoot || model.inputValue() != "/tmp/two" {
+		t.Fatalf("root edit = mode %v value %q, want the cycled root", model.composerEdit, model.inputValue())
+	}
+	if label := model.composerEditLabel(); label != "✎ root 2/2 · Core" {
+		t.Fatalf("prefix = %q, want it to name which root Enter changes", label)
+	}
+}
+
+// Add is the slot past the end rather than its own chord, so the walk has to
+// reach it and say what it is.
+func TestCtrlOWalksToAnAddSlotAndBackAround(t *testing.T) {
+	model, _, _ := rootsModel(t, "/tmp/one", "/tmp/two")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	updated, _ = model.Update(ctrlO)
+	model = updated.(Model)
+	updated, _ = model.Update(ctrlO)
+	model = updated.(Model)
+	if model.inputValue() != "/tmp/cwd" {
+		t.Fatalf("add slot value = %q, want the dashboard's own directory", model.inputValue())
+	}
+	if label := model.composerEditLabel(); label != "✎ new root · Core" {
+		t.Fatalf("prefix = %q, want the add slot named", label)
+	}
+
+	updated, _ = model.Update(ctrlO)
+	model = updated.(Model)
+	if model.inputValue() != "/tmp/one" {
+		t.Fatalf("the walk did not wrap back to the first root: %q", model.inputValue())
+	}
+}
+
+func TestCtrlOAddsFromTheEmptySlotAndReplacesFromAFilledOne(t *testing.T) {
+	model, controller, _ := rootsModel(t, "/tmp/one")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	model.input, model.inputCursor = splitGraphemes("/tmp/renamed"), 12
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("editing a root produced no command")
+	}
+	message := cmd()
+	if controller.replacedRootCurrent != "/tmp/one" || controller.replacedRootValue != "/tmp/renamed" {
+		t.Fatalf("replace = %q → %q", controller.replacedRootCurrent, controller.replacedRootValue)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	if model.composerEdit != composerEditNone {
+		t.Fatal("a committed root edit left the composer open")
+	}
+
+	updated, _ = model.Update(ctrlO)
+	model = updated.(Model)
+	updated, _ = model.Update(ctrlO)
+	model = updated.(Model)
+	model.input, model.inputCursor = splitGraphemes("/tmp/extra"), 10
+	_, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("adding a root produced no command")
+	}
+	cmd()
+	if controller.addedRootValue != "/tmp/extra" {
+		t.Fatalf("added root = %q", controller.addedRootValue)
+	}
+}
+
+// Emptying a field is a quiet gesture for unregistering a directory, so it asks
+// once before doing it.
+func TestAnEmptyRootDraftAsksBeforeRemoving(t *testing.T) {
+	model, controller, _ := rootsModel(t, "/tmp/one", "/tmp/two")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	model.clearInput()
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("the first empty Enter removed a root without asking")
+	}
+	if !strings.Contains(model.notice, "Enter again") {
+		t.Fatalf("notice = %q, want it to say a second press removes the root", model.notice)
+	}
+
+	_, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("the second empty Enter did not remove the root")
+	}
+	cmd()
+	if controller.removedRootValue != "/tmp/one" {
+		t.Fatalf("removed root = %q, want the slot that was open", controller.removedRootValue)
+	}
+}
+
+// A workstream with no root cannot launch anything, and the validator rejects
+// it, so the refusal belongs here where it can name the alternative.
+func TestTheLastRootCannotBeRemoved(t *testing.T) {
+	model, controller, _ := rootsModel(t, "/tmp/only")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	model.clearInput()
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd != nil || controller.removedRootValue != "" {
+		t.Fatal("the only root was removed")
+	}
+	if !strings.Contains(model.errorText, "must keep one root") {
+		t.Fatalf("error = %q, want it to say why and what to do instead", model.errorText)
+	}
+}
+
+// An armed removal must not survive an unrelated commit, or a refused replace
+// leaves the next empty Enter primed to delete with no second press.
+func TestARefusedReplaceDisarmsAPendingRemoval(t *testing.T) {
+	model, controller, _ := rootsModel(t, "/tmp/one", "/tmp/two")
+	controller.replaceRootErr = errors.New("root is not a directory")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	model.clearInput()
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+
+	model.input, model.inputCursor = splitGraphemes("/tmp/nowhere"), 12
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+
+	model.clearInput()
+	_, cmd = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd != nil {
+		t.Fatal("a removal armed before a failed replace fired without asking again")
+	}
+}
+
+// A root that another process removed while the composer was open must not be
+// edited by position, or the edit lands on whichever root shifted into the slot.
+func TestARootThatVanishedUnderTheEditIsRefused(t *testing.T) {
+	model, controller, container := rootsModel(t, "/tmp/one", "/tmp/two")
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	container.Roots = []string{"/tmp/two"}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}})
+
+	model.input, model.inputCursor = splitGraphemes("/tmp/three"), 10
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model = updated.(Model)
+	if cmd != nil || controller.replacedRootValue != "" {
+		t.Fatal("an edit committed against a root that is no longer registered")
+	}
+	if !strings.Contains(model.errorText, "no longer registered") {
+		t.Fatalf("error = %q", model.errorText)
+	}
+}
+
+// The chord is contextual like the others: a session row resolves to the
+// workstream that owns it rather than refusing.
+func TestCtrlOOnASessionEditsItsWorkstreamRoots(t *testing.T) {
+	model, _ := newTestModel("/tmp/cwd", heikou.BackendCodex)
+	now := time.Now()
+	container := testWorkstream("018f0000-0000-4000-8000-0000000000c2", "Core", []string{"/tmp/one"}, now)
+	session := testDurableSession("018f0000-0000-4000-8000-0000000000c3", container.ID, heikou.BackendCodex, "task", "/tmp/one", now)
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: []control.Session{session}})
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	if model.composerEdit != composerEditRoot || model.composerEditTarget != container.ID {
+		t.Fatalf("root edit target = %q, want the session's workstream", model.composerEditTarget)
+	}
+}
+
+func TestCtrlOOnUngroupedExplainsItHasNoRoots(t *testing.T) {
+	model, _ := newTestModel("/tmp/cwd", heikou.BackendCodex)
+	now := time.Now()
+	session := testDurableSession("018f0000-0000-4000-8000-0000000000c4", "", heikou.BackendCodex, "task", "/tmp", now)
+	model.setSnapshot(control.Snapshot{Sessions: []control.Session{session}})
+	model.selected = ungroupedKey
+	model.restoreSelection()
+
+	updated, _ := model.Update(ctrlO)
+	model = updated.(Model)
+	if model.composerEdit != composerEditNone {
+		t.Fatal("Ungrouped opened a root editor; it is a synthetic inbox with no roots")
+	}
+	if !strings.Contains(model.errorText, "named workstream") {
+		t.Fatalf("error = %q", model.errorText)
+	}
+}
+
+// A reply's destination label carries a session id and a title. Inline it
+// pushes the cursor across the terminal and a short message wraps for nothing.
+func TestReplyModeGivesTheDraftItsOwnLine(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	session := testDurableSession("018f0000-0000-4000-8000-0000000000c5", "", heikou.BackendClaude, "the initial task", "/tmp", now)
+	model.setSnapshot(control.Snapshot{Sessions: []control.Session{session}})
+	model.width, model.height = 100, 30
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	model.insertText("carry on")
+
+	rows := model.renderComposerInput(model.composerPrefix())
+	if len(rows) != 2 {
+		t.Fatalf("composer rendered %d rows, want the label and the draft on separate lines", len(rows))
+	}
+	if !strings.Contains(ansi.Strip(rows[0]), "reply") || strings.Contains(ansi.Strip(rows[0]), "carry on") {
+		t.Fatalf("first row = %q, want only the destination label", ansi.Strip(rows[0]))
+	}
+	if !strings.HasPrefix(strings.TrimRight(ansi.Strip(rows[1]), " "), "carry on") {
+		t.Fatalf("second row = %q, want the draft to start the line", ansi.Strip(rows[1]))
+	}
+}
+
+// Outside a reply the label is short, and naming the destination on the same
+// line as the text is the whole point of the prefix.
+func TestAnOrdinaryComposerKeepsItsLabelInline(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 100, 30
+	model.insertText("a new task")
+
+	rows := model.renderComposerInput(model.composerPrefix())
+	if len(rows) != 1 {
+		t.Fatalf("composer rendered %d rows, want one", len(rows))
+	}
+	if !strings.Contains(ansi.Strip(rows[0]), "a new task") {
+		t.Fatalf("row = %q, want the draft beside the label", ansi.Strip(rows[0]))
+	}
+}
+
+// The extra row has to come out of the layout budget, or the list grows past
+// the bottom of the terminal the moment a reply is pinned.
+func TestTheReplyLabelRowIsPaidForOutOfTheLayout(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	session := testDurableSession("018f0000-0000-4000-8000-0000000000c6", "", heikou.BackendCodex, "task", "/tmp", now)
+	model.setSnapshot(control.Snapshot{Sessions: []control.Session{session}})
+	model.width, model.height = 100, 30
+	model.selected = sessionRowKey(session)
+	model.restoreSelection()
+	plain := model.dashboardAvailableHeight()
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	model = updated.(Model)
+	if replying := model.dashboardAvailableHeight(); replying != plain-1 {
+		t.Fatalf("available height = %d while replying, want %d", replying, plain-1)
 	}
 }
