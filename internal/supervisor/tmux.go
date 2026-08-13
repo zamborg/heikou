@@ -25,8 +25,11 @@ import (
 )
 
 const (
-	DefaultSocket    = "heikou"
-	bootstrapVersion = "1"
+	DefaultSocket = "heikou"
+	// bootstrapVersion is the marker that lets a long-lived server skip
+	// reconfiguration. Bump it whenever the option set changes, or servers
+	// already running keep the configuration they were started with.
+	bootstrapVersion = "2"
 	framingAttempts  = 3
 )
 
@@ -93,7 +96,23 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 		{"set-option", "-gw", "window-size", "latest"},
 		{"set-option", "-s", "escape-time", "10"},
 		{"set-option", "-gw", "allow-passthrough", "on"},
-		{"set-option", "-s", "extended-keys", "on"},
+		// extkeys is the outer half: it lets tmux ask the user's terminal for
+		// modified keys in the first place. The two options below are the inner
+		// half, and they are "always"/"csi-u" rather than the friendlier
+		// defaults because the runners negotiate differently.
+		//
+		// Claude Code asks tmux for xterm modifyOtherKeys, which tmux
+		// implements, so it gets Shift-Enter either way. Codex asks for the
+		// kitty keyboard protocol, which tmux does not implement at all; its
+		// fallback to modifyOtherKeys is not reliably granted, and a pane left
+		// in the legacy mode receives a bare CR for Shift-Enter -- so the key
+		// meant to open a line sends the message instead. "always" takes the
+		// negotiation away from the runner and encodes modified keys for every
+		// pane, and csi-u is the one of tmux's two wire formats that both
+		// runners parse. Panes read this when they start: an existing session
+		// keeps whatever mode it booted with.
+		{"set-option", "-s", "extended-keys", "always"},
+		{"set-option", "-s", "extended-keys-format", "csi-u"},
 		{"set-option", "-as", "terminal-features", ",xterm*:extkeys"},
 		{"bind-key", "-n", "C-\\", "detach-client"},
 		{"set-option", "-s", "@heikou_bootstrap_version", bootstrapVersion},
