@@ -104,6 +104,8 @@ The package boundaries are:
 - `internal/home`: the one directory holding every Heikou file, and the
   one-time migration from the earlier XDG layout;
 - `internal/config`: the single JSON settings model and strict loader;
+- `internal/brief`: the session-row summary, its ordered source layout, and the
+  observer that runs configured command sources off the render path;
 - `internal/workstream`: durable workstream/session/membership types and the
   versioned atomic store;
 - `internal/control`: the sole join between durable organization and current
@@ -465,12 +467,86 @@ content preserves its logical line breaks in the composer, and follow-up
 transport remains capable of arbitrary UTF-8.
 
 Rows stay intentionally sparse: process mark, runner, short ID, truthful state,
-durable user title (falling back to the initial task), optional secondary
-**latest via Heikou** text, optional root basename, and runtime. The recent
-message preview is bounded tmux metadata for the lifetime of the retained
-runtime; Heikou does not claim to see text entered directly in an attached
-native TUI. Detailed title, initial task, path, activity, and the exact terminal
-tail sit below the list.
+the **brief**, optional root basename, and runtime. The recent message preview
+is bounded tmux metadata for the lifetime of the retained runtime; Heikou does
+not claim to see text entered directly in an attached native TUI. Detailed
+title, initial task, path, activity, and the exact terminal tail sit below the
+list.
+
+### The brief
+
+The brief is the one region of a row whose content is meant to vary, and it is
+a named noun for that reason. Every other cell reports a fact with one possible
+source; this one answers "what is this session?", which different people answer
+differently.
+
+It has two slots. The lead is always rendered; the detail sits behind a `↳` and
+yields first when the row is narrow. Each slot is an ordered list of **sources**
+and takes the first with something to say — today title, initial task, then
+runner for the lead, and latest-via-Heikou then initial task for the detail. A
+source already spent on the lead is skipped in the detail, which is the whole of
+the rule that used to be written out as "show the initial task as detail, but
+only when a title exists".
+
+Two properties are load-bearing:
+
+- **Separate budgets.** The slots are truncated independently. Sharing one
+  budget meant a long lead could reduce the detail to a fragment, and that what
+  a row would actually show could not be predicted from its width. It also meant
+  rows paid twenty columns for the `latest via Heikou` label before a single
+  character of message, so at common terminal widths a row named the field and
+  then had no room to show it. Rows now use the sigil; the details pane, which
+  has a whole line, still names the source, and derives that label from whichever
+  source filled the slot so the two surfaces cannot drift.
+- **Provenance.** A fragment records whether its source could prove the text
+  from durable state or a tmux observation. Anything else renders with a leading
+  `~`. Nothing today is unproven; the flag exists because the first source that
+  guesses — a model asked to retitle a session from its output — would otherwise
+  land unmarked in the same columns as a title the user typed, which is the same
+  claim-more-than-you-know failure that reporting an unprovable exit code as
+  zero would be.
+
+`Source.Fragment` must not block: it runs for every visible row on every frame.
+A source backed by a subprocess reads a cache there and does its work in an
+`Observer`, which owns its own cadence. `internal/brief` is a package rather
+than a few functions in `internal/ui` for exactly that reason: filling the cell
+can mean running a program, and process execution does not belong in the
+package that draws frames. What stays in the UI is rendering — the budgets, the
+separator, and the mark.
+
+The layout is `config.BriefConfig`: two ordered lists of source names, plus a
+map of argv commands for anything not built in. Validation is strict in the
+same way the composer keys are, and for the same reason — a settings file that
+names a source nothing fills would degrade silently, so unknown names,
+duplicates, an empty lead, an unreferenced source, and a timeout longer than its
+interval are all load errors. Configuration validates against
+`config.BuiltinBriefSources` while rendering resolves against `brief.SourceID`;
+a test asserts those two lists agree, because a rename that split them would
+produce exactly the silent fall-through the validation exists to prevent.
+
+The observer's scheduling is two conditions, not one. A source is due for a
+session when its interval has elapsed *and* the session has shown terminal
+activity since the last observation. The second condition is the cost control:
+a session that has done nothing cannot have a different status line, so asking
+again would spend a process to learn nothing. Passes are single-flight and
+generation-tagged like the snapshot and preview fetches, concurrency is capped,
+and a pass that hits its own cap reports how much it deferred rather than
+looking complete. A failing source drops its cached text instead of freezing
+it, because text that can no longer be refreshed is worse than no text: it
+looks current.
+
+Commands are told which session through `HEIKOU_SESSION_*` variables and are
+never given the prompt or messages. Wanting a status line in a row is not a
+reason to hand what someone typed to another program on a timer, and the same
+rule keeps prompts out of the planned diagnostic log.
+
+Heikou is the contract layer here, not the implementation. It defines what a
+source is asked, what it may return, how often it runs, and how its answer is
+marked; what a source does to produce that line is the user's business. A brief
+written by a model therefore needs no code in this repository — it is a program
+that reads `HEIKOU_SESSION_*` and prints a line. Building one in would have
+added the first network call and the first API-key handling anywhere in Heikou,
+and a second way to do what the generic source already does.
 
 Dashboard navigation uses one typed primary-screen state plus a typed help
 overlay and typed composer edit modes. A single indexed overview read model
@@ -541,6 +617,12 @@ The automated suite covers:
   unchanged domain revisions for schema-only migration;
 - closed command actor/scope validation and local-human authorization;
 - machine-readable list/spawn/send projections with optional known exit codes;
+- brief slot resolution, separate lead/detail truncation budgets, unproven-source
+  marking, and row widths that stay exact as columns appear;
+- strict brief configuration, built-in source names agreeing between the loader
+  and the renderer, observer change detection, concurrency and per-pass caps,
+  reported deferrals, dropped text from a failing source, output sanitization,
+  and prompts withheld from a source's environment;
 - scrollable help/glossary and contextual organize chords on one list;
 - typed screen/edit state over a single indexed overview model;
 - raw `no-agent` shells whose labels are never executed;

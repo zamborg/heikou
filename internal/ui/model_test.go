@@ -266,9 +266,14 @@ func TestSessionViewsRenderTitleBeforeLatestMessageSentThroughHeikou(t *testing.
 	model.restoreSelection()
 	model.previewID = session.ID
 
+	// Rows carry the message behind the sigil and without the field label; the
+	// details pane below is where the noun is still named in full.
 	row := ansi.Strip(model.renderSessionRow(session, false))
-	if title, latest := strings.Index(row, "release linux build"), strings.Index(row, "latest via Heikou · most recent follow-up"); title < 0 || latest <= title {
+	if title, latest := strings.Index(row, "release linux build"), strings.Index(row, "↳ most recent follow-up"); title < 0 || latest <= title {
 		t.Fatalf("dashboard row did not render title before latest detail: %q", row)
+	}
+	if strings.Contains(row, "latest via Heikou") {
+		t.Fatalf("dashboard row spent columns on the field label: %q", row)
 	}
 	details := ansi.Strip(model.renderDetails())
 	if !strings.Contains(details, "title release linux build") || !strings.Contains(details, "latest via Heikou · most recent follow-up") ||

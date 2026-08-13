@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/clipperhouse/uax29/v2/graphemes"
+	"github.com/zamborg/heikou/internal/brief"
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/format"
@@ -126,6 +127,10 @@ type Model struct {
 	confirmDelete string
 	snapshotFetch snapshotFetchState
 	previewFetch  previewFetchState
+
+	briefObservations brief.Observations
+	briefReport       brief.Report
+	briefFetch        briefFetchState
 
 	input          []string
 	inputCursor    int
@@ -274,7 +279,23 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.requestSnapshot()
 
 	case tickMsg:
-		return m, tea.Batch(m.requestSnapshot(), tickCmd())
+		return m, tea.Batch(m.requestSnapshot(), m.requestBrief(), tickCmd())
+
+	case briefMsg:
+		accepted, queued := m.finishBrief(message.generation)
+		if !accepted {
+			return m, nil
+		}
+		m.briefObservations = message.observations
+		// Deliberately not written to the notice or error line. Those are
+		// feedback for what the user just did and are only cleared by the next
+		// keystroke, so a background pass reporting there would wipe the result
+		// of their last action every interval. Source health belongs in the
+		// settings pane, next to the sources it is about and where someone goes
+		// to fix one. A failing source is also already visible in the rows: its
+		// slot falls through to the next source.
+		m.briefReport = message.report
+		return m, queued
 
 	case snapshotMsg:
 		accepted, queuedSnapshot := m.finishSnapshot(message.generation)
@@ -411,8 +432,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.settings = message.settings
+		// Unlike launch commands, the brief takes effect on the next frame:
+		// nothing is running yet that a changed layout would contradict. A
+		// removed source's observations are dropped so its text cannot linger,
+		// and a pass already in flight under the old configuration is abandoned
+		// rather than allowed to land afterwards and repopulate them.
+		m.briefObservations, m.briefReport = nil, brief.Report{}
+		m.briefFetch.activeGeneration, m.briefFetch.queued = 0, false
 		m.errorText = ""
-		m.notice = "settings reloaded · commands apply to new sessions"
+		m.notice = "settings reloaded · brief applies now, commands to new sessions"
 		return m, nil
 
 	case settingsEditorMsg:
@@ -1307,6 +1335,11 @@ func (m Model) renderWorkstreamRow(row listRow, selected bool) string {
 const (
 	sessionRowRichMinWidth   = 64
 	sessionRowRunnerMinWidth = 48
+	// The root basename column is a fixed cost the summary pays for. Sixteen
+	// columns bought little that a basename needs and took the difference out
+	// of the one cell that carries content, so it is narrower here; the details
+	// pane below still shows the full path.
+	rowRootWidth = 12
 )
 
 func (m Model) renderSessionRow(session control.Session, selected bool) string {
@@ -1336,28 +1369,33 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 		}
 		prefix += padANSI(mutedStyle.Render(truncatePlain(status, 11)), 11) + " "
 		taskWidth := max(1, m.width-ansi.StringWidth(prefix))
-		row := prefix + padPlain(sessionRowSummary(session, taskWidth), taskWidth)
+		row := prefix + padPlain(m.sessionRowSummary(session, taskWidth), taskWidth)
 		row = padANSI(truncateANSI(row, m.width), m.width)
 		if selected {
 			return selectedStyle.Render(ansi.Strip(row))
 		}
 		return row
 	}
-	fixedWidth := 42
+	// 35 columns of prefix (marker, icon, runner, short id, state) plus the
+	// nine-column runtime suffix. This used to read 42, two short of what the
+	// row actually builds, so every row overflowed by two columns and the final
+	// truncate clipped the tail of the runtime — a session alive ten hours or
+	// more rendered "23h59" instead of "23h59m".
+	fixedWidth := 44
 	path := ""
 	if m.width >= 96 {
-		path = truncatePlain(format.OneLine(filepath.Base(session.Root)), 16)
-		fixedWidth += 18
+		path = truncatePlain(format.OneLine(filepath.Base(session.Root)), rowRootWidth)
+		fixedWidth += rowRootWidth + 2
 	}
 	taskWidth := max(1, m.width-fixedWidth)
-	task := sessionRowSummary(session, taskWidth)
+	task := m.sessionRowSummary(session, taskWidth)
 	row := marker + " " + markStyle.Render(mark) + " " + iconStyle.Render(icon) + " " +
 		padANSI(backendStyle(session.Backend).Render(string(session.Backend)), runnerWidth) + " " +
 		padPlain(format.ShortID(session.ID), 7) + " " +
 		padANSI(mutedStyle.Render(truncatePlain(status, 11)), 11) + " " +
 		padPlain(task, taskWidth)
 	if path != "" {
-		row += "  " + padANSI(mutedStyle.Render(path), 16)
+		row += "  " + padANSI(mutedStyle.Render(path), rowRootWidth)
 	}
 	row += "  " + padANSI(mutedStyle.Render(format.Duration(session.RuntimeDuration(time.Now()))), 7)
 	row = padANSI(truncateANSI(row, m.width), m.width)
@@ -1365,40 +1403,6 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 		return selectedStyle.Render(ansi.Strip(row))
 	}
 	return row
-}
-
-func sessionDisplayTitle(session control.Session) string {
-	if title := strings.TrimSpace(session.Record.Title); title != "" {
-		return format.OneLine(title)
-	}
-	if prompt := strings.TrimSpace(session.Prompt); prompt != "" {
-		return format.OneLine(prompt)
-	}
-	return string(session.Backend) + " session"
-}
-
-func sessionSecondaryDetail(session control.Session) string {
-	if latest := strings.TrimSpace(session.LastUserMessage); latest != "" {
-		return "latest via Heikou · " + format.OneLine(latest)
-	}
-	if strings.TrimSpace(session.Record.Title) != "" {
-		if prompt := strings.TrimSpace(session.Prompt); prompt != "" {
-			return "initial task · " + format.OneLine(prompt)
-		}
-	}
-	return ""
-}
-
-func sessionRowSummary(session control.Session, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	title := truncatePlain(sessionDisplayTitle(session), width)
-	detail := sessionSecondaryDetail(session)
-	if detail == "" || lipgloss.Width(title)+3 >= width {
-		return title
-	}
-	return truncatePlain(title+" · "+detail, width)
 }
 
 func (m Model) renderDetails() string {
@@ -1424,9 +1428,9 @@ func (m Model) renderDetails() string {
 		"  " + mutedStyle.Render(format.Duration(selected.RuntimeDuration(time.Now())))
 	lines := []string{truncateANSI(header, m.width)}
 	if len(lines) < height {
-		lines = append(lines, mutedStyle.Render(" title ")+truncatePlain(sessionDisplayTitle(selected), max(8, width-7)))
+		lines = append(lines, mutedStyle.Render(" title ")+truncatePlain(m.sessionDisplayTitle(selected), max(8, width-7)))
 	}
-	if detail := sessionSecondaryDetail(selected); detail != "" && len(lines) < height {
+	if detail := m.sessionSecondaryDetail(selected); detail != "" && len(lines) < height {
 		lines = append(lines, mutedStyle.Render("       ")+truncatePlain(detail, max(8, width-7)))
 	}
 	if strings.TrimSpace(selected.Record.Title) != "" && strings.TrimSpace(selected.LastUserMessage) != "" && len(lines) < height {
@@ -1564,7 +1568,7 @@ func (m Model) composerPrefix() string {
 		label := format.ShortID(m.replyTarget)
 		style := mutedStyle.Bold(true)
 		if found {
-			label += " · " + sessionDisplayTitle(target)
+			label += " · " + m.sessionDisplayTitle(target)
 			style = backendStyle(target.Backend).Bold(true)
 		}
 		text := "↳ reply " + label + " › "
@@ -1614,7 +1618,11 @@ func (m Model) settingsLines() []string {
 		}
 		lines = append(lines, mutedStyle.Render("   resolved ")+truncatePlain(resolution, max(1, m.width-12)))
 	}
-	lines = append(lines, " "+padPlain(string(heikou.BackendNoAgent), 9)+"tmux default shell", "", mutedStyle.Render(" Commands are JSON argv arrays. Composer bindings apply after reload."))
+	lines = append(lines, " "+padPlain(string(heikou.BackendNoAgent), 9)+"tmux default shell")
+
+	lines = append(lines, m.briefSettingsLines()...)
+
+	lines = append(lines, "", mutedStyle.Render(" Commands are JSON argv arrays. Composer bindings apply after reload."))
 	return lines
 }
 

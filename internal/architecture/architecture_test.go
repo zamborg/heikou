@@ -42,7 +42,15 @@ var allowedImports = map[string][]string{
 		"internal/runner", "internal/supervisor", "internal/ui", "internal/workstream",
 		"skills/learn-heikou", "skills/manage-heikou",
 	},
-	"internal/architecture":        {},
+	"internal/architecture": {},
+	// brief sits above control because it describes a session, and above config
+	// because a user chooses what fills it. It stays below ui: assembling a
+	// brief can mean running a program, and process execution does not belong
+	// in the package that draws frames.
+	"internal/brief": {
+		"internal/config", "internal/control", "internal/env", "internal/format",
+		"internal/heikou", "internal/workstream",
+	},
 	"internal/config":              {"internal/env", "internal/heikou", "internal/home"},
 	"internal/control":             {"internal/heikou", "internal/workstream"},
 	"internal/control/controltest": {"internal/control", "internal/workstream"},
@@ -53,7 +61,7 @@ var allowedImports = map[string][]string{
 	"internal/runner":              {"internal/env", "internal/heikou"},
 	"internal/supervisor":          {"internal/env", "internal/format", "internal/heikou", "internal/runner"},
 	"internal/ui": {
-		"internal/config", "internal/control", "internal/control/controltest",
+		"internal/brief", "internal/config", "internal/control", "internal/control/controltest",
 		"internal/format", "internal/heikou", "internal/runner", "internal/workstream",
 	},
 	"internal/workstream":  {"internal/env", "internal/heikou", "internal/home"},

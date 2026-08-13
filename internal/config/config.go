@@ -24,6 +24,55 @@ type Config struct {
 	DefaultRunner heikou.Backend      `json:"default_runner"`
 	Commands      map[string][]string `json:"commands"`
 	ComposerKeys  ComposerKeys        `json:"composer_keys"`
+	Brief         BriefConfig         `json:"brief"`
+}
+
+// BriefConfig chooses what fills the one-line summary in a session row. Each
+// slot is an ordered list of source names and takes the first with something to
+// say. Omitting a slot keeps its default; an explicitly empty detail is how a
+// row is asked to show only its lead.
+type BriefConfig struct {
+	Lead    []string                     `json:"lead"`
+	Detail  []string                     `json:"detail"`
+	Sources map[string]BriefSourceConfig `json:"sources,omitempty"`
+}
+
+// BriefSourceConfig is a command Heikou runs to fill a slot with text it does
+// not already have. Like every other command in this file it is argv rather
+// than a shell string, so arguments stay data and never reach a shell parser.
+//
+// The command receives one session per invocation through HEIKOU_SESSION_*
+// environment variables and prints one line to stdout. It is never given the
+// session's prompt or messages: those are the user's content, and a brief
+// source is not a reason to hand them to another process.
+type BriefSourceConfig struct {
+	Command []string `json:"command"`
+	// IntervalSeconds is the floor between runs for one session. A session is
+	// only re-run when it has also shown terminal activity since the last
+	// observation, so a quiet dashboard costs nothing.
+	IntervalSeconds int `json:"interval_seconds"`
+	TimeoutSeconds  int `json:"timeout_seconds"`
+}
+
+// BuiltinBriefSources are the names Heikou fills from state it already holds.
+// internal/brief asserts in a test that its own source identifiers match this
+// list, so a rename cannot leave configuration accepting a name that no longer
+// renders anything.
+var BuiltinBriefSources = []string{"title", "prompt", "latest", "runner"}
+
+const (
+	defaultBriefIntervalSeconds = 10
+	defaultBriefTimeoutSeconds  = 3
+	maxBriefIntervalSeconds     = 3600
+	maxBriefTimeoutSeconds      = 60
+	maxBriefSourceNameLength    = 32
+)
+
+func defaultBrief() BriefConfig {
+	return BriefConfig{
+		Lead:   []string{"title", "prompt", "runner"},
+		Detail: []string{"latest", "prompt"},
+	}
 }
 
 // ComposerKeys controls the composer bindings whose target is chosen before
@@ -53,6 +102,7 @@ func Default() Config {
 			CycleRunner: "tab",
 			CycleRoot:   "shift+tab",
 		},
+		Brief: defaultBrief(),
 	}
 }
 
@@ -89,6 +139,7 @@ func (s Store) Load() (Config, error) {
 		DefaultRunner string              `json:"default_runner"`
 		Commands      map[string][]string `json:"commands"`
 		ComposerKeys  json.RawMessage     `json:"composer_keys"`
+		Brief         json.RawMessage     `json:"brief"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -125,6 +176,15 @@ func (s Store) Load() (Config, error) {
 		}
 		if err := composerKeys.apply(&settings.ComposerKeys); err != nil {
 			return Config{}, fmt.Errorf("parse settings %q: composer_keys: %w", s.Path, err)
+		}
+	}
+	if len(disk.Brief) > 0 {
+		brief, err := decodeBrief(disk.Brief)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse settings %q: brief: %w", s.Path, err)
+		}
+		if err := brief.apply(&settings.Brief); err != nil {
+			return Config{}, fmt.Errorf("parse settings %q: brief: %w", s.Path, err)
 		}
 	}
 	return applyEnvironment(settings)
@@ -289,6 +349,175 @@ func (keys optionalComposerKeysJSON) apply(target *ComposerKeys) error {
 		}
 	}
 	return nil
+}
+
+// optionalBriefJSON preserves the distinction between an omitted slot, which
+// inherits its default, and an explicitly empty one. A user asking for a
+// title-only row writes "detail": [], and that has to mean something different
+// from not mentioning detail at all.
+type optionalBriefJSON struct {
+	Lead    *[]string                  `json:"lead"`
+	Detail  *[]string                  `json:"detail"`
+	Sources map[string]briefSourceJSON `json:"sources"`
+}
+
+type briefSourceJSON struct {
+	Command         []string `json:"command"`
+	IntervalSeconds *int     `json:"interval_seconds"`
+	TimeoutSeconds  *int     `json:"timeout_seconds"`
+}
+
+func decodeBrief(data []byte) (optionalBriefJSON, error) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return optionalBriefJSON{}, errors.New("must be a JSON object")
+	}
+	var brief optionalBriefJSON
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&brief); err != nil {
+		return optionalBriefJSON{}, err
+	}
+	if err := requireEOF(decoder); err != nil {
+		return optionalBriefJSON{}, err
+	}
+	return brief, nil
+}
+
+func (brief optionalBriefJSON) apply(target *BriefConfig) error {
+	sources := make(map[string]BriefSourceConfig, len(brief.Sources))
+	for name, source := range brief.Sources {
+		if err := validateBriefSourceName(name); err != nil {
+			return fmt.Errorf("sources.%s: %w", name, err)
+		}
+		resolved, err := source.resolve()
+		if err != nil {
+			return fmt.Errorf("sources.%s: %w", name, err)
+		}
+		sources[name] = resolved
+	}
+
+	known := make(map[string]struct{}, len(BuiltinBriefSources)+len(sources))
+	for _, name := range BuiltinBriefSources {
+		known[name] = struct{}{}
+	}
+	for name := range sources {
+		known[name] = struct{}{}
+	}
+
+	lead, detail := target.Lead, target.Detail
+	if brief.Lead != nil {
+		resolved, err := validateBriefSlot("lead", *brief.Lead, known)
+		if err != nil {
+			return err
+		}
+		if len(resolved) == 0 {
+			return errors.New("lead: must name at least one source; a row with no lead has nothing to show")
+		}
+		lead = resolved
+	}
+	if brief.Detail != nil {
+		resolved, err := validateBriefSlot("detail", *brief.Detail, known)
+		if err != nil {
+			return err
+		}
+		detail = resolved
+	}
+
+	// A configured source nothing refers to is far more likely a typo in a slot
+	// than a deliberate spare, and silently never running it would be the least
+	// debuggable outcome available.
+	for name := range sources {
+		if !slicesContains(lead, name) && !slicesContains(detail, name) {
+			return fmt.Errorf("sources.%s: defined but not named in lead or detail", name)
+		}
+	}
+
+	target.Lead, target.Detail = lead, detail
+	if len(sources) > 0 {
+		target.Sources = sources
+	} else {
+		target.Sources = nil
+	}
+	return nil
+}
+
+func validateBriefSlot(slot string, names []string, known map[string]struct{}) ([]string, error) {
+	resolved := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for index, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return nil, fmt.Errorf("%s[%d]: source name cannot be empty", slot, index)
+		}
+		if _, ok := known[name]; !ok {
+			return nil, fmt.Errorf("%s[%d]: unknown source %q (built-in sources are %s; anything else must be defined under brief.sources)",
+				slot, index, name, strings.Join(BuiltinBriefSources, ", "))
+		}
+		if _, repeated := seen[name]; repeated {
+			return nil, fmt.Errorf("%s: source %q is listed twice", slot, name)
+		}
+		seen[name] = struct{}{}
+		resolved = append(resolved, name)
+	}
+	return resolved, nil
+}
+
+func validateBriefSourceName(name string) error {
+	if strings.TrimSpace(name) != name || name == "" {
+		return errors.New("source name cannot be empty or padded with whitespace")
+	}
+	if utf8.RuneCountInString(name) > maxBriefSourceNameLength {
+		return fmt.Errorf("source name must be at most %d characters", maxBriefSourceNameLength)
+	}
+	if slicesContains(BuiltinBriefSources, name) {
+		return fmt.Errorf("%q is a built-in source and cannot be redefined", name)
+	}
+	for _, character := range name {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= '0' && character <= '9':
+		case character == '-' || character == '_':
+		default:
+			return errors.New("source name may use only lowercase letters, digits, hyphen, and underscore")
+		}
+	}
+	return nil
+}
+
+func (source briefSourceJSON) resolve() (BriefSourceConfig, error) {
+	if err := validateCommand(source.Command); err != nil {
+		return BriefSourceConfig{}, fmt.Errorf("command: %w", err)
+	}
+	interval, err := briefBound("interval_seconds", source.IntervalSeconds, defaultBriefIntervalSeconds, maxBriefIntervalSeconds)
+	if err != nil {
+		return BriefSourceConfig{}, err
+	}
+	timeout, err := briefBound("timeout_seconds", source.TimeoutSeconds, defaultBriefTimeoutSeconds, maxBriefTimeoutSeconds)
+	if err != nil {
+		return BriefSourceConfig{}, err
+	}
+	// A timeout longer than the interval describes a source that can never
+	// finish before it is due again. Single-flight would keep that safe, but it
+	// would also mean the command runs continuously, which is not what the
+	// interval appears to promise.
+	if timeout > interval {
+		return BriefSourceConfig{}, fmt.Errorf("timeout_seconds (%d) cannot exceed interval_seconds (%d)", timeout, interval)
+	}
+	return BriefSourceConfig{
+		Command:         append([]string(nil), source.Command...),
+		IntervalSeconds: interval,
+		TimeoutSeconds:  timeout,
+	}, nil
+}
+
+func briefBound(field string, value *int, fallback, maximum int) (int, error) {
+	if value == nil {
+		return fallback, nil
+	}
+	if *value < 1 || *value > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", field, maximum)
+	}
+	return *value, nil
 }
 
 func normalizeKeyName(value string) (string, error) {

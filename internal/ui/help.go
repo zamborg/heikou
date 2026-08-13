@@ -104,6 +104,7 @@ func (m Model) helpContentLines() []string {
 		{"Root", "An explicitly registered directory used as the working directory for a new launch. A workstream may have several."},
 		{"Runner", "The native program Heikou launches: Codex, Claude, or a no-agent interactive shell."},
 		{"Composer", "The input bar at the bottom of the dashboard. Its prefix names the destination Enter commits to: a new session, or the live session it is aimed at."},
+		{"Brief", m.briefGlossaryDescription()},
 		{"Ungrouped", "Durable sessions that currently have no workstream membership."},
 		{"Orphaned", "tmux panes carrying a Heikou ID that is unknown to durable state. They remain outside workstreams until explicitly adopted."},
 	} {

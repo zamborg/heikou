@@ -4,11 +4,17 @@ Status: durable titles shipped in V0.3.4. Semantic agent status and returned/see
 attention state remain deferred until authoritative runner observations exist.
 
 Current implementation: state schema v2 stores an optional user-owned session
-title. Rows lead with that title, falling back to the initial prompt, and use a
-bounded runtime preview of the latest user message successfully sent through
-Heikou as secondary **latest via Heikou** detail. This is intentionally not
-durable chat history; direct native-TUI input remains unknowable. The durable
+title. Rows render a **brief** whose lead is that title, falling back to the
+initial prompt, and whose detail is a bounded runtime preview of the latest user
+message successfully sent through Heikou. This is intentionally not durable chat
+history; direct native-TUI input remains unknowable. The durable
 `SessionActivity` design below is still deferred.
+
+The brief's source interface is where the observer below reaches the screen: a
+`BriefSource` reads a cache and never blocks, so an observer that owns its own
+cadence can fill either slot without the row learning about it. See the brief
+section of `docs/DESIGN.md`, and `todos/brief-sources.md` for the configurable
+and external sources that remain unbuilt.
 
 ## Product goal
 
