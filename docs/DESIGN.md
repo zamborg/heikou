@@ -112,6 +112,8 @@ The package boundaries are:
   runtime observation, including the closed typed actor/scope command plane;
 - `internal/runner`: tiny Codex and Claude argv adapters plus the exec wrapper;
 - `internal/supervisor`: the tmux implementation;
+- `internal/transcript`: the read-only observer for what a native runner
+  recorded about a session;
 - `internal/ui`: typed screen reducers, their shared overview read model, and
   rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
@@ -145,6 +147,39 @@ argv. Immediately before a native launch, the controller asks a trusted
 config-backed resolver for the configured argv prefix and passes that snapshot
 to `Supervisor.Start`. This keeps human and future authorized callers from
 substituting an arbitrary executable through the command payload.
+
+### Runner transcripts
+
+`h peek` returns the pane's current frame and cannot return more. A full-screen
+runner draws on the terminal's alternate screen, which keeps no scrollback, so
+whatever scrolled past was never retained by anything Heikou can ask. Measured
+against a live `claude` pane, `capture-pane -p -J -S -120` returned 85 lines, 60
+of them shell output produced before the runner started. No capture depth
+recovers the rest.
+
+So history does not come from tmux; it comes from the runner.
+`internal/transcript` reads the JSONL file Claude Code writes per session and
+projects it into turns: who said what, and which tools ran. It is the first
+authoritative structured runner signal Heikou has, and it stays an observer —
+read-only, bounded, and never copied into durable state.
+
+Three properties keep it honest:
+
+- **It names its source.** Every answer carries the runner and an availability
+  of `available`, `missing`, or `unsupported`. A caller can tell an
+  authoritative transcript from an absent one without inferring it from an empty
+  list.
+- **It fails soft.** The file layout belongs to Claude, so a missing transcript
+  is a normal answer and never an error. The verb exits zero.
+- **It refuses to guess.** Heikou owns the Claude session id because it launches
+  `claude --session-id <id>`, so the file name is exact. Codex mints its own id,
+  and matching a rollout by launch directory and start time would be a guess
+  that silently attributes one session's history to another — so Codex reports
+  `unsupported` rather than a likely-looking file.
+
+Transcript reading never merges with `h peek`, and neither one is evidence that
+a session is healthy, finished, or idle. The runtime state enum remains the only
+claim Heikou makes about now.
 
 ## Session lifecycle
 

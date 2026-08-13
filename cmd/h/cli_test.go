@@ -12,6 +12,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/control/controltest"
 	"github.com/zamborg/heikou/internal/heikou"
+	"github.com/zamborg/heikou/internal/transcript"
 	"github.com/zamborg/heikou/internal/workstream"
 )
 
@@ -38,11 +41,13 @@ type harness struct {
 	dials   int
 	service *controltest.Stub
 	app     *app
+	// claudeProjects is the fixture directory the history verb reads.
+	claudeProjects string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{service: populatedService()}
+	h := &harness{service: populatedService(), claudeProjects: t.TempDir()}
 	h.app = &app{
 		out:      &h.out,
 		err:      &h.errOu,
@@ -52,8 +57,24 @@ func newHarness(t *testing.T) *harness {
 			h.dials++
 			return h.service, nil
 		},
+		// Pointed at a temporary directory so a developer's own transcripts are
+		// never what a test read.
+		transcripts: transcript.Reader{ClaudeProjects: h.claudeProjects},
 	}
 	return h
+}
+
+// writeTranscript files a Claude-shaped transcript for the harness session.
+func (h *harness) writeTranscript(t *testing.T, lines ...string) {
+	t.Helper()
+	directory := filepath.Join(h.claudeProjects, "-tmp-project")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(directory, testSessionID+".jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
 }
 
 // populatedService answers with one workstream and one session, which is enough
@@ -101,6 +122,8 @@ func TestRefusalsNeverReachForAController(t *testing.T) {
 		{"attach takes exactly one session", []string{"attach"}, "usage: h attach"},
 		{"stop takes exactly one session", []string{"stop", "a", "b"}, "usage: h stop"},
 		{"peek takes exactly one session", []string{"peek"}, "usage: h peek"},
+		{"history takes exactly one session", []string{"history"}, "usage: h history"},
+		{"history refuses a negative count", []string{"history", testSessionID, "--last", "-1"}, "cannot be negative"},
 		{"delete demands confirmation", []string{"delete", testSessionID}, "pass --yes to confirm"},
 		{"archive demands confirmation", []string{"ws", "archive", "Parser"}, "pass --yes to confirm"},
 		{"title refuses an empty title", []string{"title", testSessionID}, "usage: h title"},
@@ -154,6 +177,7 @@ func TestFlagsAreAcceptedAfterPositionals(t *testing.T) {
 		{"adopt", []string{"adopt", testSessionID, "-w", "Parser"}},
 		{"delete", []string{"delete", testSessionID, "--yes"}},
 		{"peek", []string{"peek", testSessionID, "--lines", "10"}},
+		{"history", []string{"history", testSessionID, "--last", "5"}},
 		{"send", []string{"send", testSessionID, "carry on", "--json"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -199,6 +223,8 @@ func TestJSONResultsCarryTheKeysThePilotReads(t *testing.T) {
 			[]string{"session_id", "status"}},
 		{"peek", []string{"peek", testSessionID, "--json"},
 			[]string{"session_id", "state", "capture", "capture_is_current_frame_only"}},
+		{"history", []string{"history", testSessionID, "--json"},
+			[]string{"session_id", "runner", "availability", "total_turns", "turns"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -447,4 +473,85 @@ func sortedKeys(value map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// history and peek answer different questions and must never blur. Peek is the
+// pane's current frame; history is what the runner recorded happened.
+func TestHistoryReportsTurnsRatherThanTerminalOutput(t *testing.T) {
+	h := newHarness(t)
+	h.writeTranscript(t,
+		`{"type":"user","timestamp":"2026-08-13T10:00:00Z","message":{"role":"user","content":"add the retry"}}`,
+		`{"type":"assistant","timestamp":"2026-08-13T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"done"},{"type":"tool_use","name":"Edit"},{"type":"tool_use","name":"Edit"}]}}`,
+	)
+	if err := h.app.run([]string{"history", testSessionID}); err != nil {
+		t.Fatal(err)
+	}
+	output := h.out.String()
+	for _, want := range []string{"claude transcript", "2 turns", "add the retry", "done", "ran Edit ×2"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("history output is missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "frame contents") {
+		t.Error("history printed the captured pane; that is what peek is for")
+	}
+}
+
+// A session with no transcript is a normal answer. Exiting non-zero would make
+// a pilot treat a runner's file layout as an operational failure.
+func TestHistoryWithoutATranscriptSucceedsAndSaysWhy(t *testing.T) {
+	h := newHarness(t)
+	if err := h.app.run([]string{"history", testSessionID}); err != nil {
+		t.Fatalf("a missing transcript must not be an error: %v", err)
+	}
+	if !strings.Contains(h.out.String(), "no transcript") {
+		t.Errorf("output = %q, want a plain statement that there is none", h.out.String())
+	}
+}
+
+// Codex records rollouts under an id it mints itself, so Heikou cannot say
+// which file belongs to this session. That is a different answer from "none
+// was written", and --json has to let a caller tell them apart.
+func TestHistoryDistinguishesAnUnsupportedRunnerFromAMissingFile(t *testing.T) {
+	h := newHarness(t)
+	h.service.FindFunc = func(context.Context, string) (control.Session, error) {
+		return control.Session{
+			ID: testSessionID, Backend: heikou.BackendCodex, Root: "/tmp/project",
+			Status: control.StatusLive, Durable: true,
+		}, nil
+	}
+	if err := h.app.run([]string{"history", testSessionID, "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &decoded); err != nil {
+		t.Fatalf("--json output is not an object: %v", err)
+	}
+	if decoded["availability"] != "unsupported" {
+		t.Errorf("availability = %v, want unsupported", decoded["availability"])
+	}
+	if decoded["runner"] != "codex" {
+		t.Errorf("runner = %v, want the answer to name what supplied it", decoded["runner"])
+	}
+}
+
+// --last is a reading length. It must never change what the verb reports the
+// session actually contains.
+func TestHistoryLastTrimsTheOutputWithoutChangingTheCount(t *testing.T) {
+	h := newHarness(t)
+	lines := make([]string, 0, 6)
+	for _, text := range []string{"one", "two", "three", "four", "five", "six"} {
+		lines = append(lines, `{"type":"user","timestamp":"2026-08-13T10:00:00Z","message":{"role":"user","content":"`+text+`"}}`)
+	}
+	h.writeTranscript(t, lines...)
+	if err := h.app.run([]string{"history", testSessionID, "--last", "2"}); err != nil {
+		t.Fatal(err)
+	}
+	output := h.out.String()
+	if !strings.Contains(output, "turns 5-6 of 6") {
+		t.Errorf("output does not say where in the transcript it is:\n%s", output)
+	}
+	if strings.Contains(output, "one") {
+		t.Errorf("--last 2 printed an older turn:\n%s", output)
+	}
 }

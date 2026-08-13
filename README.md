@@ -181,6 +181,7 @@ h move a1b2c3 --workstream "Public API"
 h move a1b2c3 --ungrouped
 h adopt a1b2c3 -w "Public API"
 h peek a1b2c3
+h history a1b2c3 --last 10
 h ws archive "Public API" --yes
 h delete a1b2c3 --yes
 ```
