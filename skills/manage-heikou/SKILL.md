@@ -107,8 +107,10 @@ human does.
 ## Notes and artifacts
 
 Each workstream owns a directory, reported as `artifact_dir`. Write `notes.md`
-there with ordinary file edits. The dashboard previews it, and the user refreshes
-that preview with `R` in the organizer.
+there with ordinary file edits. The dashboard previews it below the list
+whenever that workstream is selected. The preview is cached against the
+selection, so a user parked on the row will not see your write until they press
+`F3` or move off the row and back.
 
 Notes are not state mutations. Do not route them through `h`.
 

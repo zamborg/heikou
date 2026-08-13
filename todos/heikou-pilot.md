@@ -13,9 +13,9 @@ Heikou itself through the `h` CLI. It reads `h list --json`, organizes
 workstreams and sessions, maintains persistent notes, and starts or steers work
 on the user's behalf. It is rooted in the Heikou data directory.
 
-It exists because the dashboard's control surface is dense. `F3`, `Ctrl-G`,
-`Ctrl-X` twice, and the `Enter` / `m` / `u` distinction inside the organizer are
-learnable but not guessable. The pilot replaces "which key organizes this?" with
+It exists because the dashboard's control surface is dense. `Ctrl-G`, `Ctrl-X`
+twice, and the mark-then-move halves of `Ctrl-T` are learnable but not
+guessable. The pilot replaces "which key organizes this?" with
 "put the three OAuth sessions in a workstream called Auth and title them."
 
 The pilot is a translation layer over the existing command plane. It is not a
@@ -51,7 +51,8 @@ The read surface is already sufficient. `h list --json` returns workstream `id`,
 
 The write surface had a hole. `Controller` implemented every organization
 action with full validation through the typed command plane, but eleven of them
-were reachable **only as keystrokes in the F3 organizer**. Slice 1 gave each one
+were reachable **only as keystrokes in the organizer view** that has since been
+folded into the dashboard. Slice 1 gave each one
 a verb:
 
 | Controller action | CLI verb |

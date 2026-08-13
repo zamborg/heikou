@@ -646,7 +646,7 @@ Usage:
   h stop ID                            stop runtime; keep the durable record
   h doctor                             check local dependencies
 
-Organize (the same actions the F3 organizer performs):
+Organize (the same actions the dashboard chords perform, plus roots and archive):
   h ws list [--json]                   list workstreams, roots, session counts
   h ws create NAME [-C DIR] [-d DESC]  create a workstream; DIR is its first root
   h ws rename WS NAME                  rename a workstream
@@ -678,19 +678,19 @@ Dashboard:
   Shift-Tab         cycle workstream roots (default binding)
   F1 / Empty ?      open scrollable help and the noun glossary
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
-  F3                open the expandable workstream/session organizer
+  F3                re-read sessions, preview, and the selected notes/files
   Up / Down         select a session; move draft lines when multiline
   Ctrl-G            resize snapshot/context with Up/Down; r resets
   Empty Enter       collapse a workstream or attach a session (not while replying)
-  Organizer Shift-↑/↓ reorder a named workstream persistently
-  Organizer r       rename a workstream or edit/clear a session title
-  Organizer R       refresh selected notes and artifact context
-  Organizer m       mark a session; Enter/m on a workstream moves it
-  Organizer u/Space use a workstream or select a session and return
+  Ctrl-N            create a workstream, named through the composer
+  Ctrl-R            rename a workstream or edit/clear a session title
+  Ctrl-T            mark a session; Ctrl-T on a workstream moves or adopts it
+  Shift-↑/↓         reorder a workstream, or move a session to the next one
   Ctrl-b d          detach the native terminal back to heikou
   Ctrl-\            alternate one-chord detach shortcut
   Ctrl-X twice      stop runtime; repeat once pane-free to delete record
-  Esc               clear the composer, leave a reply, then quit
+  Esc               leave a reply, clear the composer, then select Ungrouped
+  Ctrl-C            quit the dashboard; Esc never quits
 
 Composer bindings are configurable in JSON and shown in settings/help.
 Closing heikou never stops agents. Both h and H invoke the same binary.`)

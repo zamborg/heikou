@@ -1,6 +1,6 @@
 ---
 name: learn-heikou
-description: Guide a new Heikou user through h quickstart, installation checks, the dashboard, workstreams, persistent notes, native agent sessions, attach and detach, follow-ups, and safe shutdown. Use when someone is setting up Heikou, asks how Heikou works, wants a first-session walkthrough, or is unfamiliar with the F3 organizer or tmux controls.
+description: Guide a new Heikou user through h quickstart, installation checks, the dashboard, workstreams, persistent notes, native agent sessions, attach and detach, follow-ups, and safe shutdown. Use when someone is setting up Heikou, asks how Heikou works, wants a first-session walkthrough, or is unfamiliar with the dashboard's organize chords or tmux controls.
 ---
 
 # Learn Heikou
@@ -28,13 +28,14 @@ Explain this loop in plain language:
    opening the dashboard.
 2. Have the user change to the project they want agents to edit and run `h`.
    The launch root shown in the composer is the directory a new session uses.
-3. Press `F3` to open the **Workstream Organizer**. Explain that workstreams
-   persist across dashboard restarts and collect related sessions and context.
-   If the session tree or lower notes/files pane needs more room, press
-   `Ctrl-G`, resize it with `Up` or `Down`, then press `Esc`.
-4. Press `n`, enter a short workstream name, and press `Enter`. The current
-   project directory becomes its first root. Press `u` or `Space` on that
-   workstream to use it and return to the dashboard.
+3. Explain that workstreams persist across dashboard restarts and collect
+   related sessions and context, and that everything is organized on the
+   dashboard itself — there is no separate view to open. If the list or the
+   lower pane needs more room, press `Ctrl-G`, resize with `Up` or `Down`, then
+   press `Esc`.
+4. Press `Ctrl-N`, type a short workstream name, and press `Enter`. The current
+   project directory becomes its first root, and the new workstream becomes the
+   selection, so the composer is already aimed at it.
 5. Type a small task in the composer and press `Enter` to start a session.
    With an empty composer, `Tab` cycles Codex, Claude, and `no-agent` before the
    launch.
@@ -49,24 +50,23 @@ Explain this loop in plain language:
    said so, and that the target was fixed when `Space` was pressed, so moving
    the selection mid-draft cannot redirect it. Press `Esc` to leave reply mode,
    then `Enter` with an empty composer to attach again.
-9. Open `F3`, select the named workstream, and press `e` to edit its `notes.md`.
-   Record decisions, useful commands, and next steps there. These notes persist
-   independently of any one agent session and appear in the organizer's lower
-   context pane. Press `R` after an external editor or agent changes those
-   files to refresh the preview.
-10. Select a durable session in `F3` and press `r` to give it a concise title.
+9. Select the named workstream. Its `notes.md` and artifact tree fill the pane
+   below the list. Record decisions, useful commands, and next steps in that
+   file — it persists independently of any one agent session. Most users let an
+   agent write it; the path is shown under `FILES`. Press `F3` to re-read it
+   after an agent or editor changes it while the cursor sat still.
+10. Select a durable session and press `Ctrl-R` to give it a concise title.
     Explain that saving an empty title clears it, and that titles never rename
     the native provider conversation or tmux runtime.
 
 If this guide itself is running inside a Heikou session, start at step 7. Ask
 the user to detach, send `I made it back` with `Space` then `Enter`, and
 reattach with `Esc` followed by `Enter`.
-Then help them organize the guided session: detach again and open `F3`. The
-guided session is already marked as the move source. Only if that marker is
-absent, select the session under Ungrouped and press `m` before continuing.
-Press `n`, create a named workstream, and press `Enter` on the newly selected
-workstream to move the session there. Press `e` on the workstream to record the
-first persistent note.
+Then help them organize the guided session: detach again, select it under
+Ungrouped, and press `Ctrl-T` to mark it — a `◆` appears on its row and stays
+there while the cursor moves. Press `Ctrl-N` to create a named workstream; it
+becomes the selection once it lands. Press `Ctrl-T` again to move the marked
+session into it.
 
 ## Reinforce the working pattern
 
@@ -83,9 +83,13 @@ Recommend this default rhythm:
 6. Stop a runtime only when finished; keep or delete its durable record
    intentionally.
 
-Clarify the organizer's most surprising behavior: `Enter` on a session inside
-`F3` marks it for moving; it does not attach. Press `u` or `Space` to return to
-the dashboard with that session selected, then press `Enter` to attach.
+Clarify two things that surprise people. Organize keys are chords rather than
+bare letters because every printable key belongs to the composer, so `Ctrl-R`
+renames and a typed `r` is just text. And each chord reads the selected row for
+its noun: `Ctrl-R` on a workstream renames it, `Ctrl-R` on a session titles it.
+
+Also mention that `Esc` never quits — it steps back through reply, composer
+text, and move mark, then parks on Ungrouped. Quitting is `Ctrl-C`.
 
 ## Keep this rescue card available
 
@@ -93,14 +97,17 @@ the dashboard with that session selected, then press `Enter` to attach.
 | --- | --- |
 | Open help and the noun glossary | `F1`, or `?` with an empty composer |
 | Open settings | `Ctrl-S` or `F2` |
-| Open workstreams and persistent notes | `F3` |
-| Resize snapshot or notes/files | `Ctrl-G`, then `Up` / `Down`; `r` resets and `Esc` exits |
-| Reorder a named workstream | In `F3`, press `Shift-Up` / `Shift-Down` |
-| Title or clear a durable session | Select it in `F3`, press `r`, then save a title or an empty value |
-| Refresh notes and artifacts | Select their workstream in `F3` and press `R` |
+| See a workstream's notes and files | Select it; they fill the pane below the list |
+| Re-read everything from disk | `F3` |
+| Resize the lower pane | `Ctrl-G`, then `Up` / `Down`; `r` resets and `Esc` exits |
+| Create a workstream | `Ctrl-N`, type a name, then `Enter` |
+| Rename a workstream | Select it, press `Ctrl-R`, then `Enter` |
+| Title or clear a durable session | Select it, press `Ctrl-R`, then save a title or an empty value |
+| Move a session into a workstream | `Ctrl-T` on the session, select the workstream, `Ctrl-T` again |
+| Reorder a named workstream | Select it, then `Shift-Up` / `Shift-Down` |
 | Start a session | Type a task, then `Enter` |
 | Send to the selected live session | `Space` on an empty composer, type a message, then `Enter` |
-| Leave a reply and compose a new session | `Esc` (twice if the draft is non-empty) |
+| Leave a reply and compose a new session | `Esc`; the draft goes with it |
 | Attach to a selected session | `Enter` with an empty composer, when not replying |
 | Detach back to Heikou | `Ctrl-b`, release, then `d`; or `Ctrl-\` |
 | Leave the dashboard without stopping agents | `Ctrl-C`, or `Esc` with an empty composer |
