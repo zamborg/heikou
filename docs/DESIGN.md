@@ -324,9 +324,9 @@ persists `OutcomeExited`.
 Absence never implies exit, and Heikou never automatically restarts an
 unavailable session. A positive matching pane can repair an ambiguous launch
 result after a timeout; this is reconciliation, not automatic restart.
-Legacy panes can enter the durable model only through an explicit organizer
-action that atomically creates their `SessionRecord` and chosen membership;
-ordinary reconciliation never adopts them.
+Legacy panes can enter the durable model only through an explicit adoption
+that atomically creates their `SessionRecord` and chosen membership; ordinary
+reconciliation never adopts them.
 
 Lifecycle cleanup is deliberately staged. Two presses of `Ctrl-X` stop and
 remove a present runtime while retaining its durable record. Only after no pane
@@ -369,8 +369,8 @@ a fresh session/preview read.
 
 The primary dashboard is a grouped projection with selectable, collapsible
 workstream rows, member session rows, a synthetic Ungrouped inbox, and a
-separate Orphaned tmux section. Dashboard, Workstream Organizer, Settings, and
-Help each render an unmistakable mode badge. The composer chooses its
+separate Orphaned tmux section. Dashboard, Settings, and Help each render an
+unmistakable mode badge. The composer chooses its
 destination before the draft is typed rather than at the moment it is
 committed:
 
@@ -400,31 +400,63 @@ recoverable. A refused send keeps both the pin and the draft for the retry.
 When a workstream header is selected, empty `Enter` collapses/expands it instead
 of attaching. The composer always renders either the workstream and exact root a
 new session will use, or the session a reply will reach.
-`F3` opens a two-pane organizer. Its upper pane is an expandable tree containing
-named workstreams, Ungrouped, Orphaned, and their session rows. `Enter` on a
-workstream expands/collapses it unless a move source is active, when it instead
-moves a durable session or explicitly adopts an orphan there. `Enter` on a
-session marks it as the move source; `m` also marks or completes a move. `u` or
-`Space` returns to the dashboard with the highlighted workstream as launch
-target or the highlighted session selected.
+Organize actions are contextual chords on that same list. Each carries a verb
+and reads the selected row for its noun: `Ctrl-R` renames a workstream or edits
+a durable session title, `Ctrl-T` marks a session and then moves it into the
+next selected workstream (explicitly adopting an orphan when that is what it
+is), and `Shift-Up`/`Shift-Down` either reorders a named workstream durably or
+walks a session to the adjacent workstream with Ungrouped pinned last.
+`Ctrl-N` creates a workstream rooted at the launch directory.
 
-The lower pane is read-only context for the selected workstream; a selected
-session resolves to its parent workstream. It renders a bounded `notes.md`
-preview and shallow artifact-directory tree. This UI-owned read never mutates
-domain state, modifies files, or inspects any registered repository root.
-`R` explicitly refreshes the cached notes/artifact context after an editor or
-agent changes it. The organizer also supports create, contextual `r` to rename
-a workstream or edit/clear a durable session title, add/edit/remove-root,
-notes/files, archive, persistent `Shift-Up`/`Shift-Down` workstream ordering,
-and the same safe stop/delete lifecycle as the dashboard. Root edits affect
-future launch choices only; they never rewrite historical session roots or
-touch the filesystem.
+They are chords because every printable key belongs to the composer. That
+collision is the entire reason a second full-screen surface existed: it was the
+dashboard with the composer switched off so bare letters were free. Assigning
+the verbs to chords removed the surface, its duplicate cursor and collapse
+state, and its hand-rolled second text input.
 
-`Ctrl-G` enters a narrow resize mode on either primary surface. Up grows the
-lower snapshot or notes/files pane, Down gives those rows back to the session
-list, and `r` restores automatic sizing. Dashboard and organizer adjustments
-are independent process-local presentation state, not configuration or domain
-data.
+Renaming borrows the composer rather than opening an input of its own, because
+the composer already models exactly this: a destination chosen before the draft
+is typed, named in the prefix, committed by `Enter`. A rename is one more
+destination, so it inherits paste, word motion, and grapheme handling instead of
+reimplementing them. `Esc` cancels it in one press.
+
+Only one session is markable at a time. A batch move would be several
+non-atomic controller commands whose partial failure has no honest single-line
+outcome, so the UI does not offer a gesture whose result it cannot report.
+
+Marking, replying, and renaming all hold the list selection. The pin already
+guarantees a message reaches the session named in the prefix, but a list that
+scrolls underneath a draft invites reading the wrong row's preview as the
+conversation being answered.
+
+Root add/edit/remove and archive stayed in the CLI. Both are setup rather than
+operation, and the chord budget a terminal actually delivers is small enough
+that spending it on them would have crowded out the verbs used every session.
+Root edits affect future launch choices only; they never rewrite historical
+session roots or touch the filesystem.
+
+The lower pane is read-only context that follows the selection: a workstream
+renders a bounded `notes.md` preview and shallow artifact-directory tree, and a
+session renders its terminal preview instead. A selected session resolves to its
+parent workstream, so moving between a group and its members costs no read. This
+UI-owned read never mutates domain state, modifies files, or inspects any
+registered repository root. It is cached against the selected workstream in a
+single slot — caching per workstream would grow with the installation — so it
+reads when the selection lands somewhere new and costs nothing while the cursor
+sits still. `F3` forces a re-read of sessions, preview, and that context, which
+is the only way to observe an external write under a stationary cursor.
+
+`Ctrl-G` enters a narrow resize mode. Up grows the lower pane, Down gives those
+rows back to the session list, and `r` restores automatic sizing. The adjustment
+is process-local presentation state, not configuration or domain data.
+
+`Esc` never quits. It leaves a reply and discards its draft, then clears the
+composer, then releases a move mark, then parks the cursor on Ungrouped.
+Quitting is `Ctrl-C`, which works from every screen. A stray `Esc` over an empty
+composer used to end the session, which is a large consequence for a key people
+press to mean "never mind"; leaving a reply now takes the draft with it, because
+a follow-up left in a composer newly aimed at a new session would let the next
+`Enter` spawn a real one.
 
 This makes the two most common actions one keystroke after typing while keeping
 their consequences distinct. A selected session's preview is always open, so
@@ -440,12 +472,13 @@ runtime; Heikou does not claim to see text entered directly in an attached
 native TUI. Detailed title, initial task, path, activity, and the exact terminal
 tail sit below the list.
 
-Dashboard and organizer navigation use one typed primary-screen state plus a
-typed help overlay and typed organizer edit modes. Both primary surfaces consume
-the same indexed overview read model for workstream/session relationships, then
-apply their own collapse and selection state. This removes parallel boolean
-screen combinations and prevents the two views from independently rebuilding
-membership projections.
+Dashboard navigation uses one typed primary-screen state plus a typed help
+overlay and typed composer edit modes. A single indexed overview read model
+supplies workstream/session relationships to one list with one collapse and
+selection state. An earlier iteration ran a second full-screen organizer over
+the same projection; because it duplicated the cursor, the collapse map, and the
+text input while adding nothing to the read model, it was folded into the
+dashboard rather than kept in sync with it.
 
 The CLI exposes the same read/action surface for local automation without
 claiming manager authority. `h list --json` returns workstreams and sessions,
@@ -508,8 +541,8 @@ The automated suite covers:
   unchanged domain revisions for schema-only migration;
 - closed command actor/scope validation and local-human authorization;
 - machine-readable list/spawn/send projections with optional known exit codes;
-- scrollable help/glossary and expandable organizer navigation;
-- typed screen/edit state and a shared dashboard/organizer overview model;
+- scrollable help/glossary and contextual organize chords on one list;
+- typed screen/edit state over a single indexed overview model;
 - raw `no-agent` shells whose labels are never executed;
 - durable-before-launch ordering and failed-launch retention;
 - conservative reconciliation, staged stop/delete cleanup, and orphan

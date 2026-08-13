@@ -68,7 +68,8 @@ explicit way back. Do not recreate it on your own initiative.
 ## Notes are your durable memory
 
 Every workstream has an `artifact_dir` (returned by `h list --json`). Anything
-you put there persists and shows up in the user's dashboard organizer. The
+you put there persists and shows up in the user's dashboard, in the pane below
+the list whenever that workstream is selected. The
 convention is `notes.md` in that directory.
 
 This is the right place for decisions, useful commands, open questions, and

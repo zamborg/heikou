@@ -92,8 +92,10 @@ func TestHelpAdvertisesQuickstart(t *testing.T) {
 		"h quickstart [-r claude|codex] [-C DIR]",
 		"h list [--json]",
 		"Ctrl-G            resize snapshot/context",
-		"Organizer Shift-↑/↓ reorder a named workstream",
-		"Organizer r       rename a workstream or edit/clear a session title",
+		"Ctrl-R            rename a workstream or edit/clear a session title",
+		"Ctrl-T            mark a session; Ctrl-T on a workstream moves or adopts it",
+		"Shift-↑/↓         reorder a workstream, or move a session to the next one",
+		"Ctrl-C            quit the dashboard; Esc never quits",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("help does not advertise %q:\n%s", want, output.String())
@@ -135,7 +137,7 @@ func TestQuickstartBackendFallsBackToCodex(t *testing.T) {
 
 func TestQuickstartPromptEmbedsCanonicalSkill(t *testing.T) {
 	prompt := strings.Join(strings.Fields(quickstartPrompt()), " ")
-	for _, want := range []string{"name: learn-heikou", "If this guide itself is running inside a Heikou session", "already marked as the move source", "Only if that marker is absent", "Ctrl-b", "Ctrl-G", "Shift-Up"} {
+	for _, want := range []string{"name: learn-heikou", "If this guide itself is running inside a Heikou session", "press `Ctrl-T` to mark it", "Ctrl-b", "Ctrl-G", "Shift-Up", "Ctrl-N"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("quickstart prompt is missing %q", want)
 		}

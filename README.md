@@ -70,7 +70,7 @@ immediately. Use
 
 The guide's first lesson is how to detach. Press `Ctrl-b`, release both keys,
 then press `d`; `h quickstart` will open the dashboard with the guide selected
-so it can walk you through sending a follow-up, reattaching, `F3`, workstreams,
+so it can walk you through sending a follow-up, reattaching, workstreams,
 and persistent notes.
 
 ## Use it
@@ -92,8 +92,8 @@ key never depends on remembering which one you meant:
 | --- | --- |
 | Type a task or label, then `Enter` | Start the chosen Codex, Claude, or `no-agent` session |
 | `Space` with an empty composer | Aim the composer at the selected live session; the prefix becomes `↳ reply …` |
-| Type a message, then `Enter` | Send it to the pinned session; moving the selection first does not redirect it. Once it lands, the composer returns to composing a new session — press `Space` again to follow up |
-| `Esc` while replying | Clear the draft, then return to composing a new session |
+| Type a message, then `Enter` | Send it to the pinned session. The selection is held there while you draft, so the pane below keeps showing the conversation you are answering. Once it lands, the composer returns to composing a new session — press `Space` again to follow up |
+| `Esc` while replying | Return to composing a new session, discarding the draft with it so the next `Enter` cannot spawn a session from a follow-up |
 | `Shift-Enter` | Insert a newline; `Ctrl-J` is the fallback for terminals that cannot distinguish shifted Enter |
 | `Option-Left` / `Option-Right` | Move by word; `Option-Delete` deletes the previous word |
 | `Command-Left` / `Command-Right` | Move to the start or end of the logical line |
@@ -102,16 +102,19 @@ key never depends on remembering which one you meant:
 | `Shift-Tab` | Cycle the selected workstream's explicit roots, with or without composer text |
 | `F1`, or `?` with an empty composer | Open scrollable help, including the noun glossary and current composer keys |
 | `Ctrl-S` or `F2` | Open settings; `e` edits JSON, `r` reloads, `Esc` returns |
-| `F3` | Open the expandable workstream/session organizer |
-| `r` in F3 | Rename a workstream, or edit/clear the selected durable session title |
-| `R` in F3 | Refresh the selected workstream's notes and artifact preview after external changes |
+| `F3` | Re-read sessions, the terminal preview, and the selected workstream's notes and files |
+| `Ctrl-N` | Create a workstream, named through the composer |
+| `Ctrl-R` | Rename the selected workstream, or edit/clear the selected session's durable title |
+| `Ctrl-T` | Mark the selected session for a move; on a workstream, move the marked session there or adopt an orphan |
+| `Shift-Up` / `Shift-Down` | Reorder a named workstream, or move a session to the adjacent workstream |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
-| `Ctrl-G` | Enter resize mode; `Up` grows the snapshot, `Down` shows more sessions, `r` resets, and `Esc` exits |
+| `Ctrl-G` | Enter resize mode; `Up` grows the lower pane, `Down` shows more sessions, `r` resets, and `Esc` exits |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal; inactive while replying, so it cannot attach to a row other than the pinned target |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
-| `Esc` | Clear the composer, then leave a reply, then leave the dashboard |
+| `Esc` | Leave a reply and discard its draft, then clear the composer, then release a move mark, then select Ungrouped |
+| `Ctrl-C` | Quit the dashboard; `Esc` never quits |
 
 The terminal application decides whether macOS modifier chords reach a TUI.
 Heikou accepts enhanced Option/Command events plus common Alt, Home/End, and
@@ -119,7 +122,8 @@ Ctrl-key fallbacks. If a terminal reports `Shift-Enter` as ordinary Enter, use
 `Ctrl-J` for a newline.
 
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
-**Workstream Organizer**, **Settings**, or **Help**.
+**Settings**, or **Help**. Organizing happens on the dashboard rather than in a
+view of its own.
 
 Session rows lead with the durable user title when one is set, otherwise a
 one-line initial task. The most recent message successfully sent through
@@ -149,8 +153,8 @@ h attach a1b2c3
 h stop a1b2c3
 ```
 
-Every organizing action the `F3` organizer performs is also a command, so the
-whole durable model can be driven without the TUI:
+Every organizing action is also a command, so the whole durable model can be
+driven without the TUI. Root and archive management live here only:
 
 ```sh
 h ws create "API work" -C ~/code/api -d "the public API"
@@ -233,34 +237,39 @@ followed by two honest system groups:
   original raw-session workflow.
 - **Orphaned tmux** contains panes carrying a Heikou ID that is unknown to the
   durable store. They remain attachable and steerable but are never silently
-  adopted into a workstream; the organizer workflow below makes adoption
-  explicit.
+  adopted into a workstream; `Ctrl-T` below makes adoption explicit.
 
-Press `F3` for an upper tree of named workstreams, Ungrouped, Orphaned, and
-their sessions. On a workstream row, `Enter` expands/collapses it unless a move
-source is active, in which case it moves or adopts that session there. On a
-session row, `Enter` marks it as the move source; `m` also marks or completes a
-move. Press `u` or `Space` to return to the dashboard with the highlighted
-workstream or session selected. On a named workstream, `Shift-Up` and
-`Shift-Down` move it in the durable display order; the synthetic Ungrouped and
-Orphaned sections remain fixed after named workstreams.
+Organizing is done in place. Each chord carries a verb and reads the selected
+row for its noun, so one key covers both nouns it could apply to: `Ctrl-R`
+renames a workstream or retitles a session, and `Shift-Up`/`Shift-Down`
+reorders a named workstream or walks a session to the adjacent one. `Ctrl-N`
+creates a workstream. `Ctrl-T` marks a session with `◆` and moves it into the
+next workstream you select, adopting an orphan explicitly when that is what it
+is. The synthetic Ungrouped and Orphaned sections remain fixed after named
+workstreams.
 
-The organizer's lower, read-only context pane follows the selected workstream;
-selecting a session shows its parent workstream. It previews a bounded portion
-of `notes.md` and a shallow tree of that workstream's artifact directory only.
-It receives more space by default on taller terminals. Press `Ctrl-G` to enter
-resize mode, then use `Up` to grow notes/files, `Down` to expose more sessions,
-or `r` to restore automatic sizing. Dashboard snapshot sizing is adjusted the
-same way and remembered independently for the current process.
+Because every printable key belongs to the composer, these are chords rather
+than bare letters. That is the whole reason a separate organizer view existed;
+folding the verbs into chords removed the view and the second set of keys with
+it. Root editing and archiving stayed in the CLI rather than claiming chords,
+since both are setup rather than operation.
+
+The read-only lower pane follows the selection: a workstream shows a bounded
+`notes.md` preview and a shallow tree of its artifact directory, and a session
+shows its terminal preview instead. A session resolves to its parent
+workstream, so moving between a group and its members costs no extra read.
+Press `Ctrl-G` to enter resize mode, then `Up` to grow the lower pane, `Down`
+to expose more sessions, or `r` to restore automatic sizing.
 Rendering context does not change domain state, inspect registered repository
-roots, or modify files. Press `R` after an editor, agent, or other process
-changes notes or artifacts to refresh that cached preview explicitly. The
-organizer also creates or renames workstreams, edits or clears a durable session
-title with contextual `r`, opens notes/artifacts, and archives. On a named
-workstream, `p` adds a root, `Shift-P` edits the root selected with `Tab`, and
-`d` twice removes that root without deleting files or changing historical
-session records. Every workstream keeps at least one root.
-Archiving keeps all durable sessions and moves their memberships to Ungrouped.
+roots, or modify files. The preview is cached against the selected workstream,
+so it reads when the selection lands somewhere new and costs nothing while the
+cursor sits still. Press `F3` after an agent or editor rewrites notes under a
+stationary cursor; moving off the row and back does the same thing.
+
+Roots and archiving are `h ws root add|set|rm` and `h ws archive`. Every
+workstream keeps at least one root, root edits never rewrite historical session
+records or touch the filesystem, and archiving keeps all durable sessions and
+moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
 contain sessions launched from several registered roots, but membership never
