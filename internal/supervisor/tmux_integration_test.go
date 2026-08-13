@@ -402,15 +402,15 @@ func TestShiftEnterReachesAPaneThatNeverNegotiatedForIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Below tmux 3.5 there is no extended-keys-format to set, so the encoding
-	// is extended but stays in the xterm format Codex cannot read. Shift-Enter
-	// is still distinguishable from Enter there, which is what this asserts;
-	// where the option exists, the exact format is worth pinning too.
-	want := "\x1b[13;2u"
-	format, err := manager.run(ctx, nil, "show-options", "-sv", "extended-keys-format")
-	if err != nil || strings.TrimSpace(string(format)) != "csi-u" {
-		want = "\x1b[27;2;13~"
+	// tmux old enough to reject "always" cannot encode a key for a pane that
+	// never asked, so there is nothing here to assert on it. csi-u is what
+	// every tmux that accepts "always" produces: the newer ones because the
+	// bootstrap names it, tmux 3.4 because it is already the default there.
+	if mode, modeErr := manager.run(ctx, nil, "show-options", "-sv", "extended-keys"); modeErr != nil ||
+		strings.TrimSpace(string(mode)) != "always" {
+		t.Skip("this tmux cannot force extended keys onto a pane that never requested them")
 	}
+	const want = "\x1b[13;2u"
 	waitFor(t, 10*time.Second, func() bool {
 		recorded, readErr := os.ReadFile(keystrokes)
 		return readErr == nil && len(recorded) > 0

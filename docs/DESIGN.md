@@ -419,11 +419,13 @@ xterm format is the one Codex cannot read. The `extkeys` terminal feature is the
 outer half of the same path, letting tmux ask the user's own terminal for those
 keys in the first place.
 
-The format option arrived in tmux 3.5, above the supported floor, so it is sent
-on its own and its failure is tolerated. Bundling it would abort the rest of the
-batch on an older server, which would trade a Codex nicety for every other
-option. What an older server still gets is the part that matters most: the key
-is distinguishable from Enter, so it cannot silently submit.
+Both options postdate the supported tmux floor, so both are sent outside the
+bootstrap batch and neither failure is fatal. Inside it, one unknown option or
+value aborts every command after it — a server would trade its whole
+configuration for a keyboard nicety. The versions also disagree about the
+default: tmux 3.4 has no format option and already encodes as csi-u, while later
+versions have the option and default to xterm, so naming it explicitly is what
+makes the two agree.
 
 A pane fixes its key mode when it starts, so this reaches new sessions only;
 changing the options under a running pane does not move it. The

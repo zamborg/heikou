@@ -35,8 +35,7 @@ daemon, manager agent, task graph, or replacement execution engine.
 Heikou currently targets macOS. Requirements: Go 1.25+, tmux 3.3+, and at
 least one of `codex` or `claude`. Runner commands can be configured when they
 are not on `PATH`; Heikou also discovers Codex inside the macOS ChatGPT app
-bundle. tmux 3.5+ additionally lets Codex read modified keys such as
-`Shift-Enter`; see below.
+bundle.
 
 ```sh
 go install github.com/zamborg/heikou/cmd/h@latest
@@ -133,9 +132,8 @@ for a scheme tmux implements and Codex asks for one it does not, and a pane that
 falls back to the legacy encoding receives `Shift-Enter` as a plain Enter — so
 the key meant to open a line sends the message instead. A pane reads this when
 it starts, so a session launched before 0.7.0 keeps the old behaviour until you
-restart it. The option that names the encoding Codex can read arrived in tmux
-3.5; on 3.3 and 3.4 the key stays distinguishable from Enter, but only Claude
-Code can read it.
+restart it. A tmux too old to offer the encoding keeps the behaviour it had;
+nothing else about the session changes.
 
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Settings**, or **Help**. Organizing happens on the dashboard rather than in a
