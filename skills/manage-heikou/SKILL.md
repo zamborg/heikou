@@ -90,6 +90,7 @@ h adopt SESSION [-w WORKSTREAM]                  # claim an orphaned tmux pane
 h stop SESSION                                   # confirm with the user first
 h delete SESSION --yes                           # confirm with the user first
 h peek SESSION [--lines N]                       # current frame, not history
+h history SESSION [--last N] [--json]            # what the runner recorded
 h attach SESSION                                 # hands over the terminal
 ```
 
@@ -134,4 +135,5 @@ These messages are specific. Show them to the user rather than paraphrasing.
 - pass `--yes` without being asked to
 - run `h spawn` or `h stop` without confirming the specifics first
 - describe a session as working, ready, blocked, or needing input
-- present `h peek` output as a record of what a session did
+- present `h peek` output as a record of what a session did; `h history` is
+  the surface that answers that, and it says when it cannot

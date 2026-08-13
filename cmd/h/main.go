@@ -24,12 +24,13 @@ import (
 	"github.com/zamborg/heikou/internal/home"
 	"github.com/zamborg/heikou/internal/runner"
 	"github.com/zamborg/heikou/internal/supervisor"
+	"github.com/zamborg/heikou/internal/transcript"
 	"github.com/zamborg/heikou/internal/ui"
 	"github.com/zamborg/heikou/internal/workstream"
 	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.5.0"
+var version = "0.6.0"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -116,6 +117,10 @@ type app struct {
 	dial     func(socket string) (control.Service, error)
 	settings func() (config.Store, config.Config, error)
 	workdir  func() string
+
+	// transcripts reads what a runner recorded. Its zero value points at the
+	// real location under the user's home, so only a test ever sets it.
+	transcripts transcript.Reader
 }
 
 // newApp wires the real process. Every field here reads the environment; every
@@ -161,6 +166,8 @@ func (a *app) run(args []string) error {
 		return a.runStop(args[1:])
 	case "peek":
 		return a.runPeek(args[1:])
+	case "history":
+		return a.runHistory(args[1:])
 	case "ws", "workstream":
 		return a.runWorkstreamCommand(args[1:])
 	case "title":
@@ -643,6 +650,7 @@ Usage:
   h send [--json] ID MESSAGE           send a follow-up through tmux
   h attach ID                          enter the native agent terminal
   h peek ID [--lines N]                print the pane's current frame
+  h history ID [--last N] [--json]     print what the runner recorded happened
   h stop ID                            stop runtime; keep the durable record
   h doctor                             check local dependencies
 

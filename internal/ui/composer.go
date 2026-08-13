@@ -267,9 +267,34 @@ func composerCursorLine(lines []composerLine, cursor int) int {
 	return max(0, len(lines)-1)
 }
 
+// composerPrefixOwnsALine reports whether the destination label is drawn on its
+// own row above the text.
+//
+// A reply is the one destination that is worth a whole line. Its label carries
+// a session id and a title, so inline it pushes the cursor most of the way
+// across the terminal and a short message wraps for no reason. Everywhere else
+// the label is short and naming the destination on the same line as the text is
+// the point.
+func (m Model) composerPrefixOwnsALine() bool { return m.replyTarget != "" }
+
+func (m Model) composerPrefixRows() int {
+	if m.composerPrefixOwnsALine() {
+		return 1
+	}
+	return 0
+}
+
+// composerHeight is how many rows the composer occupies in the layout: its text
+// rows plus the destination label when that label has a row to itself. Every
+// height budget outside the composer works from this, not from the text rows,
+// or the extra line would push the list off the bottom of the screen.
+func (m Model) composerHeight() int {
+	return m.composerInputHeight() + m.composerPrefixRows()
+}
+
 func (m Model) composerInputHeight() int {
 	height := min(maxComposerInputRows, len(composerLines(m.input)))
-	return min(height, max(1, m.height-7))
+	return min(height, max(1, m.height-7-m.composerPrefixRows()))
 }
 
 func (m Model) renderComposerInput(prefix string) []string {
@@ -280,10 +305,17 @@ func (m Model) renderComposerInput(prefix string) []string {
 	if start+height > len(lines) {
 		start = max(0, len(lines)-height)
 	}
-	visible := make([]string, 0, height)
+	standalone := m.composerPrefixOwnsALine()
+	visible := make([]string, 0, height+1)
+	if standalone {
+		visible = append(visible, padANSI(truncateANSI(prefix, m.width), m.width))
+	}
 	for lineIndex := start; lineIndex < min(len(lines), start+height); lineIndex++ {
 		line := lines[lineIndex]
 		label := prefix
+		if standalone {
+			label = ""
+		}
 		if lineIndex > 0 {
 			label = mutedStyle.Render(fmt.Sprintf("%3d │ ", lineIndex+1))
 		}

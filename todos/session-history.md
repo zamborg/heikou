@@ -1,7 +1,43 @@
 # Session history
 
-Status: proposed. Raised by a pilot during testing, which correctly reported
-that `h peek` shows only the current terminal frame and not what a session did.
+Status: shipped for Claude as `h history`; Codex remains unsupported. Raised by
+a pilot during testing, which correctly reported that `h peek` shows only the
+current terminal frame and not what a session did.
+
+## What shipped
+
+`internal/transcript` locates and parses the JSONL file Claude Code writes per
+session, and `h history SESSION [--last N] [--json]` projects it into turns.
+Every answer names its runner and reports `available`, `missing`, or
+`unsupported`, so a caller can tell an authoritative record from an absent one.
+A missing transcript exits zero.
+
+Parsing decisions worth knowing, because each one is a way the naive version is
+wrong:
+
+- A tool's return value is stored under the *user* role. Trusting the role
+  reports every tool result as something the user said.
+- An assistant reply is stored as many appended records. A user message is the
+  turn boundary; anything else reports one reply as thirty turns.
+- The summary written when a session runs out of context is stored as a user
+  message and is often the longest record in the file. It restates turns already
+  present, so it is excluded.
+- Local slash commands arrive inside a machine-written envelope, so `/compact`
+  reads as a message saying `<command-name>/compact</command-name>` unless the
+  envelope is recognized.
+- Thinking blocks are dropped. They are most of the bytes and none of the answer.
+- Subagent (sidechain) turns are excluded: they are not this session's
+  conversation, and interleaving them reports an order that never happened.
+
+## Still open
+
+Codex. It writes `~/.codex/sessions/<date>/rollout-<timestamp>-<uuid>.jsonl`
+with the launch `cwd` in a `session_meta` record, but it mints the id itself and
+Heikou never learns it. Correlating by directory and start time is a guess, and
+a guess that attributes one session's history to another is worse than no
+answer. Making Codex work needs Codex to accept an externally supplied session
+id, or to report the id it chose. Until then `h history` says `unsupported` and
+explains why.
 
 ## The problem
 

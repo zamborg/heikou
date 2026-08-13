@@ -93,16 +93,23 @@ message routed through Heikou. Trust these.
 alternate screen, which keeps no scrollback, so anything that scrolled past is
 gone. Never present `h peek` output as a history of what the session did.
 
-**A real transcript** exists only for Claude sessions. Heikou launches Claude
-with its own session id, and Claude Code writes a JSONL transcript per session.
-Look under `~/.claude/projects/` for a directory whose name is the session's
-root path with `/` and `.` replaced by `-`, containing `<session-id>.jsonl`.
-Glob for the session id rather than constructing the path by hand.
+**A real transcript** comes from `h history <session> [--last N] [--json]`. It
+reads what the runner itself recorded and returns turns — who said what, and
+which tools ran — rather than terminal text. Use it instead of hunting for the
+file by hand.
 
-If a transcript exists, it is authoritative and you may summarize it. If it does
-not, say that you can report the durable facts and the current screen but not
-what the session actually did. Do not guess, and do not narrate the frame as if
-it were history.
+Read the `availability` field before the turns, because the three answers mean
+different things:
+
+- `available` — turns were read from the runner's own file. This is
+  authoritative and you may summarize it.
+- `missing` — the runner keeps transcripts and none exists for this session.
+- `unsupported` — Heikou cannot identify this session's file at all. Codex mints
+  its own session id, so no Codex session has locatable history today.
+
+When history is not available, say you can report the durable facts and the
+current screen but not what the session actually did. Do not guess, and do not
+narrate the frame as if it were history.
 
 ## Style
 

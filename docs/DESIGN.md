@@ -112,6 +112,8 @@ The package boundaries are:
   runtime observation, including the closed typed actor/scope command plane;
 - `internal/runner`: tiny Codex and Claude argv adapters plus the exec wrapper;
 - `internal/supervisor`: the tmux implementation;
+- `internal/transcript`: the read-only observer for what a native runner
+  recorded about a session;
 - `internal/ui`: typed screen reducers, their shared overview read model, and
   rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
@@ -145,6 +147,39 @@ argv. Immediately before a native launch, the controller asks a trusted
 config-backed resolver for the configured argv prefix and passes that snapshot
 to `Supervisor.Start`. This keeps human and future authorized callers from
 substituting an arbitrary executable through the command payload.
+
+### Runner transcripts
+
+`h peek` returns the pane's current frame and cannot return more. A full-screen
+runner draws on the terminal's alternate screen, which keeps no scrollback, so
+whatever scrolled past was never retained by anything Heikou can ask. Measured
+against a live `claude` pane, `capture-pane -p -J -S -120` returned 85 lines, 60
+of them shell output produced before the runner started. No capture depth
+recovers the rest.
+
+So history does not come from tmux; it comes from the runner.
+`internal/transcript` reads the JSONL file Claude Code writes per session and
+projects it into turns: who said what, and which tools ran. It is the first
+authoritative structured runner signal Heikou has, and it stays an observer —
+read-only, bounded, and never copied into durable state.
+
+Three properties keep it honest:
+
+- **It names its source.** Every answer carries the runner and an availability
+  of `available`, `missing`, or `unsupported`. A caller can tell an
+  authoritative transcript from an absent one without inferring it from an empty
+  list.
+- **It fails soft.** The file layout belongs to Claude, so a missing transcript
+  is a normal answer and never an error. The verb exits zero.
+- **It refuses to guess.** Heikou owns the Claude session id because it launches
+  `claude --session-id <id>`, so the file name is exact. Codex mints its own id,
+  and matching a rollout by launch directory and start time would be a guess
+  that silently attributes one session's history to another — so Codex reports
+  `unsupported` rather than a likely-looking file.
+
+Transcript reading never merges with `h peek`, and neither one is evidence that
+a session is healthy, finished, or idle. The runtime state enum remains the only
+claim Heikou makes about now.
 
 ## Session lifecycle
 
@@ -408,7 +443,8 @@ a durable session title, `Ctrl-T` marks a session and then moves it into the
 next selected workstream (explicitly adopting an orphan when that is what it
 is), and `Shift-Up`/`Shift-Down` either reorders a named workstream durably or
 walks a session to the adjacent workstream with Ungrouped pinned last.
-`Ctrl-N` creates a workstream rooted at the launch directory.
+`Ctrl-N` creates a workstream rooted at the launch directory, and `Ctrl-O`
+edits the selected workstream's roots.
 
 They are chords because every printable key belongs to the composer. That
 collision is the entire reason a second full-screen surface existed: it was the
@@ -422,6 +458,14 @@ is typed, named in the prefix, committed by `Enter`. A rename is one more
 destination, so it inherits paste, word motion, and grapheme handling instead of
 reimplementing them. `Esc` cancels it in one press.
 
+A reply is the one destination whose label takes a row of its own, with the
+draft starting on the next line. Its prefix carries a session id and a title,
+so inline it pushes the cursor most of the way across the terminal and a short
+message wraps for no reason. Every other prefix is short, and naming the
+destination beside the text is the point. The extra row is subtracted from the
+layout budget rather than added on top, so pinning a reply never pushes the
+list past the bottom of the screen.
+
 Only one session is markable at a time. A batch move would be several
 non-atomic controller commands whose partial failure has no honest single-line
 outcome, so the UI does not offer a gesture whose result it cannot report.
@@ -431,11 +475,30 @@ guarantees a message reaches the session named in the prefix, but a list that
 scrolls underneath a draft invites reading the wrong row's preview as the
 conversation being answered.
 
-Root add/edit/remove and archive stayed in the CLI. Both are setup rather than
-operation, and the chord budget a terminal actually delivers is small enough
-that spending it on them would have crowded out the verbs used every session.
-Root edits affect future launch choices only; they never rewrite historical
-session roots or touch the filesystem.
+Roots are three verbs behind one chord. `Ctrl-O` opens the selected
+workstream's roots in the composer, starting at the root `Shift-Tab` has
+already selected as the launch directory; pressing it again walks to the next
+root and then to an empty slot past the end. Committing that empty slot adds a
+root, committing a changed path replaces one, and committing an emptied field
+removes one after asking a second time.
+
+Three verbs on one chord is a compression the chord budget forced, and it is
+honest only because the composer prefix names the slot the whole time: `root
+2/3 · Public API` and `new root · Public API` are different bars, so `Enter`
+never has an ambiguous meaning on screen. Removal is the one destructive
+outcome and the one reached by a quiet gesture, so it arms rather than acts, and
+any other outcome disarms it. A workstream always keeps its last root, because
+one with none cannot launch anything and the state validator rejects it.
+
+An edit commits against the path the slot held when it opened, not against its
+position. A root removed by another process while the composer was open is then
+detectable, and the edit is refused instead of rewriting whichever root shifted
+into that index. Root edits affect future launch choices only; they never
+rewrite historical session roots or touch the filesystem.
+
+Archiving stayed in the CLI. It is setup rather than operation, and it is the
+one organize action whose blast radius wants the deliberation of typing a
+command with `--yes`.
 
 The lower pane is read-only context that follows the selection: a workstream
 renders a bounded `notes.md` preview and shallow artifact-directory tree, and a

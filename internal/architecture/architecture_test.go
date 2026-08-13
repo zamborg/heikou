@@ -39,7 +39,8 @@ var allowedImports = map[string][]string{
 	"cmd/h": {
 		"internal/config", "internal/control", "internal/control/controltest",
 		"internal/env", "internal/format", "internal/heikou", "internal/home",
-		"internal/runner", "internal/supervisor", "internal/ui", "internal/workstream",
+		"internal/runner", "internal/supervisor", "internal/transcript", "internal/ui",
+		"internal/workstream",
 		"skills/learn-heikou", "skills/manage-heikou",
 	},
 	"internal/architecture": {},
@@ -60,6 +61,11 @@ var allowedImports = map[string][]string{
 	"internal/home":                {"internal/env"},
 	"internal/runner":              {"internal/env", "internal/heikou"},
 	"internal/supervisor":          {"internal/env", "internal/format", "internal/heikou", "internal/runner"},
+	// transcript reads files another program owns. It sits beside supervisor
+	// rather than above control: reading what a runner recorded needs the
+	// runner's name and nothing else, and giving it the controller would let a
+	// read-only observer reach durable state.
+	"internal/transcript": {"internal/format", "internal/heikou"},
 	"internal/ui": {
 		"internal/brief", "internal/config", "internal/control", "internal/control/controltest",
 		"internal/format", "internal/heikou", "internal/runner", "internal/workstream",

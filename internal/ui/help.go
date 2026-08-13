@@ -161,8 +161,10 @@ func (m Model) helpContentLines() []string {
 		{"Ctrl-T · workstream", "Move the marked session here. An orphaned runtime is explicitly adopted instead, which a named workstream accepts and Ungrouped does not."},
 		{"Shift-↑ / Shift-↓ · workstream", "Move a named workstream one position up or down; the order is durable."},
 		{"Shift-↑ / Shift-↓ · session", "Move it to the previous or next workstream, with Ungrouped last in the walk."},
+		{"Ctrl-O", "Edit the selected workstream's roots. The composer opens on the root Shift-Tab has selected; press Ctrl-O again to walk to the next one and then to an empty slot that adds."},
+		{"Ctrl-O · committing", "Enter saves the path shown. An empty draft removes that root and asks once more first; a workstream always keeps its last root."},
 		{"Lower pane", "A selected workstream shows its notes.md and a shallow artifact tree; a selected session shows its terminal preview instead. A session resolves to its parent workstream, so moving between them costs no extra read."},
-		{"Roots and archiving", "Adding, editing, and removing roots, and archiving a workstream, are setup rather than operation: use h ws root add|set|rm and h ws archive."},
+		{"Archiving", "Archiving a workstream is setup rather than operation, and stays on the CLI: h ws archive."},
 	} {
 		lines = appendHelpBinding(lines, m.width, binding.key, binding.description)
 	}

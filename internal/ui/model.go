@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ const (
 	composerEditCreateWorkstream
 	composerEditRenameWorkstream
 	composerEditSessionTitle
+	composerEditRoot
 )
 
 type Model struct {
@@ -158,6 +160,20 @@ type Model struct {
 
 	composerEdit       composerEditMode
 	composerEditTarget string
+	// composerRootSlot is which of the target workstream's roots the composer is
+	// editing. It equals len(Roots) on the one slot past the end, which is how
+	// adding a root is expressed as editing an empty one rather than as a
+	// separate mode with its own chord.
+	composerRootSlot int
+	// composerRootOriginal is the path that slot held when the edit opened, and
+	// is empty on the add slot. Replacing and removing both name the current
+	// root, so committing against a remembered value rather than re-deriving
+	// one keeps a root that moved underneath from being edited by position.
+	composerRootOriginal string
+	// confirmRootRemoval is the workstream and root a second Enter removes.
+	// Emptying the field is a quiet gesture for a durable change, so it arms
+	// rather than acts.
+	confirmRootRemoval string
 	pendingWorkstream  string
 	artifactContext    artifactContextState
 }
@@ -251,6 +267,7 @@ type workstreamMsg struct {
 	item         workstream.Workstream
 	workstreamID string
 	sessionID    string
+	root         string
 	delta        int
 	moved        bool
 	err          error
@@ -481,6 +498,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "adopt":
 			m.markedSession = ""
 			m.notice = "adopted runtime " + format.ShortID(message.sessionID) + " · " + m.workstreamName(message.workstreamID)
+		case "root_add":
+			m.notice = "added root · " + format.CompactPath(message.root)
+		case "root_replace":
+			m.notice = "replaced root · " + format.CompactPath(message.root)
+		case "root_remove":
+			m.notice = "removed root · " + format.CompactPath(message.root) + " · files and sessions are untouched"
 		}
 		return m, m.requestSnapshot()
 
@@ -635,6 +658,13 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+r":
 		return m.renameSelection()
+
+	// Ctrl-O rather than a mnemonic letter: the composer already owns every
+	// readline chord a text field is expected to answer to, and taking Ctrl-R
+	// or Ctrl-E back from rename or end-of-line would cost more than the
+	// mnemonic is worth. The composer prefix is what makes it discoverable.
+	case "ctrl+o":
+		return m.editRootSelection()
 
 	case "ctrl+t":
 		return m.markOrMoveSelection()
@@ -940,6 +970,125 @@ func (m Model) handleSessionLifecycle(selected control.Session) (tea.Model, tea.
 // renameSelection renames the selected workstream or retitles the selected
 // session. The composer takes the draft, so a rename inherits paste, word
 // motion, and the destination prefix instead of a second private text input.
+// editRootSelection opens the selected workstream's roots in the composer.
+//
+// Roots get one chord rather than three because they are one list with a
+// cursor the dashboard already has: Shift-Tab picks which root a new session
+// launches into, and that same choice is what add, replace and remove act on.
+// Pressing Ctrl-O again walks to the next root and then to an empty slot, so
+// "add" is editing the slot past the end. What the composer is about to change
+// is named in its prefix the whole time, which is the only way a single chord
+// with three outcomes can be honest.
+func (m Model) editRootSelection() (tea.Model, tea.Cmd) {
+	if m.composerEdit == composerEditRoot {
+		return m.advanceRootSlot()
+	}
+	item, ok := m.workstream(m.launchWorkstreamID())
+	if !ok {
+		m.errorText = "select a named workstream to manage its roots"
+		return m, nil
+	}
+	m.openRootSlot(item, m.rootPosition(item.ID, len(item.Roots)))
+	return m, nil
+}
+
+// advanceRootSlot steps to the next root, wrapping through the add slot. A
+// draft is discarded on the way: the field always shows the slot it names.
+func (m Model) advanceRootSlot() (tea.Model, tea.Cmd) {
+	item, ok := m.workstream(m.composerEditTarget)
+	if !ok {
+		m.cancelComposerEdit()
+		m.errorText = "that workstream is no longer available"
+		return m, nil
+	}
+	m.openRootSlot(item, (m.composerRootSlot+1)%(len(item.Roots)+1))
+	return m, nil
+}
+
+func (m *Model) openRootSlot(item workstream.Workstream, slot int) {
+	value, original := m.root, ""
+	if slot < len(item.Roots) {
+		value, original = item.Roots[slot], item.Roots[slot]
+	}
+	m.beginComposerEdit(composerEditRoot, item.ID, value)
+	m.composerRootSlot, m.composerRootOriginal = slot, original
+	if original == "" {
+		m.notice = "new root for " + item.Name + " · Enter adds · Ctrl-O next · Esc cancels"
+		return
+	}
+	m.notice = "edit this root · empty Enter removes it · Ctrl-O next · Esc cancels"
+}
+
+// rootSlotLabel names the slot the composer is pointed at. Without it a single
+// path in the input has no way to say whether Enter replaces a root or adds one.
+func (m Model) rootSlotLabel() string {
+	item, ok := m.workstream(m.composerEditTarget)
+	if !ok {
+		return "✎ root"
+	}
+	if m.composerRootSlot >= len(item.Roots) {
+		return "✎ new root · " + item.Name
+	}
+	return fmt.Sprintf("✎ root %d/%d · %s", m.composerRootSlot+1, len(item.Roots), item.Name)
+}
+
+func (m Model) commitRootEdit(value string) (tea.Model, tea.Cmd) {
+	// A pending removal survives exactly one Enter. Taking it now means any
+	// other outcome disarms it, so a refused replace cannot leave the next
+	// empty Enter primed to delete without asking again.
+	armed := m.confirmRootRemoval
+	m.confirmRootRemoval = ""
+
+	item, ok := m.workstream(m.composerEditTarget)
+	if !ok {
+		m.cancelComposerEdit()
+		m.errorText = "that workstream is no longer available"
+		return m, nil
+	}
+	if m.composerRootOriginal == "" {
+		if value == "" {
+			m.cancelComposerEdit()
+			m.notice = "no root added"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "adding root…"
+		return m, m.addRootCmd(item.ID, value)
+	}
+	if !slices.Contains(item.Roots, m.composerRootOriginal) {
+		// Another process changed the roots while this edit was open. Editing by
+		// remembered path rather than by position means this is detectable at
+		// all; committing anyway would rewrite whichever root moved into the slot.
+		m.cancelComposerEdit()
+		m.errorText = "that root is no longer registered"
+		return m, nil
+	}
+	switch {
+	case value == "":
+		if len(item.Roots) <= 1 {
+			m.errorText = "a workstream must keep one root; type a different path to replace this one"
+			return m, nil
+		}
+		confirmation := item.ID + "\x00" + m.composerRootOriginal
+		if armed != confirmation {
+			m.confirmRootRemoval = confirmation
+			m.notice = "remove root " + format.CompactPath(m.composerRootOriginal) + " · Enter again · files and sessions stay"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "removing root…"
+		return m, m.removeRootCmd(item.ID, m.composerRootOriginal)
+	case value == m.composerRootOriginal:
+		m.cancelComposerEdit()
+		m.notice = "root unchanged"
+		return m, nil
+	default:
+		m.busy = true
+		m.notice = "replacing root…"
+		return m, m.replaceRootCmd(item.ID, m.composerRootOriginal, value)
+	}
+}
+
 func (m Model) renameSelection() (tea.Model, tea.Cmd) {
 	row, ok := m.selectedRow()
 	if !ok {
@@ -1099,6 +1248,7 @@ func (m *Model) beginComposerEdit(mode composerEditMode, target, value string) {
 func (m *Model) cancelComposerEdit() {
 	m.composerEdit = composerEditNone
 	m.composerEditTarget = ""
+	m.composerRootSlot, m.composerRootOriginal, m.confirmRootRemoval = 0, "", ""
 	m.clearInput()
 }
 
@@ -1112,6 +1262,9 @@ func (m Model) composerEditTargetExists() bool {
 		return ok
 	case composerEditSessionTitle:
 		_, ok := m.session(m.composerEditTarget)
+		return ok
+	case composerEditRoot:
+		_, ok := m.workstream(m.composerEditTarget)
 		return ok
 	}
 	return true
@@ -1150,6 +1303,8 @@ func (m Model) commitComposerEdit(draft string) (tea.Model, tea.Cmd) {
 		m.busy = true
 		m.notice = "saving title…"
 		return m, m.setSessionTitleCmd(m.composerEditTarget, value)
+	case composerEditRoot:
+		return m.commitRootEdit(value)
 	}
 	return m, nil
 }
@@ -1163,6 +1318,8 @@ func (m Model) composerEditLabel() string {
 		return "✎ rename " + name
 	case composerEditSessionTitle:
 		return "✎ title " + format.ShortID(m.composerEditTarget)
+	case composerEditRoot:
+		return m.rootSlotLabel()
 	}
 	return ""
 }
@@ -1525,7 +1682,10 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 func (m Model) renderComposer() string {
 	prefix := m.composerPrefix()
 	composer := strings.Join(m.renderComposerInput(prefix), "\n")
-	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Ctrl-N new · Ctrl-R rename · Ctrl-T move · ? help",
+	// The chords are named as a family rather than spelled out. Four verbs plus
+	// four launch bindings does not fit a terminal width anyone uses, and the
+	// pointer to full help is the one part that must never be the bit truncated.
+	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Ctrl-N/R/T/O organize · ? help",
 		helpKeyLabel(m.settings.ReplyKey()), helpKeyLabel(m.settings.CycleRunnerKey()),
 		helpKeyLabel(m.settings.CycleRootKey()))
 	if m.replyTarget != "" {
@@ -2076,6 +2236,33 @@ func (m Model) createWorkstreamCmd(name string) tea.Cmd {
 		defer cancel()
 		item, err := m.controller.CreateWorkstream(ctx, name, "", []string{m.root})
 		return workstreamMsg{action: "create", item: item, err: err}
+	}
+}
+
+func (m Model) addRootCmd(workstreamID, root string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.AddRoot(ctx, workstreamID, root)
+		return workstreamMsg{action: "root_add", workstreamID: workstreamID, root: root, err: err}
+	}
+}
+
+func (m Model) replaceRootCmd(workstreamID, current, replacement string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.ReplaceRoot(ctx, workstreamID, current, replacement)
+		return workstreamMsg{action: "root_replace", workstreamID: workstreamID, root: replacement, err: err}
+	}
+}
+
+func (m Model) removeRootCmd(workstreamID, root string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.RemoveRoot(ctx, workstreamID, root)
+		return workstreamMsg{action: "root_remove", workstreamID: workstreamID, root: root, err: err}
 	}
 }
 
