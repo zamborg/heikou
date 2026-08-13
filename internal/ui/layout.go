@@ -41,7 +41,7 @@ func (m *Model) resizeLowerPane(delta int) {
 }
 
 func (m Model) defaultListHeight() int {
-	effectiveHeight := m.height - (m.composerInputHeight() - 1)
+	effectiveHeight := m.height - (m.composerHeight() - 1)
 	if effectiveHeight < 18 {
 		return max(2, effectiveHeight-9)
 	}
@@ -49,7 +49,7 @@ func (m Model) defaultListHeight() int {
 }
 
 func (m Model) dashboardAvailableHeight() int {
-	return max(0, m.height-m.composerInputHeight()-5)
+	return max(0, m.height-m.composerHeight()-5)
 }
 
 func (m Model) dashboardMaximumDetailHeight() int {

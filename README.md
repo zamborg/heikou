@@ -262,11 +262,21 @@ next workstream you select, adopting an orphan explicitly when that is what it
 is. The synthetic Ungrouped and Orphaned sections remain fixed after named
 workstreams.
 
+`Ctrl-O` edits the selected workstream's roots. Roots get one chord rather than
+three because they are one list the dashboard already has a cursor for:
+`Shift-Tab` picks which root a new session launches into, and that is the root
+`Ctrl-O` opens. Press it again to walk to the next root, and once more to reach
+an empty slot that adds one — so adding is editing the slot past the end rather
+than a separate mode. `Enter` saves the path shown; an empty draft removes that
+root and asks once more before doing it. A workstream always keeps its last
+root. The composer prefix names the slot the whole time, which is what lets one
+chord carry three outcomes honestly.
+
 Because every printable key belongs to the composer, these are chords rather
 than bare letters. That is the whole reason a separate organizer view existed;
 folding the verbs into chords removed the view and the second set of keys with
-it. Root editing and archiving stayed in the CLI rather than claiming chords,
-since both are setup rather than operation.
+it. Archiving stayed in the CLI rather than claiming a chord, since it is setup
+rather than operation.
 
 The read-only lower pane follows the selection: a workstream shows a bounded
 `notes.md` preview and a shallow tree of its artifact directory, and a session
@@ -280,10 +290,10 @@ so it reads when the selection lands somewhere new and costs nothing while the
 cursor sits still. Press `F3` after an agent or editor rewrites notes under a
 stationary cursor; moving off the row and back does the same thing.
 
-Roots and archiving are `h ws root add|set|rm` and `h ws archive`. Every
-workstream keeps at least one root, root edits never rewrite historical session
-records or touch the filesystem, and archiving keeps all durable sessions and
-moves their memberships to Ungrouped.
+Roots are `Ctrl-O` on the dashboard and `h ws root add|set|rm` on the CLI;
+archiving is `h ws archive`. Every workstream keeps at least one root, root
+edits never rewrite historical session records or touch the filesystem, and
+archiving keeps all durable sessions and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
 contain sessions launched from several registered roots, but membership never

@@ -408,7 +408,8 @@ a durable session title, `Ctrl-T` marks a session and then moves it into the
 next selected workstream (explicitly adopting an orphan when that is what it
 is), and `Shift-Up`/`Shift-Down` either reorders a named workstream durably or
 walks a session to the adjacent workstream with Ungrouped pinned last.
-`Ctrl-N` creates a workstream rooted at the launch directory.
+`Ctrl-N` creates a workstream rooted at the launch directory, and `Ctrl-O`
+edits the selected workstream's roots.
 
 They are chords because every printable key belongs to the composer. That
 collision is the entire reason a second full-screen surface existed: it was the
@@ -422,6 +423,14 @@ is typed, named in the prefix, committed by `Enter`. A rename is one more
 destination, so it inherits paste, word motion, and grapheme handling instead of
 reimplementing them. `Esc` cancels it in one press.
 
+A reply is the one destination whose label takes a row of its own, with the
+draft starting on the next line. Its prefix carries a session id and a title,
+so inline it pushes the cursor most of the way across the terminal and a short
+message wraps for no reason. Every other prefix is short, and naming the
+destination beside the text is the point. The extra row is subtracted from the
+layout budget rather than added on top, so pinning a reply never pushes the
+list past the bottom of the screen.
+
 Only one session is markable at a time. A batch move would be several
 non-atomic controller commands whose partial failure has no honest single-line
 outcome, so the UI does not offer a gesture whose result it cannot report.
@@ -431,11 +440,30 @@ guarantees a message reaches the session named in the prefix, but a list that
 scrolls underneath a draft invites reading the wrong row's preview as the
 conversation being answered.
 
-Root add/edit/remove and archive stayed in the CLI. Both are setup rather than
-operation, and the chord budget a terminal actually delivers is small enough
-that spending it on them would have crowded out the verbs used every session.
-Root edits affect future launch choices only; they never rewrite historical
-session roots or touch the filesystem.
+Roots are three verbs behind one chord. `Ctrl-O` opens the selected
+workstream's roots in the composer, starting at the root `Shift-Tab` has
+already selected as the launch directory; pressing it again walks to the next
+root and then to an empty slot past the end. Committing that empty slot adds a
+root, committing a changed path replaces one, and committing an emptied field
+removes one after asking a second time.
+
+Three verbs on one chord is a compression the chord budget forced, and it is
+honest only because the composer prefix names the slot the whole time: `root
+2/3 · Public API` and `new root · Public API` are different bars, so `Enter`
+never has an ambiguous meaning on screen. Removal is the one destructive
+outcome and the one reached by a quiet gesture, so it arms rather than acts, and
+any other outcome disarms it. A workstream always keeps its last root, because
+one with none cannot launch anything and the state validator rejects it.
+
+An edit commits against the path the slot held when it opened, not against its
+position. A root removed by another process while the composer was open is then
+detectable, and the edit is refused instead of rewriting whichever root shifted
+into that index. Root edits affect future launch choices only; they never
+rewrite historical session roots or touch the filesystem.
+
+Archiving stayed in the CLI. It is setup rather than operation, and it is the
+one organize action whose blast radius wants the deliberation of typing a
+command with `--yes`.
 
 The lower pane is read-only context that follows the selection: a workstream
 renders a bounded `notes.md` preview and shallow artifact-directory tree, and a
