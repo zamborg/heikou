@@ -292,3 +292,122 @@ func clearSettingsEnvironment(t *testing.T) {
 		t.Setenv(name, "")
 	}
 }
+
+func loadBrief(t *testing.T, data string) (BriefConfig, error) {
+	t.Helper()
+	clearSettingsEnvironment(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := (Store{Path: path}).Load()
+	return settings.Brief, err
+}
+
+func TestBriefDefaultsWhenUnmentioned(t *testing.T) {
+	brief, err := loadBrief(t, `{"default_runner":"claude"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(brief.Lead, ",") != "title,prompt,runner" || strings.Join(brief.Detail, ",") != "latest,prompt" {
+		t.Fatalf("brief defaults = %#v", brief)
+	}
+	if len(brief.Sources) != 0 {
+		t.Fatalf("default configuration declared sources: %#v", brief.Sources)
+	}
+}
+
+// Omitting a slot inherits its default; writing an empty array is how a user
+// asks for a title-only row. Those have to stay distinguishable.
+func TestBriefEmptyDetailDiffersFromAnOmittedOne(t *testing.T) {
+	omitted, err := loadBrief(t, `{"brief":{"lead":["title"]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(omitted.Detail, ",") != "latest,prompt" {
+		t.Fatalf("omitted detail did not inherit its default: %#v", omitted.Detail)
+	}
+	explicit, err := loadBrief(t, `{"brief":{"lead":["title"],"detail":[]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explicit.Detail) != 0 {
+		t.Fatalf("explicitly empty detail = %#v", explicit.Detail)
+	}
+}
+
+func TestBriefRejectsMalformedLayouts(t *testing.T) {
+	for name, test := range map[string]struct{ data, want string }{
+		"unknown source":     {`{"brief":{"lead":["vibes"]}}`, `unknown source "vibes"`},
+		"duplicate source":   {`{"brief":{"lead":["title","title"]}}`, `listed twice`},
+		"empty lead":         {`{"brief":{"lead":[]}}`, `must name at least one source`},
+		"empty name":         {`{"brief":{"lead":["  "]}}`, `cannot be empty`},
+		"unknown field":      {`{"brief":{"led":["title"]}}`, `unknown field`},
+		"null brief":         {`{"brief":null}`, `must be a JSON object`},
+		"redefined builtin":  {`{"brief":{"sources":{"title":{"command":["x"]}}}}`, `built-in source`},
+		"bad source name":    {`{"brief":{"sources":{"My Source":{"command":["x"]}}}}`, `lowercase letters`},
+		"empty command":      {`{"brief":{"lead":["s"],"sources":{"s":{"command":[]}}}}`, `non-empty JSON array`},
+		"unreferenced":       {`{"brief":{"sources":{"s":{"command":["x"]}}}}`, `not named in lead or detail`},
+		"interval too large": {`{"brief":{"lead":["s"],"sources":{"s":{"command":["x"],"interval_seconds":99999}}}}`, `between 1 and 3600`},
+		"timeout too small":  {`{"brief":{"lead":["s"],"sources":{"s":{"command":["x"],"timeout_seconds":0}}}}`, `between 1 and 60`},
+		"timeout exceeds":    {`{"brief":{"lead":["s"],"sources":{"s":{"command":["x"],"interval_seconds":2,"timeout_seconds":30}}}}`, `cannot exceed interval_seconds`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadBrief(t, test.data)
+			if err == nil {
+				t.Fatalf("Load() error = nil; want %q", test.want)
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v; want it to mention %q", err, test.want)
+			}
+		})
+	}
+}
+
+// An unknown source name is the likeliest mistake in this block, so the error
+// has to say what the valid names are rather than only that this one is wrong.
+func TestBriefUnknownSourceErrorListsTheBuiltins(t *testing.T) {
+	_, err := loadBrief(t, `{"brief":{"lead":["titel"]}}`)
+	if err == nil {
+		t.Fatal("Load() error = nil")
+	}
+	for _, name := range BuiltinBriefSources {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("error does not offer %q as an alternative: %v", name, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "brief.sources") {
+		t.Fatalf("error does not say where a custom source is defined: %v", err)
+	}
+}
+
+func TestBriefAcceptsACommandSource(t *testing.T) {
+	brief, err := loadBrief(t, `{"brief":{
+		"lead":["title","prompt","runner"],
+		"detail":["status","latest"],
+		"sources":{"status":{"command":["agent-status","--porcelain"],"interval_seconds":5,"timeout_seconds":2}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, ok := brief.Sources["status"]
+	if !ok {
+		t.Fatalf("sources = %#v", brief.Sources)
+	}
+	if strings.Join(source.Command, " ") != "agent-status --porcelain" {
+		t.Fatalf("command = %#v", source.Command)
+	}
+	if source.IntervalSeconds != 5 || source.TimeoutSeconds != 2 {
+		t.Fatalf("bounds = %#v", source)
+	}
+}
+
+func TestBriefCommandSourceBoundsDefaultWhenOmitted(t *testing.T) {
+	brief, err := loadBrief(t, `{"brief":{"detail":["status"],"sources":{"status":{"command":["agent-status"]}}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source := brief.Sources["status"]; source.IntervalSeconds != 10 || source.TimeoutSeconds != 3 {
+		t.Fatalf("defaulted bounds = %#v", source)
+	}
+}

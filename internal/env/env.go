@@ -47,6 +47,19 @@ const (
 	// SessionID is set by Heikou into an agent's environment rather than read
 	// from the user, so a running agent can identify its own session.
 	SessionID = "HEIKOU_SESSION_ID"
+
+	// SessionRunner, SessionState, SessionRoot and SessionTitle describe one
+	// session to a configured brief source. They are written outward only, into
+	// that command's environment, and are never read back.
+	//
+	// The set is deliberately small. A brief source is told which session it is
+	// describing, not what was said in it: the initial prompt and the messages
+	// are the user's content, and wanting a status line in a row is not a reason
+	// to hand what someone typed to another program on a timer.
+	SessionRunner = "HEIKOU_SESSION_RUNNER"
+	SessionState  = "HEIKOU_SESSION_STATE"
+	SessionRoot   = "HEIKOU_SESSION_ROOT"
+	SessionTitle  = "HEIKOU_SESSION_TITLE"
 )
 
 // Names lists every variable above, so that a test can assert this file is the
@@ -61,7 +74,7 @@ var Names = []string{
 	Home, Config, State, Data,
 	TmuxSocket,
 	DefaultRunner, CodexBinary, ClaudeBinary,
-	SessionID,
+	SessionID, SessionRunner, SessionState, SessionRoot, SessionTitle,
 }
 
 // Value reads a variable and trims it, treating whitespace as unset. Every

@@ -22,6 +22,10 @@ daemon, manager agent, task graph, or replacement execution engine.
   launch a native agent or shell.
 - **Composer** — the dashboard input bar used to start sessions and send
   follow-up messages. Its prefix names the destination `Enter` will commit to.
+- **Brief** — the one-line summary in the middle of a session row. Its lead is
+  the session's title, initial task, or runner; the text after `↳` is the latest
+  message sent through Heikou. A leading `~` marks text Heikou derived rather
+  than observed.
 - **Ungrouped** — durable sessions with no active workstream membership.
 - **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
   are never silently adopted.
@@ -125,11 +129,21 @@ Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Settings**, or **Help**. Organizing happens on the dashboard rather than in a
 view of its own.
 
-Session rows lead with the durable user title when one is set, otherwise a
-one-line initial task. The most recent message successfully sent through
-Heikou appears as secondary **latest via Heikou** detail for as long as the
-tmux runtime is retained. Text entered directly in an attached native terminal
-is not observable by this shim.
+Each session row carries a **brief**: the durable user title when one is set,
+otherwise a one-line initial task, followed after `↳` by the most recent message
+successfully sent through Heikou, for as long as the tmux runtime is retained.
+The two halves get separate width budgets, so a long title cannot crowd the
+message out and a narrow row drops the message rather than showing a fragment of
+it. Rows omit the **latest via Heikou** label that names the field — twenty
+columns the message itself can use — and the details pane below still spells it
+out. Text entered directly in an attached native terminal is not observable by
+this shim.
+
+Which sources fill a brief is a single ordered layout you can change in
+settings, so a row can show only your title, or carry a runner's own status
+line. Anything a source cannot prove from durable state or a tmux observation
+renders with a leading `~`, the same way an exit code tmux cannot prove is
+reported as unknown rather than as zero.
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
@@ -339,6 +353,59 @@ composer action.
 The removed `new_session` and `send_message` fields chose a commit key per
 destination. A config still carrying either one fails to load with a message
 naming `reply` as the replacement.
+
+### Choosing what a brief shows
+
+The `brief` block is two ordered lists of source names. Each slot takes the
+first source with something to say. Omitting a slot keeps its default; an
+explicitly empty `detail` is how you ask for a row that shows only its lead:
+
+```json
+{
+  "brief": {
+    "lead": ["title", "prompt", "runner"],
+    "detail": []
+  }
+}
+```
+
+The built-in sources are `title`, `prompt`, `latest`, and `runner`. Anything
+else must be defined under `brief.sources` as a command Heikou runs:
+
+```json
+{
+  "brief": {
+    "lead": ["title", "prompt", "runner"],
+    "detail": ["status", "latest"],
+    "sources": {
+      "status": {
+        "command": ["agent-status", "--porcelain"],
+        "interval_seconds": 5,
+        "timeout_seconds": 2
+      }
+    }
+  }
+}
+```
+
+The command is argv, not a shell string. It runs once per session, is told
+which session through `HEIKOU_SESSION_ID`, `HEIKOU_SESSION_RUNNER`,
+`HEIKOU_SESSION_STATE`, `HEIKOU_SESSION_ROOT`, and `HEIKOU_SESSION_TITLE`, and
+prints one line to stdout. It is never given the session's prompt or messages.
+
+A session is only re-run after `interval_seconds` **and** only if it has shown
+terminal activity since the last look, so an idle dashboard costs nothing. Runs
+are capped at four at a time and thirty-two per pass; a capped pass says how
+many it deferred. Output is stripped of ANSI and control characters, reduced to
+one line, and bounded. A source that fails or times out drops its text rather
+than leaving a stale line that looks current.
+
+Command output always renders with a leading `~`. The command may well be
+reporting the truth, but Heikou cannot check that, and the mark is the
+difference between what it observed and what it was told. Unknown source names,
+duplicate entries, an empty `lead`, a source nothing refers to, and a timeout
+longer than its interval are all load errors rather than surprises at runtime.
+Brief changes apply as soon as settings are reloaded with `r`.
 The settings pane displays the active bindings and reloads JSON changes with
 `r`. Command changes affect new sessions; a changed `default_runner` applies
 the next time the dashboard opens. `no-agent` is not configurable: it asks tmux
