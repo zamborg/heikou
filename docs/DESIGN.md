@@ -402,6 +402,37 @@ child environment, so this works when Heikou itself is launched inside another
 tmux server. Detaching returns control to the same dashboard process and forces
 a fresh session/preview read.
 
+### Keyboard protocol
+
+Heikou execs the runner binary directly and adds no keyboard shim, but tmux sits
+between the runner and the terminal, and what a runner can negotiate through it
+is not what it could negotiate alone. Codex asks for the kitty keyboard
+protocol, which tmux does not implement; Claude Code asks for xterm
+`modifyOtherKeys`, which it does. Left to negotiate, a Codex pane can end up in
+the legacy encoding, where `Shift-Enter` arrives as a bare carriage return and
+the key that should open a line submits the message.
+
+So the bootstrap does not leave it to negotiation. `extended-keys always`
+encodes modified keys for every pane whatever the runner asked for, and
+`extended-keys-format csi-u` picks the wire format both runners parse — the
+xterm format is the one Codex cannot read. The `extkeys` terminal feature is the
+outer half of the same path, letting tmux ask the user's own terminal for those
+keys in the first place.
+
+Both options postdate the supported tmux floor, so both are sent outside the
+bootstrap batch and neither failure is fatal. Inside it, one unknown option or
+value aborts every command after it — a server would trade its whole
+configuration for a keyboard nicety. The versions also disagree about the
+default: tmux 3.4 has no format option and already encodes as csi-u, while later
+versions have the option and default to xterm, so naming it explicitly is what
+makes the two agree.
+
+A pane fixes its key mode when it starts, so this reaches new sessions only;
+changing the options under a running pane does not move it. The
+`bootstrapVersion` marker exists for exactly this class of change: bumping it is
+what makes a long-lived server re-read the option set instead of keeping the one
+it started with.
+
 ## Interaction model
 
 The primary dashboard is a grouped projection with selectable, collapsible

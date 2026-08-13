@@ -25,8 +25,11 @@ import (
 )
 
 const (
-	DefaultSocket    = "heikou"
-	bootstrapVersion = "1"
+	DefaultSocket = "heikou"
+	// bootstrapVersion is the marker that lets a long-lived server skip
+	// reconfiguration. Bump it whenever the option set changes, or servers
+	// already running keep the configuration they were started with.
+	bootstrapVersion = "2"
 	framingAttempts  = 3
 )
 
@@ -93,7 +96,9 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 		{"set-option", "-gw", "window-size", "latest"},
 		{"set-option", "-s", "escape-time", "10"},
 		{"set-option", "-gw", "allow-passthrough", "on"},
-		{"set-option", "-s", "extended-keys", "on"},
+		// The outer half of the keyboard path: what tmux asks the user's own
+		// terminal for. The inner half, what tmux then offers a pane, is set
+		// after this batch.
 		{"set-option", "-as", "terminal-features", ",xterm*:extkeys"},
 		{"bind-key", "-n", "C-\\", "detach-client"},
 		{"set-option", "-s", "@heikou_bootstrap_version", bootstrapVersion},
@@ -102,7 +107,33 @@ func (t *Tmux) Bootstrap(ctx context.Context) error {
 	if _, err := t.run(ctx, nil, args...); err != nil {
 		return fmt.Errorf("configure tmux server: %w", err)
 	}
+	t.configureKeyReporting(ctx)
 	return nil
+}
+
+// configureKeyReporting decides how tmux encodes a modified key for the pane,
+// rather than letting the runner negotiate for it.
+//
+// Claude Code asks tmux for xterm modifyOtherKeys, which tmux implements, so it
+// gets Shift-Enter on its own. Codex asks for the kitty keyboard protocol,
+// which tmux does not implement at all; its fallback to modifyOtherKeys is not
+// reliably granted, and a pane left in the legacy encoding receives a bare
+// carriage return for Shift-Enter -- so the key meant to open a line sends the
+// message instead. "always" takes the choice away from the runner and encodes
+// modified keys for every pane; csi-u is the wire format both runners parse.
+//
+// Both are sent alone and neither failure is fatal. "always" and the format
+// option postdate the oldest tmux Heikou supports, and inside the bootstrap
+// batch an unknown option or value aborts every command after it -- trading the
+// whole configuration for a keyboard nicety. An older server falls back to what
+// it does have and loses only this.
+//
+// A pane reads the result when it starts, so this reaches new sessions only.
+func (t *Tmux) configureKeyReporting(ctx context.Context) {
+	if _, err := t.run(ctx, nil, "set-option", "-s", "extended-keys", "always"); err != nil {
+		_, _ = t.run(ctx, nil, "set-option", "-s", "extended-keys", "on")
+	}
+	_, _ = t.run(ctx, nil, "set-option", "-s", "extended-keys-format", "csi-u")
 }
 
 func (t *Tmux) Sessions(ctx context.Context) ([]heikou.Session, error) {

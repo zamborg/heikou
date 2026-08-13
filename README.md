@@ -125,6 +125,16 @@ Heikou accepts enhanced Option/Command events plus common Alt, Home/End, and
 Ctrl-key fallbacks. If a terminal reports `Shift-Enter` as ordinary Enter, use
 `Ctrl-J` for a newline.
 
+Inside an attached runner the same chords are tmux's business rather than
+Heikou's, and Heikou settles them for you: the private server encodes modified
+keys for every pane instead of letting each runner negotiate. Claude Code asks
+for a scheme tmux implements and Codex asks for one it does not, and a pane that
+falls back to the legacy encoding receives `Shift-Enter` as a plain Enter — so
+the key meant to open a line sends the message instead. A pane reads this when
+it starts, so a session launched before 0.7.0 keeps the old behaviour until you
+restart it. A tmux too old to offer the encoding keeps the behaviour it had;
+nothing else about the session changes.
+
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Settings**, or **Help**. Organizing happens on the dashboard rather than in a
 view of its own.

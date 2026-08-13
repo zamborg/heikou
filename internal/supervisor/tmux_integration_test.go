@@ -358,6 +358,73 @@ func TestNoAgentStartsDefaultShellWithoutInjectingLabel(t *testing.T) {
 	})
 }
 
+// TestShiftEnterReachesAPaneThatNeverNegotiatedForIt pins the bootstrap
+// decision that keeps Codex usable. Codex asks tmux for the kitty keyboard
+// protocol, which tmux does not speak, and a pane left in the legacy key mode
+// receives a bare CR for Shift-Enter -- so the key that should open a line
+// submits the message instead. The reader here negotiates for nothing at all,
+// which is the case that has to work.
+func TestShiftEnterReachesAPaneThatNeverNegotiatedForIt(t *testing.T) {
+	tmuxBinary := requireTmux(t)
+	token, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := fmt.Sprintf("heikou-keys-test-%d-%s", os.Getpid(), token)
+	root := t.TempDir()
+	keystrokes := filepath.Join(root, "keystrokes")
+
+	manager := &Tmux{binary: tmuxBinary, socket: socket, executable: "/path/that/must/not/run"}
+	t.Cleanup(func() { cleanupTestTmux(manager) })
+	t.Setenv("SHELL", "/bin/sh")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	session, err := manager.Start(ctx, heikou.StartRequest{
+		ID:      "018f0000-0000-4000-8000-000000000004",
+		Backend: heikou.BackendNoAgent,
+		Prompt:  "read raw keys",
+		Root:    root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// raw keeps the line discipline from rewriting a carriage return, so a
+	// legacy Shift-Enter would be recorded as the CR it really is.
+	if err := manager.Send(ctx, session, "stty raw -echo; cat > "+keystrokes); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		_, statErr := os.Stat(keystrokes)
+		return statErr == nil
+	})
+	if _, err := manager.run(ctx, nil, "send-keys", "-t", session.PaneID, "S-Enter"); err != nil {
+		t.Fatal(err)
+	}
+
+	// tmux old enough to reject "always" cannot encode a key for a pane that
+	// never asked, so there is nothing here to assert on it. csi-u is what
+	// every tmux that accepts "always" produces: the newer ones because the
+	// bootstrap names it, tmux 3.4 because it is already the default there.
+	if mode, modeErr := manager.run(ctx, nil, "show-options", "-sv", "extended-keys"); modeErr != nil ||
+		strings.TrimSpace(string(mode)) != "always" {
+		t.Skip("this tmux cannot force extended keys onto a pane that never requested them")
+	}
+	const want = "\x1b[13;2u"
+	waitFor(t, 10*time.Second, func() bool {
+		recorded, readErr := os.ReadFile(keystrokes)
+		return readErr == nil && len(recorded) > 0
+	})
+	recorded, err := os.ReadFile(keystrokes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(recorded) != want {
+		t.Fatalf("pane received %q for Shift-Enter, want %q; a bare %q means the runner cannot tell it from Enter",
+			string(recorded), want, "\r")
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, ready func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
