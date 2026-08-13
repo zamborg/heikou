@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +79,6 @@ type screenKind uint8
 
 const (
 	screenDashboard screenKind = iota
-	screenOrganizer
 	screenSettings
 )
 
@@ -91,15 +89,17 @@ const (
 	overlayHelp
 )
 
-type organizerEditMode uint8
+// composerEditMode names the organize destinations the composer can commit to.
+// The composer already picks its destination before the draft is typed, so a
+// rename is one more destination rather than a second text input with its own
+// cursor, word motion, and paste handling.
+type composerEditMode uint8
 
 const (
-	organizerEditNone organizerEditMode = iota
-	organizerEditCreate
-	organizerEditWorkstreamName
-	organizerEditSessionTitle
-	organizerEditAddRoot
-	organizerEditReplaceRoot
+	composerEditNone composerEditMode = iota
+	composerEditCreateWorkstream
+	composerEditRenameWorkstream
+	composerEditSessionTitle
 )
 
 type Model struct {
@@ -145,25 +145,22 @@ type Model struct {
 	resizeMode     bool
 	detailAdjust   int
 
-	organizerCursor        int
-	organizerSelected      string
-	organizerCollapsed     map[string]bool
-	organizerSource        string
-	organizerEdit          organizerEditMode
-	organizerRootTarget    string
-	organizerInput         []string
-	organizerInputCursor   int
-	confirmArchive         string
-	confirmRootRemoval     string
-	pendingWorkstream      string
-	organizerContext       organizerContextState
-	organizerContextAdjust int
+	// markedSession is the session Ctrl-T pinned for a move. Selecting a
+	// workstream and pressing Ctrl-T again completes it. Exactly one session is
+	// markable: a batch move would be several non-atomic controller commands,
+	// and a partial failure has no honest single-line outcome.
+	markedSession string
+
+	composerEdit       composerEditMode
+	composerEditTarget string
+	pendingWorkstream  string
+	artifactContext    artifactContextState
 }
 
 func New(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config) Model {
 	return Model{
 		controller: controller, root: root, backend: backend, store: store, settings: settings,
-		overview: newOverviewModel(control.Snapshot{}), collapsed: make(map[string]bool), rootIndex: make(map[string]int), organizerCollapsed: make(map[string]bool),
+		overview: newOverviewModel(control.Snapshot{}), collapsed: make(map[string]bool), rootIndex: make(map[string]int),
 	}
 }
 
@@ -289,10 +286,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, queuedSnapshot
 		}
 		m.setSnapshot(message.snapshot)
-		if m.organizerSource != "" {
-			if _, found := m.session(m.organizerSource); !found {
-				m.organizerSource = ""
+		if m.markedSession != "" {
+			if _, found := m.session(m.markedSession); !found {
+				m.markedSession = ""
 			}
+		}
+		// A rename target that disappeared can no longer receive the draft, and
+		// the composer prefix would keep naming a destination that is gone.
+		if m.composerEditTarget != "" && !m.composerEditTargetExists() {
+			m.cancelComposerEdit()
+			m.notice = "rename target is gone · composing a new session"
 		}
 		// A pinned target that died can no longer receive the draft, and leaving
 		// the prefix pointing at it would promise delivery the composer cannot
@@ -304,16 +307,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.restoreSelection()
-		m.restoreOrganizerSelection()
-		if m.screen == screenOrganizer {
-			return m, tea.Batch(queuedSnapshot, m.organizerContextCmd(false))
-		}
 		if selected, ok := m.selectedSession(); ok && selected.Available() {
-			return m, tea.Batch(queuedSnapshot, m.requestPreview(selected.ID))
+			return m, tea.Batch(queuedSnapshot, m.requestPreview(selected.ID), m.artifactContextCmd(false))
 		}
 		m.previewFetch.queuedID = ""
 		m.preview, m.previewID = "", ""
-		return m, queuedSnapshot
+		return m, tea.Batch(queuedSnapshot, m.artifactContextCmd(false))
 
 	case previewMsg:
 		accepted, queuedID := m.finishPreview(message.generation, message.id)
@@ -367,8 +366,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = "stopped runtime · " + format.ShortID(message.id)
 		m.confirmStop = ""
-		if source, ok := m.session(message.id); ok && source.Orphaned && m.organizerSource == message.id {
-			m.organizerSource = ""
+		if source, ok := m.session(message.id); ok && source.Orphaned && m.markedSession == message.id {
+			m.markedSession = ""
 		}
 		return m, m.requestSnapshot()
 
@@ -380,8 +379,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = "deleted session record · " + format.ShortID(message.id)
 		m.confirmDelete = ""
-		if m.organizerSource == message.id {
-			m.organizerSource = ""
+		if m.markedSession == message.id {
+			m.markedSession = ""
 		}
 		if selected, ok := m.selectedSession(); ok && selected.ID == message.id {
 			m.selected = ""
@@ -431,11 +430,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, nil
 		}
-		m.organizerEdit = organizerEditNone
-		m.organizerRootTarget = ""
-		m.organizerInput, m.organizerInputCursor = nil, 0
-		m.confirmArchive = ""
-		m.confirmRootRemoval = ""
+		m.cancelComposerEdit()
 		switch message.action {
 		case "create":
 			m.pendingWorkstream = message.item.ID
@@ -452,22 +447,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.notice = "workstream is already " + boundary
 			}
-		case "archive":
-			m.notice = "archived workstream"
 		case "move":
-			m.organizerSource = ""
-			m.organizerSelected = workstreamRowKey(message.workstreamID)
-			m.notice = "moved session · " + format.ShortID(message.sessionID)
+			m.markedSession = ""
+			m.notice = "moved " + format.ShortID(message.sessionID) + " · " + m.workstreamName(message.workstreamID)
 		case "adopt":
-			m.organizerSource = ""
-			m.organizerSelected = workstreamRowKey(message.workstreamID)
-			m.notice = "adopted legacy runtime · " + format.ShortID(message.sessionID)
-		case "root":
-			m.notice = "added workstream root"
-		case "root_replace":
-			m.notice = "updated workstream root"
-		case "root_remove":
-			m.notice = "removed workstream root"
+			m.markedSession = ""
+			m.notice = "adopted runtime " + format.ShortID(message.sessionID) + " · " + m.workstreamName(message.workstreamID)
 		}
 		return m, m.requestSnapshot()
 
@@ -477,8 +462,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, nil
 		}
-		m.organizerEdit = organizerEditNone
-		m.organizerInput, m.organizerInputCursor = nil, 0
+		m.cancelComposerEdit()
 		if strings.TrimSpace(message.title) == "" {
 			m.notice = "cleared session title · " + format.ShortID(message.id)
 		} else {
@@ -493,10 +477,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = message.label + " closed"
 		}
-		if m.screen == screenOrganizer {
-			return m, tea.Batch(m.requestSnapshot(), m.organizerContextCmd(true))
-		}
-		return m, m.requestSnapshot()
+		return m, tea.Batch(m.requestSnapshot(), m.artifactContextCmd(true))
 
 	case artifactContextMsg:
 		m.acceptArtifactContext(message)
@@ -507,10 +488,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.resizeMode = false
-		if m.screen == screenOrganizer {
-			if m.organizerEdit != organizerEditNone {
-				m.insertOrganizerText(normalizeInlinePaste(message.Content))
-			}
+		// A rename or title is a single-line value, so a multiline clipboard is
+		// flattened rather than committing line breaks into a name.
+		if m.composerEdit != composerEditNone {
+			m.insertText(normalizeInlinePaste(message.Content))
+			m.notice = ""
 			return m, nil
 		}
 		m.insertText(normalizeComposerPaste(message.Content))
@@ -532,33 +514,29 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.overlay == overlayHelp {
 		return m.handleHelpKey(stroke)
 	}
+	// While the composer is naming a workstream or a session, "?" is part of the
+	// value being typed rather than a request for help.
 	questionOpensHelp := stroke == "?" && (m.screen == screenSettings ||
-		(m.screen == screenOrganizer && m.organizerEdit == organizerEditNone) ||
-		(m.screen == screenDashboard && m.inputValue() == ""))
+		(m.screen == screenDashboard && m.inputValue() == "" && m.composerEdit == composerEditNone))
 	if stroke == "f1" || questionOpensHelp {
 		m.overlay = overlayHelp
 		m.resizeMode = false
 		m.helpOffset = 0
-		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
-		m.confirmRootRemoval = ""
+		m.confirmStop, m.confirmDelete = "", ""
 		m.notice, m.errorText = "", ""
 		return m, nil
 	}
 	if m.screen == screenSettings {
 		return m.handleSettingsKey(stroke)
 	}
-	if stroke == "ctrl+g" && m.organizerEdit == organizerEditNone {
+	if stroke == "ctrl+g" && m.composerEdit == composerEditNone {
 		m.resizeMode = !m.resizeMode
 		m.notice, m.errorText = "", ""
-		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
-		m.confirmRootRemoval = ""
+		m.confirmStop, m.confirmDelete = "", ""
 		return m, nil
 	}
 	if m.resizeMode {
 		return m.handleResizeKey(key)
-	}
-	if m.screen == screenOrganizer {
-		return m.handleOrganizerKey(key)
 	}
 	if m.busy {
 		return m, nil
@@ -573,31 +551,35 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	prompt := strings.TrimSpace(draft)
 	// The destination is chosen before typing and stays visible in the composer
 	// prefix, so these bindings only ever change or announce the destination.
-	// Enter alone commits, and it commits to whatever the prefix shows.
-	switch bindingStroke {
-	case m.settings.ReplyKey():
-		// Only an untouched composer is a mode switch; afterwards the key is
-		// ordinary text, which is what makes a leading space typeable at all.
-		if m.replyTarget == "" && len(m.input) == 0 {
-			return m.beginReply()
-		}
-	case m.settings.CycleRunnerKey():
-		if m.replyTarget != "" {
-			m.notice = replyTargetFixedNotice
+	// Enter alone commits, and it commits to whatever the prefix shows. While an
+	// organize edit owns the composer they are inert: the reply key defaults to
+	// Space, which has to stay typeable inside a workstream name.
+	if m.composerEdit == composerEditNone {
+		switch bindingStroke {
+		case m.settings.ReplyKey():
+			// Only an untouched composer is a mode switch; afterwards the key is
+			// ordinary text, which is what makes a leading space typeable at all.
+			if m.replyTarget == "" && len(m.input) == 0 {
+				return m.beginReply()
+			}
+		case m.settings.CycleRunnerKey():
+			if m.replyTarget != "" {
+				m.notice = replyTargetFixedNotice
+				return m, nil
+			}
+			m.backend = m.backend.Next()
+			m.notice = "new sessions use " + string(m.backend)
+			return m, nil
+		case m.settings.CycleRootKey():
+			if m.replyTarget != "" {
+				m.notice = replyTargetFixedNotice
+				return m, nil
+			}
+			if m.cycleSelectedRoot(1) {
+				m.notice = "launch root · " + format.CompactPath(m.launchRoot())
+			}
 			return m, nil
 		}
-		m.backend = m.backend.Next()
-		m.notice = "new sessions use " + string(m.backend)
-		return m, nil
-	case m.settings.CycleRootKey():
-		if m.replyTarget != "" {
-			m.notice = replyTargetFixedNotice
-			return m, nil
-		}
-		if m.cycleSelectedRoot(1) {
-			m.notice = "launch root · " + format.CompactPath(m.launchRoot())
-		}
-		return m, nil
 	}
 	if m.handleComposerShortcut(bindingStroke) {
 		m.notice = ""
@@ -612,26 +594,70 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "f3":
-		m.openOrganizer()
-		return m, m.organizerContextCmd(true)
+		// One catch-all re-read. Snapshot and preview are already polled every
+		// second; the artifact context is cached until the selection moves, so
+		// this is the only way to see notes an agent rewrote under the cursor.
+		m.notice = "refreshed"
+		return m, tea.Batch(m.requestSnapshot(), m.requestSelectedPreview(), m.artifactContextCmd(true))
+
+	case "ctrl+n":
+		m.beginComposerEdit(composerEditCreateWorkstream, "", "")
+		m.notice = "name the new workstream · root " + format.CompactPath(m.root)
+		return m, nil
+
+	case "ctrl+r":
+		return m.renameSelection()
+
+	case "ctrl+t":
+		return m.markOrMoveSelection()
+
+	case "shift+up":
+		return m.reorderSelection(-1)
+
+	case "shift+down":
+		return m.reorderSelection(1)
 
 	case "esc":
+		if m.composerEdit != composerEditNone {
+			m.cancelComposerEdit()
+			m.notice = "canceled · composing a new session"
+			return m, nil
+		}
+		// A reply releases in one press and takes its draft with it. Clearing the
+		// text first would leave a follow-up sitting in a composer now aimed at a
+		// new session, where the next Enter spawns a real one — the asymmetric
+		// mistake the pinned-destination model exists to prevent.
+		if m.replyTarget != "" {
+			m.replyTarget = ""
+			m.clearInput()
+			m.notice = "composing a new session"
+			return m, nil
+		}
 		if len(m.input) > 0 {
 			m.clearInput()
 			m.notice = "composer cleared"
 			return m, nil
 		}
-		if m.replyTarget != "" {
-			m.replyTarget = ""
-			m.notice = "composing a new session"
+		// Esc resets the cursor rather than quitting. Exiting on a stray Esc over
+		// an already-empty composer is too easy to do by accident, and Ctrl-C is
+		// the deliberate exit that works from every screen.
+		if m.markedSession != "" {
+			m.markedSession = ""
+			m.notice = "move canceled"
 			return m, nil
 		}
-		return m, tea.Quit
+		m.selected = ungroupedKey
+		m.restoreSelection()
+		m.notice = "Ungrouped · Ctrl-C to quit heikou"
+		return m, m.artifactContextCmd(false)
 
 	case "up":
 		if m.hasMultilineInput() {
 			m.moveInputVertical(-1)
 			return m, nil
+		}
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
 		}
 		return m.moveSelection(-1)
 
@@ -640,12 +666,21 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.moveInputVertical(1)
 			return m, nil
 		}
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
+		}
 		return m.moveSelection(1)
 
 	case "pgup":
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
+		}
 		return m.moveSelection(-max(1, m.listHeight()-1))
 
 	case "pgdown":
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
+		}
 		return m.moveSelection(max(1, m.listHeight()-1))
 
 	case "left":
@@ -692,12 +727,12 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.deletePreviousWord()
 		return m, nil
 
-	case "ctrl+r":
-		m.backend = m.backend.Next()
-		m.notice = "new sessions use " + string(m.backend)
-		return m, nil
-
 	case "enter":
+		// An organize edit commits even when empty, because clearing a session
+		// title is a real outcome rather than an unfinished draft.
+		if m.composerEdit != composerEditNone {
+			return m.commitComposerEdit(draft)
+		}
 		if prompt != "" {
 			return m.commitComposer(draft)
 		}
@@ -737,6 +772,23 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.insertText(key.Text)
 		m.notice = ""
 	}
+	return m, nil
+}
+
+// selectionLocked reports whether the composer currently owns a destination
+// that the cursor must not wander away from. The pin already guarantees the
+// message reaches the right session, but a list that scrolls underneath a reply
+// invites reading the wrong row's preview as the conversation being answered.
+func (m Model) selectionLocked() bool {
+	return m.replyTarget != "" || m.composerEdit != composerEditNone
+}
+
+func (m Model) reportSelectionLock() (tea.Model, tea.Cmd) {
+	if m.composerEdit != composerEditNone {
+		m.notice = "finish with Enter or cancel with Esc to move again"
+		return m, nil
+	}
+	m.notice = "replying to " + format.ShortID(m.replyTarget) + " · Esc to compose a new session"
 	return m, nil
 }
 
@@ -853,329 +905,247 @@ func (m Model) handleSessionLifecycle(selected control.Session) (tea.Model, tea.
 	return m, m.deleteSessionCmd(selected.ID)
 }
 
-func (m Model) handleOrganizerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	stroke := key.String()
-	if m.busy {
-		return m, nil
-	}
-	m.errorText = ""
-	if m.organizerEdit != organizerEditNone {
-		switch stroke {
-		case "esc":
-			m.organizerEdit = organizerEditNone
-			m.organizerRootTarget = ""
-			m.organizerInput, m.organizerInputCursor = nil, 0
-			return m, nil
-		case "enter":
-			value := strings.TrimSpace(m.organizerValue())
-			if value == "" && m.organizerEdit != organizerEditSessionTitle {
-				m.errorText = "a value is required"
-				return m, nil
-			}
-			row, ok := m.selectedOrganizerRow()
-			m.busy = true
-			switch m.organizerEdit {
-			case organizerEditCreate:
-				return m, m.createWorkstreamCmd(value)
-			case organizerEditWorkstreamName:
-				if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
-					m.busy = false
-					return m, nil
-				}
-				return m, m.renameWorkstreamCmd(row.workstreamID, value)
-			case organizerEditSessionTitle:
-				if !ok || row.kind != rowSession {
-					m.busy = false
-					return m, nil
-				}
-				return m, m.setSessionTitleCmd(row.sessionID, value)
-			case organizerEditAddRoot:
-				if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
-					m.busy = false
-					return m, nil
-				}
-				return m, m.addRootCmd(row.workstreamID, value)
-			case organizerEditReplaceRoot:
-				if !ok || row.kind != rowWorkstream || row.workstreamID == "" || m.organizerRootTarget == "" {
-					m.busy = false
-					return m, nil
-				}
-				return m, m.replaceRootCmd(row.workstreamID, m.organizerRootTarget, value)
-			}
-		case "left":
-			if m.organizerInputCursor > 0 {
-				m.organizerInputCursor--
-			}
-			return m, nil
-		case "right":
-			if m.organizerInputCursor < len(m.organizerInput) {
-				m.organizerInputCursor++
-			}
-			return m, nil
-		case "home", "ctrl+a":
-			m.organizerInputCursor = 0
-			return m, nil
-		case "end", "ctrl+e":
-			m.organizerInputCursor = len(m.organizerInput)
-			return m, nil
-		case "backspace", "ctrl+h":
-			if m.organizerInputCursor > 0 {
-				m.organizerInput = append(m.organizerInput[:m.organizerInputCursor-1], m.organizerInput[m.organizerInputCursor:]...)
-				m.organizerInputCursor--
-			}
-			return m, nil
-		case "delete":
-			if m.organizerInputCursor < len(m.organizerInput) {
-				m.organizerInput = append(m.organizerInput[:m.organizerInputCursor], m.organizerInput[m.organizerInputCursor+1:]...)
-			}
-			return m, nil
-		}
-		blockedModifiers := tea.ModCtrl | tea.ModAlt | tea.ModMeta | tea.ModHyper | tea.ModSuper
-		if key.Text != "" && key.Mod&blockedModifiers == 0 {
-			m.insertOrganizerText(key.Text)
-		}
-		return m, nil
-	}
+// The organize chords below read the selected row rather than a mode. A single
+// dashboard row is either a workstream or a session, so one chord can carry the
+// verb and let the cursor supply the noun it applies to.
 
-	if stroke != "a" {
-		m.confirmArchive = ""
-	}
-	if stroke != "d" {
-		m.confirmRootRemoval = ""
-	}
-	if stroke != "ctrl+x" {
-		m.confirmStop, m.confirmDelete = "", ""
-	}
-	rows := m.organizerRows()
-	switch stroke {
-	case "esc", "f3":
-		m.screen = screenDashboard
-		m.organizerSource = ""
-		m.confirmRootRemoval = ""
-		m.notice = "workstreams closed"
+// renameSelection renames the selected workstream or retitles the selected
+// session. The composer takes the draft, so a rename inherits paste, word
+// motion, and the destination prefix instead of a second private text input.
+func (m Model) renameSelection() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
 		return m, nil
-	case "shift+up", "shift+down":
-		row, ok := m.selectedOrganizerRow()
-		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
-			m.errorText = "select a named workstream to reorder"
+	}
+	switch row.kind {
+	case rowWorkstream:
+		if row.workstreamID == "" {
+			m.errorText = "Ungrouped is a synthetic inbox and cannot be renamed"
 			return m, nil
 		}
-		delta := -1
-		if stroke == "shift+down" {
-			delta = 1
+		item, found := m.workstream(row.workstreamID)
+		if !found {
+			return m, nil
+		}
+		m.beginComposerEdit(composerEditRenameWorkstream, row.workstreamID, item.Name)
+		m.notice = "rename workstream · Enter saves · Esc cancels"
+	case rowSession:
+		session, found := m.session(row.sessionID)
+		if !found {
+			return m, nil
+		}
+		m.beginComposerEdit(composerEditSessionTitle, row.sessionID, session.Record.Title)
+		m.notice = "title session " + format.ShortID(row.sessionID) + " · empty Enter clears it"
+	case rowOrphan:
+		m.errorText = "adopt this runtime with Ctrl-T before giving it a durable title"
+	case rowOrphanHeader:
+		m.errorText = "select a workstream or a session to rename"
+	}
+	return m, nil
+}
+
+// markOrMoveSelection is one chord for both halves of a move: it marks a
+// session, then completes the move when a workstream is selected. Marking is
+// deliberately single-session; see Model.markedSession.
+func (m Model) markOrMoveSelection() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	switch row.kind {
+	case rowSession, rowOrphan:
+		if m.markedSession == row.sessionID {
+			m.markedSession = ""
+			m.notice = "move canceled"
+			return m, nil
+		}
+		m.markedSession = row.sessionID
+		m.notice = "marked " + format.ShortID(row.sessionID) + " · select a workstream and press Ctrl-T"
+		return m, nil
+	case rowWorkstream:
+		if m.markedSession == "" {
+			m.errorText = "select a session and press Ctrl-T to mark it first"
+			return m, nil
+		}
+		return m.moveMarkedSession(row.workstreamID)
+	}
+	m.errorText = "orphaned runtimes are adopted into a workstream, not into this section"
+	return m, nil
+}
+
+func (m Model) moveMarkedSession(workstreamID string) (tea.Model, tea.Cmd) {
+	if m.markedSession == "" {
+		return m, nil
+	}
+	session, ok := m.session(m.markedSession)
+	if !ok {
+		m.markedSession = ""
+		m.errorText = "the marked session is no longer available"
+		return m, nil
+	}
+	m.busy = true
+	// An orphan has no durable record to move, so claiming it is a different
+	// action with a different name; the chord is shared, the command is not.
+	if session.Orphaned {
+		if workstreamID == "" {
+			m.busy = false
+			m.errorText = "adopt this runtime into a named workstream, not Ungrouped"
+			return m, nil
+		}
+		m.notice = "adopting " + format.ShortID(session.ID) + "…"
+		return m, m.adoptSessionCmd(session.ID, workstreamID)
+	}
+	m.notice = "moving " + format.ShortID(session.ID) + "…"
+	return m, m.moveSessionCmd(session.ID, workstreamID)
+}
+
+// reorderSelection moves a workstream in the durable display order, or moves a
+// session to the adjacent workstream. Sessions have no durable order inside a
+// workstream to change; see todos/session-ordering.md.
+func (m Model) reorderSelection(delta int) (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	switch row.kind {
+	case rowWorkstream:
+		if row.workstreamID == "" {
+			m.errorText = "Ungrouped always sorts after the named workstreams"
+			return m, nil
 		}
 		m.busy = true
 		m.notice = "moving workstream…"
 		return m, m.reorderWorkstreamCmd(row.workstreamID, delta)
-	case "up":
-		m.organizerCursor = max(0, m.organizerCursor-1)
-		m.syncOrganizerSelection(rows)
-		return m, m.organizerContextCmd(false)
-	case "down":
-		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+1)
-		m.syncOrganizerSelection(rows)
-		return m, m.organizerContextCmd(false)
-	case "pgup":
-		m.organizerCursor = max(0, m.organizerCursor-max(1, m.organizerViewportHeight()-1))
-		m.syncOrganizerSelection(rows)
-		return m, m.organizerContextCmd(false)
-	case "pgdown":
-		m.organizerCursor = min(max(0, len(rows)-1), m.organizerCursor+max(1, m.organizerViewportHeight()-1))
-		m.syncOrganizerSelection(rows)
-		return m, m.organizerContextCmd(false)
-	case "left":
-		row, ok := m.selectedOrganizerRow()
+	case rowSession:
+		destination, ok := m.adjacentWorkstream(row.workstreamID, delta)
 		if !ok {
-			return m, nil
-		}
-		if organizerGroup(row) {
-			m.organizerCollapsed[row.key] = true
-			m.restoreOrganizerSelection()
-			return m, nil
-		}
-		m.selectOrganizerKey(organizerParentKey(row))
-		return m, m.organizerContextCmd(false)
-	case "right":
-		row, ok := m.selectedOrganizerRow()
-		if ok && organizerGroup(row) {
-			m.organizerCollapsed[row.key] = false
-			m.restoreOrganizerSelection()
-		}
-		return m, nil
-	case "enter":
-		row, ok := m.selectedOrganizerRow()
-		if !ok {
-			return m, nil
-		}
-		if organizerDestination(row) && m.organizerSource != "" {
-			return m.moveOrganizerSource(row.workstreamID)
-		}
-		if organizerGroup(row) {
-			m.organizerCollapsed[row.key] = !m.organizerCollapsed[row.key]
-			m.restoreOrganizerSelection()
-			return m, nil
-		}
-		m.organizerSource = row.sessionID
-		m.notice = "move source · " + format.ShortID(row.sessionID) + " · choose a workstream and press Enter"
-		return m, nil
-	case "u", " ", "space":
-		row, ok := m.selectedOrganizerRow()
-		if !ok {
-			return m, nil
-		}
-		if row.kind == rowSession || row.kind == rowOrphan {
-			m.collapsed[organizerParentKey(row)] = false
-		}
-		m.selected = row.key
-		m.screen = screenDashboard
-		m.organizerSource = ""
-		m.restoreSelection()
-		m.alignRootToSelection()
-		m.notice = "dashboard selection · " + m.organizerRowName(row)
-		return m, nil
-	case "n":
-		m.beginOrganizerEdit(organizerEditCreate, "")
-		return m, nil
-	case "R":
-		if _, ok := m.selectedOrganizerWorkstream(); !ok {
-			m.errorText = "select a named workstream or one of its sessions to refresh context"
-			return m, nil
-		}
-		m.notice = "refreshing workstream context…"
-		return m, m.organizerContextCmd(true)
-	case "r":
-		row, ok := m.selectedOrganizerRow()
-		if !ok {
-			return m, nil
-		}
-		switch row.kind {
-		case rowWorkstream:
-			if row.workstreamID != "" {
-				m.beginOrganizerEdit(organizerEditWorkstreamName, m.organizerRowName(row))
+			edge := "first"
+			if delta > 0 {
+				edge = "last"
 			}
-		case rowSession:
-			if session, found := m.session(row.sessionID); found {
-				m.beginOrganizerEdit(organizerEditSessionTitle, session.Record.Title)
-			}
-		case rowOrphan:
-			m.errorText = "adopt this runtime before giving its session a durable title"
-		}
-		return m, nil
-	case "p":
-		row, ok := m.selectedOrganizerRow()
-		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
-			m.beginOrganizerEdit(organizerEditAddRoot, m.root)
-		}
-		return m, nil
-	case "P":
-		row, ok := m.selectedOrganizerRow()
-		root, found := m.selectedOrganizerRoot(row)
-		if ok && found {
-			m.organizerRootTarget = root
-			m.beginOrganizerEdit(organizerEditReplaceRoot, root)
-		}
-		return m, nil
-	case "d":
-		row, ok := m.selectedOrganizerRow()
-		root, found := m.selectedOrganizerRoot(row)
-		if !ok || !found {
-			m.errorText = "select a named workstream to remove its current root"
-			return m, nil
-		}
-		container, _ := m.workstream(row.workstreamID)
-		if len(container.Roots) <= 1 {
-			m.errorText = "a workstream must keep one root; edit it with Shift-P"
-			return m, nil
-		}
-		confirmation := row.workstreamID + "\x00" + root
-		if m.confirmRootRemoval != confirmation {
-			m.confirmRootRemoval = confirmation
-			m.notice = "remove root " + filepath.Base(root) + " · press d again (files and sessions stay)"
+			m.errorText = "already in the " + edge + " workstream"
 			return m, nil
 		}
 		m.busy = true
-		m.notice = "removing root · " + format.CompactPath(root)
-		return m, m.removeRootCmd(row.workstreamID, root)
-	case "tab":
-		row, ok := m.selectedOrganizerRow()
-		if ok && row.kind == rowWorkstream && row.workstreamID != "" {
-			if m.cycleRoot(row.workstreamID, 1) {
-				if root, found := m.selectedOrganizerRoot(row); found {
-					m.notice = "launch root · " + format.CompactPath(root)
-				}
-			}
-		}
-		return m, nil
-	case "m":
-		row, ok := m.selectedOrganizerRow()
-		if !ok {
-			return m, nil
-		}
-		if row.kind == rowSession || row.kind == rowOrphan {
-			if m.organizerSource == row.sessionID {
-				m.organizerSource = ""
-				m.notice = "move canceled"
-			} else {
-				m.organizerSource = row.sessionID
-				m.notice = "move source · " + format.ShortID(row.sessionID) + " · choose a workstream and press Enter"
-			}
-			return m, nil
-		}
-		if !organizerDestination(row) || m.organizerSource == "" {
-			m.errorText = "select a session with m, then select its destination"
-			return m, nil
-		}
-		return m.moveOrganizerSource(row.workstreamID)
-	case "ctrl+x":
-		row, ok := m.selectedOrganizerRow()
-		if !ok || (row.kind != rowSession && row.kind != rowOrphan) {
-			m.errorText = "select a session to stop or delete"
-			return m, nil
-		}
-		selected, ok := m.session(row.sessionID)
-		if !ok {
-			m.errorText = "session is no longer available"
-			return m, nil
-		}
-		return m.handleSessionLifecycle(selected)
-	case "a":
-		row, ok := m.selectedOrganizerRow()
-		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
-			return m, nil
-		}
-		if m.confirmArchive != row.workstreamID {
-			m.confirmArchive = row.workstreamID
-			m.notice = "press a again to archive " + m.organizerRowName(row) + " (sessions become ungrouped)"
-			return m, nil
-		}
-		m.busy = true
-		return m, m.archiveWorkstreamCmd(row.workstreamID)
-	case "e", "o":
-		row, ok := m.selectedOrganizerRow()
-		if !ok || row.kind != rowWorkstream || row.workstreamID == "" {
-			return m, nil
-		}
-		container, ok := m.workstream(row.workstreamID)
-		if !ok {
-			return m, nil
-		}
-		var command *exec.Cmd
-		var err error
-		label := "artifact directory"
-		if stroke == "e" {
-			label = "notes editor"
-			command, err = editorCommand(filepath.Join(container.ArtifactDir, "notes.md"))
-		} else {
-			command, err = openDirectoryCommand(container.ArtifactDir)
-		}
-		if err != nil {
-			m.errorText = err.Error()
-			return m, nil
-		}
-		m.busy = true
-		return m, tea.ExecProcess(command, func(err error) tea.Msg { return externalMsg{label: label, err: err} })
+		m.notice = "moving " + format.ShortID(row.sessionID) + "…"
+		return m, m.moveSessionCmd(row.sessionID, destination)
+	case rowOrphan:
+		m.errorText = "adopt this runtime with Ctrl-T before moving it"
 	}
 	return m, nil
+}
+
+// adjacentWorkstream walks the durable workstream order with Ungrouped pinned
+// at the end, so Shift-Up and Shift-Down step a session through exactly the
+// destinations the list already displays, in the order it displays them.
+func (m Model) adjacentWorkstream(current string, delta int) (string, bool) {
+	order := make([]string, 0, len(m.overview.workstreams)+1)
+	for _, item := range m.overview.workstreams {
+		order = append(order, item.ID)
+	}
+	order = append(order, "")
+	for index, id := range order {
+		if id != current {
+			continue
+		}
+		next := index + delta
+		if next < 0 || next >= len(order) {
+			return "", false
+		}
+		return order[next], true
+	}
+	return "", false
+}
+
+func (m *Model) beginComposerEdit(mode composerEditMode, target, value string) {
+	m.composerEdit = mode
+	m.composerEditTarget = target
+	m.replyTarget = ""
+	m.markedSession = ""
+	m.input = splitGraphemes(inlineSafeText(value))
+	m.inputCursor = len(m.input)
+	m.resetInputColumn()
+	m.notice, m.errorText = "", ""
+}
+
+func (m *Model) cancelComposerEdit() {
+	m.composerEdit = composerEditNone
+	m.composerEditTarget = ""
+	m.clearInput()
+}
+
+// composerEditTargetExists reports whether the noun being renamed is still in
+// the snapshot, so a target deleted by another process releases the composer
+// instead of committing a name to something that is gone.
+func (m Model) composerEditTargetExists() bool {
+	switch m.composerEdit {
+	case composerEditRenameWorkstream:
+		_, ok := m.workstream(m.composerEditTarget)
+		return ok
+	case composerEditSessionTitle:
+		_, ok := m.session(m.composerEditTarget)
+		return ok
+	}
+	return true
+}
+
+func (m Model) commitComposerEdit(draft string) (tea.Model, tea.Cmd) {
+	value := strings.TrimSpace(draft)
+	switch m.composerEdit {
+	case composerEditCreateWorkstream:
+		if value == "" {
+			m.errorText = "a workstream name is required"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "creating workstream…"
+		return m, m.createWorkstreamCmd(value)
+	case composerEditRenameWorkstream:
+		if value == "" {
+			m.errorText = "a workstream name is required"
+			return m, nil
+		}
+		if !m.composerEditTargetExists() {
+			m.cancelComposerEdit()
+			m.errorText = "that workstream is no longer available"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "renaming workstream…"
+		return m, m.renameWorkstreamCmd(m.composerEditTarget, value)
+	case composerEditSessionTitle:
+		if !m.composerEditTargetExists() {
+			m.cancelComposerEdit()
+			m.errorText = "that session is no longer available"
+			return m, nil
+		}
+		m.busy = true
+		m.notice = "saving title…"
+		return m, m.setSessionTitleCmd(m.composerEditTarget, value)
+	}
+	return m, nil
+}
+
+func (m Model) composerEditLabel() string {
+	switch m.composerEdit {
+	case composerEditCreateWorkstream:
+		return "✎ new workstream"
+	case composerEditRenameWorkstream:
+		name := m.workstreamName(m.composerEditTarget)
+		return "✎ rename " + name
+	case composerEditSessionTitle:
+		return "✎ title " + format.ShortID(m.composerEditTarget)
+	}
+	return ""
+}
+
+func (m *Model) requestSelectedPreview() tea.Cmd {
+	selected, ok := m.selectedSession()
+	if !ok || !selected.Available() {
+		return nil
+	}
+	m.previewID = ""
+	return m.requestPreview(selected.ID)
 }
 
 func (m Model) View() tea.View {
@@ -1194,12 +1164,6 @@ func (m Model) View() tea.View {
 		view := tea.NewView(textStyle.MaxWidth(m.width).Render(m.renderSettings()))
 		view.AltScreen = true
 		view.WindowTitle = "heikou · settings"
-		return view
-	}
-	if m.screen == screenOrganizer {
-		view := tea.NewView(textStyle.MaxWidth(m.width).Render(m.renderOrganizer()))
-		view.AltScreen = true
-		view.WindowTitle = "heikou · workstreams"
 		return view
 	}
 	sections := []string{m.renderHeader(), m.renderRule(), m.renderWorkstreams(), m.renderDetails(), m.renderComposer()}
@@ -1261,7 +1225,7 @@ func (m Model) renderWorkstreams() string {
 	height := m.listHeight()
 	rows := m.rows()
 	if len(rows) == 0 {
-		line := mutedStyle.Render("  No workstreams yet. Press F3 to create one.")
+		line := mutedStyle.Render("  No workstreams yet. Press Ctrl-N to create one.")
 		return line + strings.Repeat("\n", max(0, height-1))
 	}
 	start := 0
@@ -1358,8 +1322,15 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 	if selected {
 		marker = "›"
 	}
+	// A marked session has to stay identifiable after the cursor leaves it,
+	// because completing the move means selecting a different row.
+	mark := " "
+	markStyle := mutedStyle
+	if session.ID == m.markedSession {
+		mark, markStyle = "◆", noticeStyle
+	}
 	if m.width < sessionRowRichMinWidth {
-		prefix := marker + "   " + iconStyle.Render(icon) + " "
+		prefix := marker + " " + markStyle.Render(mark) + " " + iconStyle.Render(icon) + " "
 		if m.width >= sessionRowRunnerMinWidth {
 			prefix += padANSI(backendStyle(session.Backend).Render(string(session.Backend)), runnerWidth) + " "
 		}
@@ -1380,7 +1351,7 @@ func (m Model) renderSessionRow(session control.Session, selected bool) string {
 	}
 	taskWidth := max(1, m.width-fixedWidth)
 	task := sessionRowSummary(session, taskWidth)
-	row := marker + "   " + iconStyle.Render(icon) + " " +
+	row := marker + " " + markStyle.Render(mark) + " " + iconStyle.Render(icon) + " " +
 		padANSI(backendStyle(session.Backend).Render(string(session.Backend)), runnerWidth) + " " +
 		padPlain(format.ShortID(session.ID), 7) + " " +
 		padANSI(mutedStyle.Render(truncatePlain(status, 11)), 11) + " " +
@@ -1510,13 +1481,12 @@ func (m Model) renderDetails() string {
 func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 	name := "Ungrouped"
 	description := "Durable sessions without a workstream."
-	artifact := ""
 	if row.kind == rowOrphanHeader {
 		name = "Orphaned tmux"
 		description = "Runtime panes with no durable SessionRecord; membership is intentionally ignored."
 	} else if row.workstreamID != "" {
 		if item, ok := m.workstream(row.workstreamID); ok {
-			name, description, artifact = item.Name, item.Description, item.ArtifactDir
+			name, description = item.Name, item.Description
 			if description == "" {
 				description = "Durable organization only; no manager or autonomy semantics."
 			}
@@ -1536,11 +1506,11 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 	if height > 2 {
 		lines = append(lines, mutedStyle.Render(" root  ")+truncatePlain(format.CompactPath(m.launchRoot()), max(1, m.width-8)))
 	}
-	if height > 3 && artifact != "" {
-		lines = append(lines, mutedStyle.Render(" files ")+truncatePlain(format.CompactPath(artifact), max(1, m.width-8)))
-	}
-	if height > 4 {
-		lines = append(lines, faintStyle.Render(" F3 organize · Shift-Tab cycle roots · Enter collapse/expand"))
+	// The remaining rows are the workstream's own notes and files, which is the
+	// context a workstream row has to offer in the slot a session row fills with
+	// its terminal preview.
+	if item, ok := m.selectedWorkstreamContext(); ok && height > len(lines) {
+		lines = append(lines, m.renderWorkstreamArtifacts(item, height-len(lines))...)
 	}
 	for len(lines) < height {
 		lines = append(lines, "")
@@ -1551,11 +1521,17 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 func (m Model) renderComposer() string {
 	prefix := m.composerPrefix()
 	composer := strings.Join(m.renderComposerInput(prefix), "\n")
-	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Shift-Enter newline · Ctrl-G resize · ? help",
+	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Ctrl-N new · Ctrl-R rename · Ctrl-T move · ? help",
 		helpKeyLabel(m.settings.ReplyKey()), helpKeyLabel(m.settings.CycleRunnerKey()),
 		helpKeyLabel(m.settings.CycleRootKey()))
 	if m.replyTarget != "" {
 		help = "Enter send · Esc compose a new session · Shift-Enter newline · Ctrl-G resize · ? help"
+	}
+	if m.markedSession != "" {
+		help = "◆ " + format.ShortID(m.markedSession) + " marked · select a workstream and press Ctrl-T · Esc cancels"
+	}
+	if m.composerEdit != composerEditNone {
+		help = "Enter saves · Esc cancels"
 	}
 	if m.resizeMode {
 		help = "RESIZE · ↑ bigger snapshot · ↓ more sessions · PgUp/PgDn faster · r reset · Ctrl-G/Esc done"
@@ -1574,6 +1550,15 @@ func (m Model) renderComposer() string {
 // thing distinguishing a new session from a reply, so it has to read as a
 // different bar rather than a subtle variation on the same one.
 func (m Model) composerPrefix() string {
+	// An organize edit is one more destination rather than a separate input, so
+	// it names itself in the same place a reply does.
+	if label := m.composerEditLabel(); label != "" {
+		text := label + " › "
+		if lipgloss.Width(text) > max(1, m.width-8) {
+			text = truncatePlain(text, max(4, m.width-8))
+		}
+		return noticeStyle.Bold(true).Render(text)
+	}
 	if m.replyTarget != "" {
 		target, found := m.session(m.replyTarget)
 		label := format.ShortID(m.replyTarget)
@@ -1633,178 +1618,6 @@ func (m Model) settingsLines() []string {
 	return lines
 }
 
-func (m Model) renderOrganizer() string {
-	mode := "WORKSTREAM ORGANIZER"
-	if m.resizeMode {
-		mode += " · RESIZE"
-	}
-	title := m.renderModeHeader(mode, m.organizerContextLabel())
-	lines := []string{title, m.renderRule()}
-	rows := m.organizerRows()
-	height := m.organizerViewportHeight()
-	start := 0
-	if m.organizerCursor >= height {
-		start = m.organizerCursor - height + 1
-	}
-	if start+height > len(rows) {
-		start = max(0, len(rows)-height)
-	}
-	end := min(len(rows), start+height)
-	for index := start; index < end; index++ {
-		row := rows[index]
-		if organizerGroup(row) {
-			lines = append(lines, m.renderOrganizerGroupRow(row, index == m.organizerCursor))
-		} else if session, ok := m.session(row.sessionID); ok {
-			lines = append(lines, m.renderOrganizerSessionRow(session, index == m.organizerCursor, session.ID == m.organizerSource))
-		}
-	}
-	for len(lines) < 2+height {
-		lines = append(lines, "")
-	}
-	lines = append(lines, m.renderOrganizerContext(m.organizerContextHeight())...)
-	if m.organizerEdit != organizerEditNone {
-		label := map[organizerEditMode]string{
-			organizerEditCreate:         "new name",
-			organizerEditWorkstreamName: "rename",
-			organizerEditSessionTitle:   "session title",
-			organizerEditAddRoot:        "add root",
-			organizerEditReplaceRoot:    "edit root",
-		}[m.organizerEdit]
-		prefix := noticeStyle.Render(label + " › ")
-		lines = append(lines, prefix+m.renderTextInput(m.organizerInput, m.organizerInputCursor, max(1, m.width-lipgloss.Width(prefix))))
-	}
-	message := m.notice
-	style := noticeStyle
-	if m.errorText != "" {
-		message, style = "error: "+m.errorText, failedStyle
-	} else if message == "" && m.organizerSource != "" {
-		message = "move source · " + format.ShortID(m.organizerSource) + " · choose a workstream and press Enter"
-	}
-	help := m.organizerHelp()
-	lines = append(lines, m.renderRule(), style.Render(truncatePlain(format.OneLine(message), m.width)), mutedStyle.Render(truncatePlain(help, m.width)))
-	if len(lines) > m.height {
-		lines = lines[:m.height]
-	}
-	for len(lines) < m.height {
-		lines = append(lines, "")
-	}
-	for index := range lines {
-		lines[index] = truncateANSI(lines[index], m.width)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) organizerHelp() string {
-	if m.resizeMode {
-		return "↑ bigger notes/files · ↓ more sessions · PgUp/PgDn faster · r reset · Ctrl-G/Esc done"
-	}
-	if m.organizerEdit != organizerEditNone {
-		return "Enter save · Esc cancel"
-	}
-	row, ok := m.selectedOrganizerRow()
-	if !ok {
-		return "↑↓ navigate · n new workstream · ? help · Esc dashboard"
-	}
-	switch row.kind {
-	case rowSession:
-		return "Enter mark for move · r title · R refresh files · u/Space select on dashboard · Ctrl-X stop/delete · ? help"
-	case rowOrphan:
-		return "Enter mark for move · R refresh files · u/Space select on dashboard · Ctrl-X stop/delete · ? help"
-	case rowWorkstream:
-		if m.organizerSource != "" {
-			return "Enter move here · u/Space use on dashboard · m move here · ? help · Esc close"
-		}
-		if row.workstreamID != "" {
-			return "Shift-↑↓ reorder · Ctrl-G resize · Enter expand/collapse · r rename · R refresh · u/Space use · p/P/d roots · ? help"
-		}
-		return "Enter expand/collapse · u/Space use Ungrouped · ? help · Esc dashboard"
-	case rowOrphanHeader:
-		return "Enter expand/collapse · u/Space select on dashboard · ? help · Esc dashboard"
-	default:
-		return "↑↓ navigate · ? help · Esc dashboard"
-	}
-}
-
-func (m Model) renderOrganizerGroupRow(row listRow, selected bool) string {
-	name := m.organizerRowName(row)
-	sessions := m.sessionsForRow(row)
-	live := 0
-	for _, session := range sessions {
-		if session.Alive() {
-			live++
-		}
-	}
-	twist := "▾"
-	if m.organizerCollapsed[row.key] {
-		twist = "▸"
-	}
-	root := m.rootSummary(row)
-	plain := fmt.Sprintf("  %s %s  %d/%d live", twist, name, live, len(sessions))
-	if root != "" {
-		plain += "  " + root
-	}
-	if selected {
-		return renderSelectedOrganizerRow(plain, m.width)
-	}
-	plain = padPlain(truncatePlain(plain, m.width), m.width)
-	return "  " + faintStyle.Render(twist) + " " + lipgloss.NewStyle().Bold(true).Render(name) +
-		mutedStyle.Render(truncatePlain(strings.TrimPrefix(plain, "  "+twist+" "+name), max(0, m.width-lipgloss.Width("  "+twist+" "+name))))
-}
-
-func (m Model) renderOrganizerSessionRow(session control.Session, selected, source bool) string {
-	icon, status := statusLabel(session)
-	iconStyle := mutedStyle
-	if session.Alive() {
-		iconStyle = liveStyle
-	} else if code, ok := session.ExitCode(); (ok && code != 0) || session.Status == control.StatusStartFailed {
-		iconStyle = failedStyle
-	}
-	sourceMark := " "
-	if source {
-		sourceMark = "◆"
-	}
-	if m.width < sessionRowRichMinWidth {
-		plainPrefix := "    " + sourceMark + " " + icon + " "
-		styledPrefix := "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " "
-		if m.width >= sessionRowRunnerMinWidth {
-			plainPrefix += padPlain(string(session.Backend), 8) + " "
-			styledPrefix += backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " "
-		}
-		plainPrefix += padPlain(status, 11) + " "
-		styledPrefix += mutedStyle.Render(padPlain(status, 11)) + " "
-		taskWidth := max(1, m.width-lipgloss.Width(plainPrefix))
-		task := sessionRowSummary(session, taskWidth)
-		if selected {
-			return renderSelectedOrganizerRow(plainPrefix+task, m.width)
-		}
-		return padANSI(truncateANSI(styledPrefix+task, m.width), m.width)
-	}
-	fixed := 35
-	task := sessionRowSummary(session, max(1, m.width-fixed))
-	plain := "    " + sourceMark + " " + icon + " " + padPlain(string(session.Backend), 8) + " " +
-		padPlain(format.ShortID(session.ID), 7) + " " + padPlain(status, 11) + " " + task
-	if selected {
-		return renderSelectedOrganizerRow(plain, m.width)
-	}
-	// Bounded the same way as the narrow branch above. The styled row carries
-	// ANSI, so it has to go through the ANSI-aware pair; truncating the plain
-	// string instead measured the right thing and then threw it away, which let
-	// a wide row overflow the pane by the couple of columns `fixed` under-counts.
-	styled := "    " + noticeStyle.Render(sourceMark) + " " + iconStyle.Render(icon) + " " +
-		backendStyle(session.Backend).Render(padPlain(string(session.Backend), 8)) + " " +
-		padPlain(format.ShortID(session.ID), 7) + " " + mutedStyle.Render(padPlain(status, 11)) + " " + task
-	return padANSI(truncateANSI(styled, m.width), m.width)
-}
-
-func renderSelectedOrganizerRow(plain string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	body := strings.TrimPrefix(plain, " ")
-	line := "›" + truncatePlain(body, width-1)
-	return selectedStyle.Render(padPlain(line, width))
-}
-
 func (m Model) fitPane(lines []string, help string) string {
 	message := ""
 	style := noticeStyle
@@ -1852,6 +1665,12 @@ func (m *Model) restoreSelection() {
 		m.cursor, m.selected = 0, ""
 		return
 	}
+	// A freshly created workstream becomes the selection as soon as it lands in
+	// a snapshot, so the composer's launch target follows the create.
+	if m.pendingWorkstream != "" {
+		m.selected = workstreamRowKey(m.pendingWorkstream)
+		m.pendingWorkstream = ""
+	}
 	if m.selected != "" {
 		for index, row := range rows {
 			if row.key == m.selected {
@@ -1870,6 +1689,14 @@ func (m *Model) restoreSelection() {
 	}
 	m.cursor = min(max(0, m.cursor), len(rows)-1)
 	m.selected = rows[m.cursor].key
+}
+
+func (m *Model) selectRowKey(key string) {
+	if key == "" {
+		return
+	}
+	m.selected = key
+	m.restoreSelection()
 }
 
 func (m Model) selectedRow() (listRow, bool) {
@@ -1898,12 +1725,16 @@ func (m Model) moveSelection(delta int) (tea.Model, tea.Cmd) {
 	m.selected = rows[m.cursor].key
 	m.previewID = ""
 	m.alignRootToSelection()
+	// Notes and files are read when the selection lands on a new workstream and
+	// cached until it leaves, so scrubbing the list is the only thing that costs
+	// a filesystem read. A stationary cursor costs nothing.
+	context := m.artifactContextCmd(false)
 	if selected, ok := m.selectedSession(); ok && selected.Available() {
-		return m, m.requestPreview(selected.ID)
+		return m, tea.Batch(m.requestPreview(selected.ID), context)
 	}
 	m.previewFetch.queuedID = ""
 	m.preview = ""
-	return m, nil
+	return m, context
 }
 
 func (m *Model) toggleSelectedGroup(collapse bool) bool {
@@ -2020,173 +1851,15 @@ func (m Model) rootSummary(row listRow) string {
 	return name
 }
 
-func (m Model) selectedOrganizerRoot(row listRow) (string, bool) {
-	if row.kind != rowWorkstream || row.workstreamID == "" {
-		return "", false
-	}
-	item, ok := m.workstream(row.workstreamID)
-	if !ok || len(item.Roots) == 0 {
-		return "", false
-	}
-	return item.Roots[m.rootPosition(item.ID, len(item.Roots))], true
-}
-
-func (m *Model) openOrganizer() {
-	m.screen = screenOrganizer
-	m.organizerEdit = organizerEditNone
-	m.organizerRootTarget = ""
-	m.organizerInput, m.organizerInputCursor = nil, 0
-	m.notice, m.errorText = "", ""
-	m.organizerSource = ""
-	m.confirmRootRemoval = ""
-	m.organizerSelected = m.selected
-	if session, ok := m.selectedSession(); ok {
-		m.organizerSource = session.ID
-		m.organizerCollapsed[organizerSessionParentKey(session)] = false
-	}
-	m.restoreOrganizerSelection()
-}
-
-func (m Model) organizerRows() []listRow {
-	return m.overview.rows(m.organizerCollapsed)
-}
-
-func (m Model) selectedOrganizerRow() (listRow, bool) {
-	rows := m.organizerRows()
-	if m.organizerCursor < 0 || m.organizerCursor >= len(rows) {
-		return listRow{}, false
-	}
-	return rows[m.organizerCursor], true
-}
-
-func (m *Model) restoreOrganizerSelection() {
-	rows := m.organizerRows()
-	if len(rows) == 0 {
-		m.organizerCursor, m.organizerSelected = 0, ""
-		return
-	}
-	if m.pendingWorkstream != "" {
-		m.organizerSelected = workstreamRowKey(m.pendingWorkstream)
-		m.pendingWorkstream = ""
-	}
-	if m.organizerSelected != "" {
-		for index, row := range rows {
-			if row.key == m.organizerSelected {
-				m.organizerCursor = index
-				return
-			}
-		}
-	}
-	m.organizerCursor = min(max(0, m.organizerCursor), len(rows)-1)
-	m.organizerSelected = rows[m.organizerCursor].key
-}
-
-func (m *Model) syncOrganizerSelection(rows []listRow) {
-	if len(rows) == 0 {
-		m.organizerCursor, m.organizerSelected = 0, ""
-		return
-	}
-	m.organizerCursor = min(max(0, m.organizerCursor), len(rows)-1)
-	m.organizerSelected = rows[m.organizerCursor].key
-}
-
-func (m *Model) selectOrganizerKey(key string) {
-	if key == "" {
-		return
-	}
-	m.organizerSelected = key
-	m.restoreOrganizerSelection()
-}
-
-func (m Model) organizerRowName(row listRow) string {
-	if row.kind == rowOrphanHeader {
-		return "Orphaned tmux"
-	}
-	if row.kind == rowSession || row.kind == rowOrphan {
-		if session, ok := m.session(row.sessionID); ok {
-			return sessionDisplayTitle(session)
-		}
-	}
-	if row.workstreamID == "" {
-		return "Ungrouped"
-	}
-	if item, ok := m.workstream(row.workstreamID); ok {
-		return item.Name
-	}
-	return "Unavailable workstream"
-}
-
-func (m Model) organizerContextLabel() string {
-	item, ok := m.selectedOrganizerWorkstream()
-	if !ok {
-		if row, found := m.selectedOrganizerRow(); found {
-			return m.organizerRowName(row)
-		}
-		return ""
-	}
-	return item.Name + " · " + format.CompactPath(item.ArtifactDir)
-}
-
-func (m Model) selectedOrganizerWorkstream() (workstream.Workstream, bool) {
-	row, ok := m.selectedOrganizerRow()
+// selectedWorkstreamContext resolves the workstream whose notes and files the
+// detail pane should show. A session row resolves to its parent, so moving
+// between a workstream and its members does not thrash the cache.
+func (m Model) selectedWorkstreamContext() (workstream.Workstream, bool) {
+	row, ok := m.selectedRow()
 	if !ok || row.workstreamID == "" || row.kind == rowOrphan || row.kind == rowOrphanHeader {
 		return workstream.Workstream{}, false
 	}
 	return m.workstream(row.workstreamID)
-}
-
-func (m Model) moveOrganizerSource(workstreamID string) (tea.Model, tea.Cmd) {
-	if m.organizerSource == "" {
-		m.errorText = "select a session to move"
-		return m, nil
-	}
-	source, found := m.session(m.organizerSource)
-	if !found {
-		m.errorText = "move source is no longer available"
-		m.organizerSource = ""
-		return m, nil
-	}
-	if !source.Orphaned && source.WorkstreamID == workstreamID {
-		m.errorText = "session is already in " + m.workstreamName(workstreamID)
-		return m, nil
-	}
-	m.busy = true
-	m.organizerSelected = workstreamRowKey(workstreamID)
-	m.notice = "moving " + format.ShortID(source.ID) + "…"
-	if source.Orphaned {
-		return m, m.adoptSessionCmd(source.ID, workstreamID)
-	}
-	return m, m.moveSessionCmd(source.ID, workstreamID)
-}
-
-func organizerGroup(row listRow) bool {
-	return row.kind == rowWorkstream || row.kind == rowOrphanHeader
-}
-
-func organizerDestination(row listRow) bool { return row.kind == rowWorkstream }
-
-func organizerParentKey(row listRow) string {
-	if row.kind == rowOrphan {
-		return orphanedKey
-	}
-	if row.kind == rowSession {
-		return workstreamRowKey(row.workstreamID)
-	}
-	return ""
-}
-
-func organizerSessionParentKey(session control.Session) string {
-	if session.Orphaned {
-		return orphanedKey
-	}
-	return workstreamRowKey(session.WorkstreamID)
-}
-
-func (m *Model) beginOrganizerEdit(mode organizerEditMode, value string) {
-	m.organizerEdit = mode
-	m.organizerInput = splitGraphemes(value)
-	m.organizerInputCursor = len(m.organizerInput)
-	m.notice, m.errorText = "", ""
 }
 
 func (m *Model) insertText(value string) {
@@ -2199,17 +1872,6 @@ func (m *Model) insertText(value string) {
 	m.input = append(m.input, tail...)
 	m.inputCursor += len(inserted)
 	m.resetInputColumn()
-}
-
-func (m *Model) insertOrganizerText(value string) {
-	inserted := splitGraphemes(inlineSafeText(value))
-	if len(inserted) == 0 {
-		return
-	}
-	tail := append([]string(nil), m.organizerInput[m.organizerInputCursor:]...)
-	m.organizerInput = append(m.organizerInput[:m.organizerInputCursor], inserted...)
-	m.organizerInput = append(m.organizerInput, tail...)
-	m.organizerInputCursor += len(inserted)
 }
 
 func (m *Model) deletePreviousWord() {
@@ -2228,8 +1890,7 @@ func (m *Model) clearInput() {
 	m.resetInputColumn()
 }
 
-func (m Model) inputValue() string     { return strings.Join(m.input, "") }
-func (m Model) organizerValue() string { return strings.Join(m.organizerInput, "") }
+func (m Model) inputValue() string { return strings.Join(m.input, "") }
 
 func (m Model) renderTextInput(clusters []string, cursor, width int) string {
 	if width <= 0 {
@@ -2437,15 +2098,6 @@ func (m Model) reorderWorkstreamCmd(id string, delta int) tea.Cmd {
 	}
 }
 
-func (m Model) archiveWorkstreamCmd(id string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		err := m.controller.ArchiveWorkstream(ctx, id)
-		return workstreamMsg{action: "archive", workstreamID: id, err: err}
-	}
-}
-
 func (m Model) moveSessionCmd(sessionID, workstreamID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
@@ -2461,33 +2113,6 @@ func (m Model) adoptSessionCmd(sessionID, workstreamID string) tea.Cmd {
 		defer cancel()
 		_, err := m.controller.AdoptSession(ctx, sessionID, workstreamID)
 		return workstreamMsg{action: "adopt", sessionID: sessionID, workstreamID: workstreamID, err: err}
-	}
-}
-
-func (m Model) addRootCmd(workstreamID, root string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		err := m.controller.AddRoot(ctx, workstreamID, root)
-		return workstreamMsg{action: "root", workstreamID: workstreamID, err: err}
-	}
-}
-
-func (m Model) replaceRootCmd(workstreamID, current, replacement string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		err := m.controller.ReplaceRoot(ctx, workstreamID, current, replacement)
-		return workstreamMsg{action: "root_replace", workstreamID: workstreamID, err: err}
-	}
-}
-
-func (m Model) removeRootCmd(workstreamID, root string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-		defer cancel()
-		err := m.controller.RemoveRoot(ctx, workstreamID, root)
-		return workstreamMsg{action: "root_remove", workstreamID: workstreamID, err: err}
 	}
 }
 
@@ -2701,23 +2326,6 @@ func editorCommand(path string) (*exec.Cmd, error) {
 	}
 	arguments := append(append([]string(nil), parts[1:]...), path)
 	command := exec.Command(editorPath, arguments...)
-	command.Env, command.Stdin, command.Stdout, command.Stderr = os.Environ(), os.Stdin, os.Stdout, os.Stderr
-	return command, nil
-}
-
-func openDirectoryCommand(path string) (*exec.Cmd, error) {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return nil, fmt.Errorf("create artifact directory: %w", err)
-	}
-	name := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		name = "open"
-	}
-	binary, err := exec.LookPath(name)
-	if err != nil {
-		return nil, fmt.Errorf("find %s: %w", name, err)
-	}
-	command := exec.Command(binary, path)
 	command.Env, command.Stdin, command.Stdout, command.Stderr = os.Environ(), os.Stdin, os.Stdout, os.Stderr
 	return command, nil
 }

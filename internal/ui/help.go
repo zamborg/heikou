@@ -116,10 +116,10 @@ func (m Model) helpContentLines() []string {
 		description string
 	}{
 		{"Enter · text", "Commit the draft to the destination named in the composer prefix: a new session, or the session being replied to."},
-		{helpKeyLabel(m.settings.ReplyKey()) + " · empty", "Aim the composer at the selected live session. The target is pinned here, so moving the selection afterwards does not redirect the draft. Its row then shows this newest Heikou-routed message. The pin covers that one message: once it sends, the composer returns to composing a new session, so press this again to follow up."},
+		{helpKeyLabel(m.settings.ReplyKey()) + " · empty", "Aim the composer at the selected live session and hold the selection there. Its row then shows this newest Heikou-routed message. The pin covers that one message: once it sends, the composer returns to composing a new session, so press this again to follow up."},
 		{helpKeyLabel(m.settings.CycleRunnerKey()), "Cycle Codex, Claude, and no-agent for the next launch, with or without composer text."},
 		{helpKeyLabel(m.settings.CycleRootKey()), "Cycle the registered roots of the selected workstream, with or without composer text."},
-		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead."},
+		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead. The selection is held while a reply or a rename owns the composer, so the pane below keeps showing what is being answered."},
 		{"PgUp / PgDn", "Move through the dashboard list one viewport at a time."},
 		{"← / → · empty", "Collapse or expand the selected workstream."},
 		{"← / → · text", "Move the composer cursor."},
@@ -130,13 +130,12 @@ func (m Model) helpContentLines() []string {
 		{"Home / Ctrl-A", "Move to the start of the logical line; End / Ctrl-E moves to its end."},
 		{"Backspace / Ctrl-H", "Delete the previous character; Delete removes the next one."},
 		{"Ctrl-W / Ctrl-U", "Delete the previous word, or clear text back to the current line start."},
-		{"Ctrl-R", "Cycle the next-session runner regardless of composer text."},
-		{"Ctrl-G", "Enter resize mode; Up grows the snapshot, Down shows more sessions, r restores automatic sizing, and Esc exits."},
+		{"Ctrl-G", "Enter resize mode; Up grows the lower pane, Down shows more sessions, r restores automatic sizing, and Esc exits."},
 		{"Ctrl-X twice", "Stop an available runtime while keeping its durable session record. Once no pane remains, the same chord twice permanently deletes that record and membership."},
-		{"F3", "Open the workstream organizer."},
+		{"F3", "Re-read everything: sessions, the terminal preview, and the selected workstream's notes and files."},
 		{"Ctrl-S / F2", "Open settings."},
 		{"F1 / ?", "Open this help panel."},
-		{"Esc", "Clear composer text; when already empty, leave a reply and compose a new session; when neither applies, quit the dashboard."},
+		{"Esc", "Leave a reply and discard its draft; otherwise clear composer text; otherwise release a move mark; otherwise select Ungrouped. Esc never quits."},
 		{"Ctrl-C", "Quit the dashboard immediately without stopping runtimes."},
 	}
 	for _, binding := range composerBindings {
@@ -147,31 +146,22 @@ func (m Model) helpContentLines() []string {
 	lines = appendHelpParagraph(lines, m.width,
 		"The macOS terminal decides which modifier chords reach Heikou. Enhanced Option/Command events and common Alt, Home/End, and Ctrl-key fallbacks are supported; use Ctrl-J when Shift-Enter is reported as ordinary Enter.")
 
-	lines = appendHelpSection(lines, m.width, "Workstream organizer · F3")
+	lines = appendHelpSection(lines, m.width, "Organizing")
+	lines = appendHelpParagraph(lines, m.width,
+		"Organizing happens on the dashboard. Each chord below carries a verb and reads the selected row for its noun, so the same key renames whichever of a workstream or a session the cursor is on. There is no separate organizer screen and no second set of keys to learn.")
 	for _, binding := range []struct {
 		key         string
 		description string
 	}{
-		{"↑ / ↓", "Navigate workstreams, Ungrouped, Orphaned, and their expanded session rows."},
-		{"PgUp / PgDn", "Move through the organizer tree one viewport at a time."},
-		{"Enter · workstream", "Collapse or expand it; when a move source is active, move that session here instead."},
-		{"Enter · session", "Mark the session as a move source; it does not attach. Use u or Space to return with it selected on the dashboard."},
-		{"← / →", "Collapse or expand a workstream, or move from a session row to its parent."},
-		{"Shift-↑ / Shift-↓", "Move a named workstream one position up or down; the order is durable."},
-		{"m", "Mark or unmark a session as the move source. Choose a workstream and press Enter or m to move it; an orphan is explicitly adopted."},
-		{"u / Space", "Use the highlighted workstream as the launch target, or return to the dashboard with a session selected for attach or reply."},
-		{"Lower pane", "Preview the selected workstream's notes.md and shallow artifact-directory tree; a session shows its parent workstream context."},
-		{"Ctrl-G", "Resize the lower notes/files pane with Up or Down; r restores automatic sizing and Esc exits resize mode."},
-		{"n", "Create a workstream."},
-		{"r", "Rename the selected workstream, or edit/clear the selected durable session title."},
-		{"R", "Refresh the selected workstream's notes and artifact preview after external changes."},
-		{"p / Shift-P", "Add a root, or edit the currently selected root."},
-		{"d twice", "Remove the selected root without deleting files or historical sessions; every workstream keeps at least one root."},
-		{"Tab", "Cycle the highlighted workstream's selected launch root."},
-		{"Ctrl-X twice", "Stop or delete the highlighted session using the same safe lifecycle as the dashboard."},
-		{"e / o", "Edit notes or open the workstream artifact directory."},
-		{"a twice", "Archive the workstream; its durable sessions become Ungrouped."},
-		{"Esc / F3", "Return to the dashboard."},
+		{"Ctrl-N", "Create a workstream, named through the composer. Its first root is the directory Heikou was launched in."},
+		{"Ctrl-R · workstream", "Rename it. The composer takes the draft, so paste and word motion work as they do anywhere else."},
+		{"Ctrl-R · session", "Edit its durable title. Committing an empty draft clears the title and falls back to the initial task."},
+		{"Ctrl-T · session", "Mark it for a move, or unmark it. The mark shows as ◆ and survives moving the cursor."},
+		{"Ctrl-T · workstream", "Move the marked session here. An orphaned runtime is explicitly adopted instead, which a named workstream accepts and Ungrouped does not."},
+		{"Shift-↑ / Shift-↓ · workstream", "Move a named workstream one position up or down; the order is durable."},
+		{"Shift-↑ / Shift-↓ · session", "Move it to the previous or next workstream, with Ungrouped last in the walk."},
+		{"Lower pane", "A selected workstream shows its notes.md and a shallow artifact tree; a selected session shows its terminal preview instead. A session resolves to its parent workstream, so moving between them costs no extra read."},
+		{"Roots and archiving", "Adding, editing, and removing roots, and archiving a workstream, are setup rather than operation: use h ws root add|set|rm and h ws archive."},
 	} {
 		lines = appendHelpBinding(lines, m.width, binding.key, binding.description)
 	}

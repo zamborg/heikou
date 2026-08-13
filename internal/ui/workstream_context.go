@@ -21,7 +21,10 @@ type artifactContextMsg struct {
 	snapshot   artifactContextSnapshot
 }
 
-type organizerContextState struct {
+// artifactContextState is a single slot on purpose. Caching per workstream
+// would grow with the number of workstreams; one slot keeps the cost of this
+// pane constant no matter how large the installation gets.
+type artifactContextState struct {
 	generation uint64
 	loadingKey string
 	snapshot   artifactContextSnapshot
@@ -31,36 +34,38 @@ func artifactContextKey(item workstream.Workstream) string {
 	return item.ID + "\x00" + item.ArtifactDir
 }
 
-// organizerContextCmd refreshes the UI-owned artifact cache. The controller
-// and durable workstream model deliberately remain unaware of this preview.
-func (m *Model) organizerContextCmd(force bool) tea.Cmd {
-	item, ok := m.selectedOrganizerWorkstream()
+// artifactContextCmd refreshes the UI-owned artifact cache. The controller and
+// durable workstream model deliberately remain unaware of this preview. The
+// cache is keyed on the selected workstream, so it reads when the selection
+// lands somewhere new and costs nothing while the cursor sits still.
+func (m *Model) artifactContextCmd(force bool) tea.Cmd {
+	item, ok := m.selectedWorkstreamContext()
 	if !ok {
-		m.organizerContext.generation++
-		m.organizerContext.loadingKey = ""
-		m.organizerContext.snapshot = artifactContextSnapshot{}
+		m.artifactContext.generation++
+		m.artifactContext.loadingKey = ""
+		m.artifactContext.snapshot = artifactContextSnapshot{}
 		return nil
 	}
 	key := artifactContextKey(item)
-	loadedKey := m.organizerContext.snapshot.WorkstreamID + "\x00" + m.organizerContext.snapshot.ArtifactDir
+	loadedKey := m.artifactContext.snapshot.WorkstreamID + "\x00" + m.artifactContext.snapshot.ArtifactDir
 	if !force {
 		if loadedKey == key {
 			// Returning to a cached selection abandons any read for the selection
 			// we just left. Otherwise that stale result can be rejected below while
 			// leaving loadingKey behind, permanently suppressing a future retry.
-			if m.organizerContext.loadingKey != "" && m.organizerContext.loadingKey != key {
-				m.organizerContext.generation++
-				m.organizerContext.loadingKey = ""
+			if m.artifactContext.loadingKey != "" && m.artifactContext.loadingKey != key {
+				m.artifactContext.generation++
+				m.artifactContext.loadingKey = ""
 			}
 			return nil
 		}
-		if m.organizerContext.loadingKey == key {
+		if m.artifactContext.loadingKey == key {
 			return nil
 		}
 	}
-	m.organizerContext.generation++
-	generation := m.organizerContext.generation
-	m.organizerContext.loadingKey = key
+	m.artifactContext.generation++
+	generation := m.artifactContext.generation
+	m.artifactContext.loadingKey = key
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), artifactContextTimeout)
 		defer cancel()
@@ -73,89 +78,50 @@ func (m *Model) organizerContextCmd(force bool) tea.Cmd {
 }
 
 func (m *Model) acceptArtifactContext(message artifactContextMsg) {
-	if message.generation != m.organizerContext.generation {
+	if message.generation != m.artifactContext.generation {
 		return
 	}
-	item, ok := m.selectedOrganizerWorkstream()
+	item, ok := m.selectedWorkstreamContext()
 	if !ok || message.key != artifactContextKey(item) {
 		return
 	}
-	m.organizerContext.loadingKey = ""
-	m.organizerContext.snapshot = message.snapshot
-	if m.notice == "refreshing workstream context…" {
-		m.notice = "workstream context refreshed"
-	}
+	m.artifactContext.loadingKey = ""
+	m.artifactContext.snapshot = message.snapshot
 }
 
-func (m Model) renderOrganizerContext(height int) []string {
+// renderWorkstreamArtifacts fills the dashboard's detail pane for a selected
+// workstream. It is the same slot a session row uses for its terminal preview:
+// one pane showing context for whichever noun the cursor is on.
+func (m Model) renderWorkstreamArtifacts(item workstream.Workstream, height int) []string {
 	if height <= 0 {
 		return nil
 	}
-	item, ok := m.selectedOrganizerWorkstream()
-	if !ok {
-		label := "CONTEXT"
-		if row, found := m.selectedOrganizerRow(); found {
-			label += " · " + m.organizerRowName(row)
-		}
-		if height == 1 {
-			label += " · no notes or artifacts"
-		}
-		lines := []string{m.renderContextDivider(label)}
-		if height > 1 {
-			lines = append(lines, mutedStyle.Render(" No workstream notes or artifacts."))
-		}
-		return fitContextLines(lines, height, m.width)
-	}
-
 	key := artifactContextKey(item)
-	loadedKey := m.organizerContext.snapshot.WorkstreamID + "\x00" + m.organizerContext.snapshot.ArtifactDir
+	loadedKey := m.artifactContext.snapshot.WorkstreamID + "\x00" + m.artifactContext.snapshot.ArtifactDir
 	if loadedKey != key {
-		label := "CONTEXT · " + item.Name
-		if height == 1 {
-			label += " · loading"
-		}
-		lines := []string{m.renderContextDivider(label)}
-		if height > 1 {
-			lines = append(lines, mutedStyle.Render(" Loading notes and artifacts…"))
-		}
-		return fitContextLines(lines, height, m.width)
+		return fitContextLines([]string{mutedStyle.Render(" Loading notes and files…")}, height, m.width)
 	}
 	if height == 1 {
-		return []string{m.renderContextDivider("CONTEXT · " + item.Name + " · " + artifactContextSummary(m.organizerContext.snapshot))}
-	}
-	lines := []string{m.renderContextDivider("CONTEXT · " + item.Name)}
-
-	contentHeight := height - 1
-	if contentHeight == 1 {
-		summary := artifactContextSummary(m.organizerContext.snapshot)
-		return fitContextLines(append(lines, mutedStyle.Render(" "+summary)), height, m.width)
+		summary := artifactContextSummary(m.artifactContext.snapshot)
+		return []string{mutedStyle.Render(" " + truncatePlain(summary, max(1, m.width-1)))}
 	}
 
 	notesHeight := 1
-	if contentHeight >= 5 {
-		// Share larger context panes more evenly. Keep at least a label and one
-		// tree row for files, while allowing enough notes to be genuinely useful.
-		notesHeight = min(contentHeight-3, max(2, (contentHeight-2)*2/5))
+	if height >= 5 {
+		// Share larger panes more evenly. Keep at least a label and one tree row
+		// for files, while allowing enough notes to be genuinely useful.
+		notesHeight = min(height-3, max(2, (height-2)*2/5))
 	}
-	notes := renderArtifactNotes(m.organizerContext.snapshot, m.width, notesHeight)
-	lines = append(lines, notes...)
+	lines := renderArtifactNotes(m.artifactContext.snapshot, m.width, notesHeight)
 
-	filesHeight := max(1, contentHeight-len(notes))
+	filesHeight := max(1, height-len(lines))
 	filesLabel := " FILES " + format.OneLine(format.CompactPath(item.ArtifactDir))
 	lines = append(lines, mutedStyle.Render(truncatePlain(filesLabel, m.width)))
 	filesHeight--
 	if filesHeight > 0 {
-		lines = append(lines, renderArtifactTree(m.organizerContext.snapshot, m.width, filesHeight)...)
+		lines = append(lines, renderArtifactTree(m.artifactContext.snapshot, m.width, filesHeight)...)
 	}
 	return fitContextLines(lines, height, m.width)
-}
-
-func (m Model) renderContextDivider(label string) string {
-	label = " " + format.OneLine(label) + " "
-	prefix := "─"
-	available := max(0, m.width-lipgloss.Width(prefix)-lipgloss.Width(label))
-	return faintStyle.Render(prefix) + lipgloss.NewStyle().Bold(true).Foreground(colorText).Render(label) +
-		faintStyle.Render(strings.Repeat("─", available))
 }
 
 func renderArtifactNotes(snapshot artifactContextSnapshot, width, height int) []string {
@@ -167,10 +133,10 @@ func renderArtifactNotes(snapshot artifactContextSnapshot, width, height int) []
 	case artifactNotesReady:
 		body = snapshot.Notes
 		if strings.TrimSpace(body) == "" {
-			body = "No notes yet · e to edit"
+			body = "No notes yet"
 		}
 	case artifactNotesMissing:
-		body = "No notes yet · e to edit"
+		body = "No notes yet"
 	default:
 		body = "Unavailable"
 		if snapshot.NotesError != "" {
@@ -180,7 +146,7 @@ func renderArtifactNotes(snapshot artifactContextSnapshot, width, height int) []
 	body = strings.ToValidUTF8(format.Sanitize(body), "�")
 	wrapped := wrapLines(body, max(1, width-8))
 	if len(wrapped) == 0 {
-		wrapped = []string{"No notes yet · e to edit"}
+		wrapped = []string{"No notes yet"}
 	}
 	truncated := snapshot.NotesTruncated || len(wrapped) > height
 	wrapped = wrapped[:min(len(wrapped), height)]

@@ -20,6 +20,11 @@ type composerLine struct {
 func (m *Model) handleComposerShortcut(stroke string) bool {
 	switch stroke {
 	case "shift+enter", "ctrl+j", "alt+enter", "meta+enter":
+		// A workstream name or session title is a single line, so the newline is
+		// swallowed rather than committed into the value being typed.
+		if m.composerEdit != composerEditNone {
+			return true
+		}
 		m.insertText("\n")
 	case "alt+left", "meta+left", "alt+b", "meta+b", "ctrl+left":
 		m.moveInputWord(-1)
@@ -54,11 +59,9 @@ func (m *Model) handleComposerShortcut(stroke string) bool {
 			return false
 		}
 		m.moveInputVertical(-1)
-	case "ctrl+n":
-		if !m.hasMultilineInput() {
-			return false
-		}
-		m.moveInputVertical(1)
+	// Ctrl-N is deliberately absent here. It used to be a redundant alias for
+	// Down inside a multiline draft; it now creates a workstream, and a chord
+	// that means two things depending on the draft is worse than the alias.
 	default:
 		return false
 	}
