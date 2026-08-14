@@ -164,8 +164,8 @@ func (m Model) helpContentLines() []string {
 		{"Shift-↑ / Shift-↓ · session", "Move it to the previous or next workstream, with Ungrouped last in the walk."},
 		{"Ctrl-O", "Edit the selected workstream's roots. The composer opens on the root Shift-Tab has selected; press Ctrl-O again to walk to the next one and then to an empty slot that adds."},
 		{"Ctrl-O · committing", "Enter saves the path shown. An empty draft removes that root and asks once more first; a workstream always keeps its last root."},
+		{archiveChordLabel + " · workstream", "Archive it, which takes it off the dashboard. The first press says what will happen and the second does it; every other key cancels. Archiving is organization rather than deletion or shutdown: no session record is removed and no runtime is stopped, so its sessions carry on running under Ungrouped. h ws archive still does the same thing from the CLI."},
 		{"Lower pane", "A selected workstream shows its notes.md and a shallow artifact tree; a selected session shows its terminal preview instead. A session resolves to its parent workstream, so moving between them costs no extra read."},
-		{"Archiving", "Archiving a workstream is setup rather than operation, and stays on the CLI: h ws archive."},
 	} {
 		lines = appendHelpBinding(lines, m.width, binding.key, binding.description)
 	}

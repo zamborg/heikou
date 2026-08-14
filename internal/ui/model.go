@@ -37,6 +37,22 @@ const (
 	// A reply inherits the runner and root of the session it targets, so the
 	// cycle keys have nothing to act on until the composer leaves reply mode.
 	replyTargetFixedNotice = "reply uses the target's runner and root · Esc to compose a new session"
+
+	// archiveChord archives the selected workstream. Every other letter in
+	// "archive" was already spoken for — a is line start, r rename, c quit,
+	// h backspace, i is Tab, e is line end — and v is the one that was free.
+	//
+	// It is a bare control chord rather than an Option or Command combination
+	// on purpose. Ctrl-V arrives as a single C0 byte, so it needs none of the
+	// enhanced key reporting that decides whether a modified arrow reaches
+	// Heikou at all on macOS. The two chords that were also free, Ctrl-L and
+	// Ctrl-Y, both lose to it: Ctrl-L is the key people press twice when a
+	// screen looks wrong, which is the worst possible reflex to put behind a
+	// press-twice confirmation, and Ctrl-Y is macOS's delayed-suspend
+	// character. Pasting on macOS is Command-V and reaches Heikou as a paste
+	// event, so Ctrl-V carries no paste reflex here either.
+	archiveChord      = "ctrl+v"
+	archiveChordLabel = "Ctrl-V"
 )
 
 var (
@@ -127,8 +143,13 @@ type Model struct {
 	errorText     string
 	confirmStop   string
 	confirmDelete string
-	snapshotFetch snapshotFetchState
-	previewFetch  previewFetchState
+	// confirmArchive is the workstream a second archive chord archives. It is
+	// the same arm-then-act gate the session lifecycle already uses, because
+	// archiving is the one workstream verb that removes a row from the
+	// dashboard and an unconfirmed keystroke must not reach durable state.
+	confirmArchive string
+	snapshotFetch  snapshotFetchState
+	previewFetch   previewFetchState
 
 	briefObservations brief.Observations
 	briefReport       brief.Report
@@ -266,11 +287,14 @@ type workstreamMsg struct {
 	action       string
 	item         workstream.Workstream
 	workstreamID string
-	sessionID    string
-	root         string
-	delta        int
-	moved        bool
-	err          error
+	// name is carried rather than looked up, because an archived workstream is
+	// gone from the next snapshot and the notice still has to name it.
+	name      string
+	sessionID string
+	root      string
+	delta     int
+	moved     bool
+	err       error
 }
 
 type sessionTitleMsg struct {
@@ -371,7 +395,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.session.ID != "" {
 			m.clearInput()
 			m.selected = sessionRowKey(message.session)
-			m.confirmStop, m.confirmDelete = "", ""
+			m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		}
 		if message.err != nil {
 			m.errorText = message.err.Error()
@@ -393,7 +417,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		// needs the extra keystroke rather than leaving.
 		m.replyTarget = ""
 		m.notice = "message sent · " + format.ShortID(message.id) + " · composing a new session"
-		m.confirmStop, m.confirmDelete = "", ""
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		return m, tea.Batch(m.requestSnapshot(), m.requestPreview(message.id))
 
 	case stopMsg:
@@ -475,7 +499,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorText = message.err.Error()
 			return m, nil
 		}
-		m.cancelComposerEdit()
+		// A create, a rename or a root edit committed the composer's draft, so
+		// finishing it releases the composer. Archiving never routed through the
+		// composer, and taking an unrelated draft down with it would make one
+		// chord have a second, silent outcome.
+		if message.action != "archive" {
+			m.cancelComposerEdit()
+		}
 		switch message.action {
 		case "create":
 			m.pendingWorkstream = message.item.ID
@@ -492,6 +522,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.notice = "workstream is already " + boundary
 			}
+		case "archive":
+			// Its sessions are in Ungrouped now, so the cursor follows them there
+			// rather than landing on whichever row inherited the vacated index.
+			m.selected = ""
+			m.notice = "archived " + message.name + " · its sessions are Ungrouped and still running"
 		case "move":
 			m.markedSession = ""
 			m.notice = "moved " + format.ShortID(message.sessionID) + " · " + m.workstreamName(message.workstreamID)
@@ -573,7 +608,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.overlay = overlayHelp
 		m.resizeMode = false
 		m.helpOffset = 0
-		m.confirmStop, m.confirmDelete = "", ""
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		m.notice, m.errorText = "", ""
 		return m, nil
 	}
@@ -583,7 +618,7 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if stroke == "ctrl+g" && m.composerEdit == composerEditNone {
 		m.resizeMode = !m.resizeMode
 		m.notice, m.errorText = "", ""
-		m.confirmStop, m.confirmDelete = "", ""
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		return m, nil
 	}
 	if m.resizeMode {
@@ -597,6 +632,12 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if stroke != "ctrl+x" {
 		m.confirmStop = ""
 		m.confirmDelete = ""
+	}
+	// An armed archive survives exactly one keystroke, and only its own. Every
+	// other key disarms it, so a chord pressed by accident costs a notice line
+	// rather than a workstream.
+	if stroke != archiveChord {
+		m.confirmArchive = ""
 	}
 	draft := m.inputValue()
 	prompt := strings.TrimSpace(draft)
@@ -668,6 +709,12 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+t":
 		return m.markOrMoveSelection()
+
+	// Archiving reads the selected row for its noun like every other organize
+	// chord, and answers to a workstream only. See archiveChord for why this
+	// key and not Ctrl-A, which the composer owns as line start.
+	case archiveChord:
+		return m.archiveSelection()
 
 	case "shift+up":
 		return m.reorderSelection(-1)
@@ -1193,6 +1240,79 @@ func (m Model) moveMarkedSession(workstreamID string) (tea.Model, tea.Cmd) {
 	return m, m.moveSessionCmd(session.ID, workstreamID)
 }
 
+// archiveSelection archives the selected workstream behind a second press of
+// the same chord.
+//
+// Archiving is durable organization rather than deletion or shutdown: the
+// controller drops the workstream's memberships and stops nothing, so every
+// session survives in Ungrouped and a live runtime keeps running. That is the
+// part a chord can hide, so the arming press says it before the second press
+// does it. The verb answers to a workstream row only, which is also what keeps
+// it from firing on the row a reply or a session lifecycle chord is about.
+func (m Model) archiveSelection() (tea.Model, tea.Cmd) {
+	// A rename, a title or a root edit has the composer pointed at this very
+	// workstream. Archiving out from under an open edit would leave the draft
+	// naming something that no longer exists.
+	if m.composerEdit != composerEditNone {
+		m.errorText = "finish with Enter or cancel with Esc before archiving"
+		return m, nil
+	}
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	if row.kind == rowOrphanHeader {
+		m.errorText = "orphaned runtimes have no workstream; adopt one with Ctrl-T first"
+		return m, nil
+	}
+	if row.kind != rowWorkstream {
+		m.errorText = "select a workstream to archive it; Ctrl-X is the session chord"
+		return m, nil
+	}
+	if row.workstreamID == "" {
+		m.errorText = "Ungrouped is a synthetic inbox and cannot be archived"
+		return m, nil
+	}
+	item, found := m.workstream(row.workstreamID)
+	if !found {
+		m.errorText = "that workstream is no longer available"
+		return m, nil
+	}
+	if m.confirmArchive != item.ID {
+		m.confirmArchive = item.ID
+		m.notice = archiveChordLabel + " again to archive " + item.Name + " · " + archiveConsequence(m.sessionsForRow(row))
+		return m, nil
+	}
+	// The arm is consumed by the press that acts on it, so a refused archive
+	// cannot leave the next single keystroke primed to try again unasked.
+	m.confirmArchive = ""
+	m.busy = true
+	m.notice = "archiving " + item.Name + "…"
+	return m, m.archiveWorkstreamCmd(item.ID, item.Name)
+}
+
+// archiveConsequence describes what archiving is about to do to the members of
+// a workstream, so the arming press names an outcome rather than only a noun.
+func archiveConsequence(sessions []control.Session) string {
+	if len(sessions) == 0 {
+		return "it holds no sessions"
+	}
+	live := 0
+	for _, session := range sessions {
+		if session.Alive() {
+			live++
+		}
+	}
+	moved := fmt.Sprintf("its %d sessions move to Ungrouped", len(sessions))
+	if len(sessions) == 1 {
+		moved = "its session moves to Ungrouped"
+	}
+	if live == 0 {
+		return moved
+	}
+	return fmt.Sprintf("%s · %d live keep running", moved, live)
+}
+
 // reorderSelection moves a workstream in the durable display order, or moves a
 // session to the adjacent workstream. Sessions have no durable order inside a
 // workstream to change; see todos/session-ordering.md.
@@ -1699,10 +1819,10 @@ func (m Model) renderWorkstreamDetails(row listRow, height int) string {
 func (m Model) renderComposer() string {
 	prefix := m.composerPrefix()
 	composer := strings.Join(m.renderComposerInput(prefix), "\n")
-	// The chords are named as a family rather than spelled out. Four verbs plus
+	// The chords are named as a family rather than spelled out. Five verbs plus
 	// four launch bindings does not fit a terminal width anyone uses, and the
 	// pointer to full help is the one part that must never be the bit truncated.
-	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Ctrl-N/R/T/O organize · ? help",
+	help := fmt.Sprintf("Enter start · %s reply · %s runner · %s root · Ctrl-N/R/T/O/V organize · ? help",
 		helpKeyLabel(m.settings.ReplyKey()), helpKeyLabel(m.settings.CycleRunnerKey()),
 		helpKeyLabel(m.settings.CycleRootKey()))
 	if m.replyTarget != "" {
@@ -2319,6 +2439,17 @@ func (m Model) setSessionTitleCmd(id, title string) tea.Cmd {
 		defer cancel()
 		err := m.controller.SetSessionTitle(ctx, id, title)
 		return sessionTitleMsg{id: id, title: title, err: err}
+	}
+}
+
+// archiveWorkstreamCmd routes the archive through control.Service like every
+// other human mutation the dashboard makes; the UI never reaches the store.
+func (m Model) archiveWorkstreamCmd(id, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		err := m.controller.ArchiveWorkstream(ctx, id)
+		return workstreamMsg{action: "archive", workstreamID: id, name: name, err: err}
 	}
 }
 

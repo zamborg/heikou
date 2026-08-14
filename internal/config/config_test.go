@@ -159,6 +159,7 @@ func TestSettingsRejectInvalidComposerKeys(t *testing.T) {
 		"reserved navigation":   `{"composer_keys":{"cycle_runner":"up"}}`,
 		"reserved editor":       `{"composer_keys":{"reply":"backspace"}}`,
 		"reserved lifecycle":    `{"composer_keys":{"reply":"ctrl+x"}}`,
+		"reserved archive":      `{"composer_keys":{"reply":"ctrl+v"}}`,
 		"reserved resize mode":  `{"composer_keys":{"reply":"ctrl+g"}}`,
 		"reserved help":         `{"composer_keys":{"cycle_root":"?"}}`,
 		"reserved shifted help": `{"composer_keys":{"cycle_root":"shift+/"}}`,

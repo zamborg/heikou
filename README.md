@@ -110,6 +110,7 @@ key never depends on remembering which one you meant:
 | `Ctrl-N` | Create a workstream, named through the composer |
 | `Ctrl-R` | Rename the selected workstream, or edit/clear the selected session's durable title |
 | `Ctrl-T` | Mark the selected session for a move; on a workstream, move the marked session there or adopt an orphan |
+| `Ctrl-V` twice on a workstream | Archive it off the dashboard. The first press names what happens and the second does it; its sessions move to Ungrouped and keep running, and any other key cancels |
 | `Shift-Up` / `Shift-Down` | Reorder a named workstream, or move a session to the adjacent workstream |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
 | `Option-Up` / `Option-Down` | Jump the selection to the previous or next workstream, passing over the sessions between |
@@ -179,7 +180,7 @@ h stop a1b2c3
 ```
 
 Every organizing action is also a command, so the whole durable model can be
-driven without the TUI. Root and archive management live here only:
+driven without the TUI:
 
 ```sh
 h ws create "API work" -C ~/code/api -d "the public API"
@@ -284,11 +285,19 @@ root and asks once more before doing it. A workstream always keeps its last
 root. The composer prefix names the slot the whole time, which is what lets one
 chord carry three outcomes honestly.
 
+`Ctrl-V` archives the selected workstream, which is the one organize verb that
+takes a row off the dashboard, so it asks: the first press names the workstream
+and says what becomes of its sessions, the second press does it, and any other
+key cancels. It is a bare control chord because those arrive as a single byte
+and need none of the enhanced key reporting that decides whether a modified
+arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
+available — the composer owns it as line start — and `v` is the only other
+letter of "archive" that no chord had already claimed.
+
 Because every printable key belongs to the composer, these are chords rather
 than bare letters. That is the whole reason a separate organizer view existed;
 folding the verbs into chords removed the view and the second set of keys with
-it. Archiving stayed in the CLI rather than claiming a chord, since it is setup
-rather than operation.
+it.
 
 The read-only lower pane follows the selection: a workstream shows a bounded
 `notes.md` preview and a shallow tree of its artifact directory, and a session
@@ -303,9 +312,10 @@ cursor sits still. Press `F3` after an agent or editor rewrites notes under a
 stationary cursor; moving off the row and back does the same thing.
 
 Roots are `Ctrl-O` on the dashboard and `h ws root add|set|rm` on the CLI;
-archiving is `h ws archive`. Every workstream keeps at least one root, root
-edits never rewrite historical session records or touch the filesystem, and
-archiving keeps all durable sessions and moves their memberships to Ungrouped.
+archiving is `Ctrl-V` on the dashboard and `h ws archive` on the CLI. Every
+workstream keeps at least one root, root edits never rewrite historical session
+records or touch the filesystem, and archiving keeps all durable sessions,
+stops no runtime, and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
 contain sessions launched from several registered roots, but membership never
