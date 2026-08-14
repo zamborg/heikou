@@ -30,9 +30,13 @@ func (m *Model) handleComposerShortcut(stroke string) bool {
 		m.moveInputWord(-1)
 	case "alt+right", "meta+right", "alt+f", "meta+f", "ctrl+right":
 		m.moveInputWord(1)
-	case "super+left", "alt+up", "meta+up":
+	// Option-↑ and Option-↓ were undocumented aliases for these two. They now
+	// jump the dashboard selection by whole workstream, which is worth more than
+	// a third way to reach a line boundary: Command-←/→, Home/End, and
+	// Ctrl-A/Ctrl-E all still do that, and the help panel names those.
+	case "super+left":
 		m.moveInputLineBoundary(-1)
-	case "super+right", "alt+down", "meta+down":
+	case "super+right":
 		m.moveInputLineBoundary(1)
 	case "super+up", "ctrl+home":
 		m.inputCursor = 0

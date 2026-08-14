@@ -729,6 +729,23 @@ func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.moveSelection(1)
 
+	// Option-↑ / Option-↓ move by structure where PgUp/PgDn move by distance. A
+	// long list is mostly sessions, so stepping over every one of them to reach
+	// the next group is the slow part of reading it. Unlike ↑ and ↓ these do not
+	// defer to a multiline draft: they are then the only way to move the
+	// selection by hand, which is the same bargain PgUp/PgDn already make.
+	case "alt+up", "meta+up":
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
+		}
+		return m.moveToAdjacentGroup(-1)
+
+	case "alt+down", "meta+down":
+		if m.selectionLocked() {
+			return m.reportSelectionLock()
+		}
+		return m.moveToAdjacentGroup(1)
+
 	case "pgup":
 		if m.selectionLocked() {
 			return m.reportSelectionLock()
@@ -1903,6 +1920,27 @@ func (m Model) moveSelection(delta int) (tea.Model, tea.Cmd) {
 	m.previewFetch.queuedID = ""
 	m.preview = ""
 	return m, context
+}
+
+// moveToAdjacentGroup puts the cursor on the nearest workstream header above or
+// below it, so a long list is crossed in group-sized steps instead of one
+// session at a time. A collapsed group is a single row, so it needs no special
+// handling here, and Orphaned counts as a group because the list draws it as
+// one.
+//
+// From inside a group, up lands on that group's own header rather than skipping
+// past it. That is the ordinary section-motion rule, and it makes the first
+// press a dependable "top of what I am looking at" instead of a jump the cursor
+// has to be walked back from. Nothing moves when no header remains in that
+// direction: the end of the list is not a mistake worth a message.
+func (m Model) moveToAdjacentGroup(delta int) (tea.Model, tea.Cmd) {
+	rows := m.rows()
+	for index := m.cursor + delta; index >= 0 && index < len(rows); index += delta {
+		if rows[index].kind == rowWorkstream || rows[index].kind == rowOrphanHeader {
+			return m.moveSelection(index - m.cursor)
+		}
+	}
+	return m, nil
 }
 
 func (m *Model) toggleSelectedGroup(collapse bool) bool {

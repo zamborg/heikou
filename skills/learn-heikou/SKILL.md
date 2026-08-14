@@ -98,6 +98,7 @@ text, and move mark, then parks on Ungrouped. Quitting is `Ctrl-C`.
 | Open help and the noun glossary | `F1`, or `?` with an empty composer |
 | Open settings | `Ctrl-S` or `F2` |
 | See a workstream's notes and files | Select it; they fill the pane below the list |
+| Cross a long list | `Option-Up` / `Option-Down` jump to the previous or next workstream, passing over the sessions between |
 | Re-read everything from disk | `F3` |
 | Resize the lower pane | `Ctrl-G`, then `Up` / `Down`; `r` resets and `Esc` exits |
 | Create a workstream | `Ctrl-N`, type a name, then `Enter` |

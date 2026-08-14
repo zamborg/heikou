@@ -121,6 +121,7 @@ func (m Model) helpContentLines() []string {
 		{helpKeyLabel(m.settings.CycleRunnerKey()), "Cycle Codex, Claude, and no-agent for the next launch, with or without composer text."},
 		{helpKeyLabel(m.settings.CycleRootKey()), "Cycle the registered roots of the selected workstream, with or without composer text."},
 		{"↑ / ↓", "Select a workstream or session; in a multiline composer, move between its logical lines instead. The selection is held while a reply or a rename owns the composer, so the pane below keeps showing what is being answered."},
+		{"Option-↑ / Option-↓", "Jump to the previous or next workstream, passing over the sessions between. From inside a workstream the first press up lands on its own header. Both keep working while a multiline draft owns ↑ and ↓."},
 		{"PgUp / PgDn", "Move through the dashboard list one viewport at a time."},
 		{"← / → · empty", "Collapse or expand the selected workstream."},
 		{"← / → · text", "Move the composer cursor."},
