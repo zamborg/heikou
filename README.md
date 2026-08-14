@@ -23,9 +23,10 @@ daemon, manager agent, task graph, or replacement execution engine.
 - **Composer** — the dashboard input bar used to start sessions and send
   follow-up messages. Its prefix names the destination `Enter` will commit to.
 - **Brief** — the one-line summary in the middle of a session row. Its lead is
-  the session's title, initial task, or runner; the text after `↳` is the latest
-  message sent through Heikou. A leading `~` marks text Heikou derived rather
-  than observed.
+  the session's title, initial task, or runner; the text after `↳` is what the
+  runner last recorded the session doing, falling back to the latest message
+  sent through Heikou. A leading `~` marks text Heikou derived rather than
+  observed.
 - **Ungrouped** — durable sessions with no active workstream membership.
 - **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
   are never silently adopted.
@@ -142,20 +143,34 @@ Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 view of its own.
 
 Each session row carries a **brief**: the durable user title when one is set,
-otherwise a one-line initial task, followed after `↳` by the most recent message
-successfully sent through Heikou, for as long as the tmux runtime is retained.
-The two halves get separate width budgets, so a long title cannot crowd the
-message out and a narrow row drops the message rather than showing a fragment of
-it. Rows omit the **latest via Heikou** label that names the field — twenty
-columns the message itself can use — and the details pane below still spells it
-out. Text entered directly in an attached native terminal is not observable by
-this shim.
+otherwise a one-line initial task, followed after `↳` by what the session is
+doing. The two halves get separate width budgets, so a long title cannot crowd
+the second out and a narrow row drops it rather than showing a fragment of it.
+Rows omit the label that names the field — twenty columns the text itself can
+use — and the details pane below still spells it out.
+
+That second half is a real status line, not a restatement of what you typed:
+
+```text
+● claude  a1b2c3  live   Fix flaky OAuth tests  ↳ ~running make check
+● claude  d4e5f6  live   Release the Linux build ↳ ~editing packaging.go
+● codex   9a8b7c  live   Rewrite the retry loop  ↳ also check the timeout
+```
+
+Heikou reads it from the transcript Claude Code writes for the session it
+launched — the last tool call, or the first line of a finished reply. The `~` is
+not decoration: the phrase is derived from another program's records, so it is
+marked as something Heikou was told rather than saw. Codex writes an equivalent
+record but mints its own session id, so Heikou cannot tell which file belongs to
+which session; those rows fall through to the latest message sent through
+Heikou, as before. Text entered directly in an attached native terminal is not
+observable either way.
 
 Which sources fill a brief is a single ordered layout you can change in
-settings, so a row can show only your title, or carry a runner's own status
-line. Anything a source cannot prove from durable state or a tmux observation
-renders with a leading `~`, the same way an exit code tmux cannot prove is
-reported as unknown rather than as zero.
+settings, so a row can show only your title, or drop the activity line, or carry
+your own program's output. Anything a source cannot prove from durable state or
+a tmux observation renders with a leading `~`, the same way an exit code tmux
+cannot prove is reported as unknown rather than as zero.
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
@@ -453,14 +468,43 @@ explicitly empty `detail` is how you ask for a row that shows only its lead:
 }
 ```
 
-The built-in sources are `title`, `prompt`, `latest`, and `runner`. Anything
-else must be defined under `brief.sources` as a command Heikou runs:
+The built-in sources are:
+
+| Source | What fills it |
+| --- | --- |
+| `title` | the durable title you gave the session |
+| `prompt` | the immutable task it was launched with |
+| `latest` | the most recent message sent through Heikou |
+| `activity` | what the runner last recorded the session doing |
+| `runner` | `claude session`, as a last resort |
+
+`activity` is the only one that goes and looks. It reads the tail of the
+transcript Claude Code writes for the session — no network, no API key, nothing
+to configure — and phrases the last record: `running make check`,
+`editing observer.go`, `searching for BriefSource`, or
+`replied · make check is green`. It is derived from another program's file, so
+it always renders with the `~` mark, and it reads at most once every five
+seconds per session and only after that session has shown terminal activity.
+Naming it is what turns that on; drop it from the layout and Heikou reads
+nothing:
 
 ```json
 {
   "brief": {
     "lead": ["title", "prompt", "runner"],
-    "detail": ["status", "latest"],
+    "detail": ["latest", "prompt"]
+  }
+}
+```
+
+Anything that is not built in must be defined under `brief.sources` as a command
+Heikou runs:
+
+```json
+{
+  "brief": {
+    "lead": ["title", "prompt", "runner"],
+    "detail": ["status", "activity", "latest"],
     "sources": {
       "status": {
         "command": ["agent-status", "--porcelain"],
@@ -484,9 +528,11 @@ many it deferred. Output is stripped of ANSI and control characters, reduced to
 one line, and bounded. A source that fails or times out drops its text rather
 than leaving a stale line that looks current.
 
-Command output always renders with a leading `~`. The command may well be
-reporting the truth, but Heikou cannot check that, and the mark is the
-difference between what it observed and what it was told. Unknown source names,
+Command output always renders with a leading `~`, and so does `activity`. A
+command may well be reporting the truth, but Heikou cannot check that; a phrase
+read out of a transcript is a reading of another program's record rather than
+something Heikou watched happen. The mark is the difference between what it
+observed and what it was told. Unknown source names,
 duplicate entries, an empty `lead`, a source nothing refers to, and a timeout
 longer than its interval are all load errors rather than surprises at runtime.
 Brief changes apply as soon as settings are reloaded with `r`.

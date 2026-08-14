@@ -105,7 +105,8 @@ The package boundaries are:
   one-time migration from the earlier XDG layout;
 - `internal/config`: the single JSON settings model and strict loader;
 - `internal/brief`: the session-row summary, its ordered source layout, and the
-  observer that runs configured command sources off the render path;
+  observer that reads transcripts and runs configured command sources off the
+  render path;
 - `internal/workstream`: durable workstream/session/membership types and the
   versioned atomic store;
 - `internal/control`: the sole join between durable organization and current
@@ -113,7 +114,8 @@ The package boundaries are:
 - `internal/runner`: tiny Codex and Claude argv adapters plus the exec wrapper;
 - `internal/supervisor`: the tmux implementation;
 - `internal/transcript`: the read-only observer for what a native runner
-  recorded about a session;
+  recorded about a session — the whole conversation as turns, and the tail of it
+  as the one thing the session was last doing;
 - `internal/ui`: typed screen reducers, their shared overview read model, and
   rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
@@ -639,10 +641,20 @@ differently.
 It has two slots. The lead is always rendered; the detail sits behind a `↳` and
 yields first when the row is narrow. Each slot is an ordered list of **sources**
 and takes the first with something to say — today title, initial task, then
-runner for the lead, and latest-via-Heikou then initial task for the detail. A
-source already spent on the lead is skipped in the detail, which is the whole of
-the rule that used to be written out as "show the initial task as detail, but
-only when a title exists".
+runner for the lead, and runner activity, latest-via-Heikou, then initial task
+for the detail. A source already spent on the lead is skipped in the detail,
+which is the whole of the rule that used to be written out as "show the initial
+task as detail, but only when a title exists".
+
+The sources divide into two kinds, and the division is what the package is
+shaped around. Four of them restate something Heikou already holds: a title, a
+prompt, a message it sent, a runner's name. One of them, **activity**, goes and
+looks: it reads the tail of the transcript the runner is already writing and
+reports the last record — a tool call, or the first line of a finished reply.
+That is the first built-in that observes the agent rather than repeating what
+the user said to it, and it is why the detail slot defaults to it first. A row's
+lead already answers "which session is this?"; putting the latest message first
+in the detail answered the same question twice.
 
 Two properties are load-bearing:
 
@@ -656,19 +668,39 @@ Two properties are load-bearing:
   source filled the slot so the two surfaces cannot drift.
 - **Provenance.** A fragment records whether its source could prove the text
   from durable state or a tmux observation. Anything else renders with a leading
-  `~`. Nothing today is unproven; the flag exists because the first source that
-  guesses — a model asked to retitle a session from its output — would otherwise
-  land unmarked in the same columns as a title the user typed, which is the same
-  claim-more-than-you-know failure that reporting an unprovable exit code as
-  zero would be.
+  `~`, and that is now the ordinary case rather than a reserved one: the
+  activity source is a phrase assembled from a file another program wrote, so it
+  is something Heikou was told rather than something it watched. The mark exists
+  because such text lands in the same columns as a title the user typed, which
+  is the same claim-more-than-you-know failure that reporting an unprovable exit
+  code as zero would be.
+
+The activity source draws one line that the transcript cannot support, and does
+not cross it. A tool call with no result after it is reported as `running`,
+never as blocked or waiting, because the record is identical whether the command
+is executing or sitting behind an approval prompt. Nothing it produces reaches
+the status column either: that column is the runtime lifecycle, and the semantic
+agent turn state in [`todos/session-status-titles.md`](../todos/session-status-titles.md)
+needs a signal about *now* rather than a reading of the most recent record.
+[`todos/runner-activity.md`](../todos/runner-activity.md) records what each
+runner actually exposes, including the signal that would support that column.
 
 `Source.Fragment` must not block: it runs for every visible row on every frame.
-A source backed by a subprocess reads a cache there and does its work in an
-`Observer`, which owns its own cadence. `internal/brief` is a package rather
-than a few functions in `internal/ui` for exactly that reason: filling the cell
-can mean running a program, and process execution does not belong in the
-package that draws frames. What stays in the UI is rendering — the budgets, the
-separator, and the mark.
+A source backed by a subprocess or a file reads a cache there and does its work
+in an `Observer`, which owns its own cadence. `internal/brief` is a package
+rather than a few functions in `internal/ui` for exactly that reason: filling
+the cell can mean running a program, and process execution does not belong in
+the package that draws frames. What stays in the UI is rendering — the budgets,
+the separator, and the mark.
+
+The activity source is the same shape as a configured command and shares its
+machinery entirely: the observer runs it, the cache holds it, an empty answer
+falls through. It reaches its file through `internal/transcript` rather than
+opening one itself, so there stays exactly one answer to where a runner's
+records live, and `internal/brief` keeps the part that is a choice — that
+`Edit(/long/path/observer.go)` is worth twenty columns as `editing observer.go`.
+A reading and its phrasing are different concerns, and the details pane already
+wants to make a different choice from the same reading.
 
 The layout is `config.BriefConfig`: two ordered lists of source names, plus a
 map of argv commands for anything not built in. Validation is strict in the
@@ -690,6 +722,17 @@ and a pass that hits its own cap reports how much it deferred rather than
 looking complete. A failing source drops its cached text instead of freezing
 it, because text that can no longer be refreshed is worse than no text: it
 looks current.
+
+Two things follow from that last rule and are worth naming, because both are
+ways a line could go on looking current after it stopped being true. A source
+that does not apply to a session drops its text rather than merely skipping the
+session — which is how `running make check` leaves a row the moment its pane
+exits, since the activity source applies only to a live session. And the
+activity interval is fixed at five seconds rather than configurable, because it
+is not a cost the user chose: a command source spends a process, and this one
+spends a page-cache read of the last 128 KiB of a file the runner is writing
+anyway. A record longer than that window fills it, and the reader then reports
+nothing rather than reaching further back for something that is no longer true.
 
 Commands are told which session through `HEIKOU_SESSION_*` variables and are
 never given the prompt or messages. Wanting a status line in a row is not a
@@ -784,6 +827,15 @@ The automated suite covers:
   and the renderer, observer change detection, concurrency and per-pass caps,
   reported deferrals, dropped text from a failing source, output sanitization,
   and prompts withheld from a source's environment;
+- transcript activity read from a tail: a finished tool no longer reported as
+  running, an absent stop reason not read as a turn ending, a subagent's tools
+  excluded, a half-written last record tolerated, a record larger than the
+  window reported as nothing known, and control sequences stripped from a
+  command before it reaches a row;
+- the activity source reading only its cache — proven with a transcript written
+  where an unconfigured reader would find it — falling through when nothing is
+  observed, never marked proven, and dropping its text when a session stops
+  being alive;
 - scrollable help/glossary and contextual organize chords on one list;
 - typed screen/edit state over a single indexed overview model;
 - raw `no-agent` shells whose labels are never executed;

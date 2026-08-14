@@ -168,7 +168,10 @@ type briefFetchState struct {
 }
 
 func (m *Model) requestBrief() tea.Cmd {
-	if len(m.settings.Brief.Sources) == 0 {
+	// Asked of the observer rather than of the settings, because a layout can
+	// now ask for work without defining a command: naming the built-in activity
+	// source is what turns transcript reads on.
+	if !brief.NewObserver(m.settings.Brief).Configured() {
 		return nil
 	}
 	if m.briefFetch.activeGeneration != 0 {

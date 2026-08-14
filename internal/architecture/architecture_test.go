@@ -47,10 +47,14 @@ var allowedImports = map[string][]string{
 	// brief sits above control because it describes a session, and above config
 	// because a user chooses what fills it. It stays below ui: assembling a
 	// brief can mean running a program, and process execution does not belong
-	// in the package that draws frames.
+	// in the package that draws frames. It reaches transcript for the same
+	// reason it reaches out at all — a brief that says what a session is doing
+	// has to read what the runner recorded — and reaches it rather than
+	// reimplementing the locator, so there stays one answer to where a
+	// transcript lives.
 	"internal/brief": {
 		"internal/config", "internal/control", "internal/env", "internal/format",
-		"internal/heikou", "internal/workstream",
+		"internal/heikou", "internal/transcript", "internal/workstream",
 	},
 	"internal/config":              {"internal/env", "internal/heikou", "internal/home"},
 	"internal/control":             {"internal/heikou", "internal/workstream"},

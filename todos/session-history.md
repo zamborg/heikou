@@ -29,6 +29,11 @@ wrong:
 - Subagent (sidechain) turns are excluded: they are not this session's
   conversation, and interleaving them reports an order that never happened.
 
+The same file now also answers a second question. `Reader.ReadActivity` reads
+the tail rather than the whole transcript and reports the one thing the session
+was last recorded doing, which fills the brief's detail slot; see
+[runner-activity.md](runner-activity.md).
+
 ## Still open
 
 Codex history. **The blocker named here has since been removed** — see

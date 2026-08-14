@@ -310,7 +310,7 @@ func TestBriefDefaultsWhenUnmentioned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(brief.Lead, ",") != "title,prompt,runner" || strings.Join(brief.Detail, ",") != "latest,prompt" {
+	if strings.Join(brief.Lead, ",") != "title,prompt,runner" || strings.Join(brief.Detail, ",") != "activity,latest,prompt" {
 		t.Fatalf("brief defaults = %#v", brief)
 	}
 	if len(brief.Sources) != 0 {
@@ -325,7 +325,7 @@ func TestBriefEmptyDetailDiffersFromAnOmittedOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(omitted.Detail, ",") != "latest,prompt" {
+	if strings.Join(omitted.Detail, ",") != "activity,latest,prompt" {
 		t.Fatalf("omitted detail did not inherit its default: %#v", omitted.Detail)
 	}
 	explicit, err := loadBrief(t, `{"brief":{"lead":["title"],"detail":[]}}`)
@@ -346,6 +346,7 @@ func TestBriefRejectsMalformedLayouts(t *testing.T) {
 		"unknown field":      {`{"brief":{"led":["title"]}}`, `unknown field`},
 		"null brief":         {`{"brief":null}`, `must be a JSON object`},
 		"redefined builtin":  {`{"brief":{"sources":{"title":{"command":["x"]}}}}`, `built-in source`},
+		"redefined activity": {`{"brief":{"sources":{"activity":{"command":["x"]}}}}`, `built-in source`},
 		"bad source name":    {`{"brief":{"sources":{"My Source":{"command":["x"]}}}}`, `lowercase letters`},
 		"empty command":      {`{"brief":{"lead":["s"],"sources":{"s":{"command":[]}}}}`, `non-empty JSON array`},
 		"unreferenced":       {`{"brief":{"sources":{"s":{"command":["x"]}}}}`, `not named in lead or detail`},

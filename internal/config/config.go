@@ -58,7 +58,7 @@ type BriefSourceConfig struct {
 // internal/brief asserts in a test that its own source identifiers match this
 // list, so a rename cannot leave configuration accepting a name that no longer
 // renders anything.
-var BuiltinBriefSources = []string{"title", "prompt", "latest", "runner"}
+var BuiltinBriefSources = []string{"title", "prompt", "latest", "activity", "runner"}
 
 const (
 	defaultBriefIntervalSeconds = 10
@@ -68,10 +68,18 @@ const (
 	maxBriefSourceNameLength    = 32
 )
 
+// defaultBrief puts the runner's activity ahead of the latest message in the
+// detail slot. A row's lead already answers "which session is this?"; the
+// detail is the only cell that can answer "and what is it doing?", and the
+// latest message answers the first question a second time.
+//
+// The order also decides what a user pays for. The activity source reads a file
+// on a timer, so naming it is what turns that on; a layout without it costs
+// nothing, and removing it from detail is how a user opts out.
 func defaultBrief() BriefConfig {
 	return BriefConfig{
 		Lead:   []string{"title", "prompt", "runner"},
-		Detail: []string{"latest", "prompt"},
+		Detail: []string{"activity", "latest", "prompt"},
 	}
 }
 

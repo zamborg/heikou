@@ -27,6 +27,14 @@ const (
 	// SourceLatest is the most recent message routed through Heikou. Text typed
 	// directly into an attached native TUI is not observable and never appears.
 	SourceLatest SourceID = "latest"
+	// SourceActivity is the last thing the runner recorded the session doing.
+	//
+	// It is the first built-in that observes the agent rather than restating
+	// something Heikou already knew, and it is the first that cannot prove what
+	// it says: the phrase is derived from a record another program wrote, so it
+	// renders with the approximate mark. Its text is filled by an Observer, and
+	// a session with nothing cached falls through to the next source.
+	SourceActivity SourceID = "activity"
 	// SourceRunner is the last-resort label for a session with no other text.
 	SourceRunner SourceID = "runner"
 )
@@ -60,6 +68,8 @@ func (id SourceID) Label() string {
 		return "initial task"
 	case SourceTitle:
 		return "title"
+	case SourceActivity:
+		return "runner activity"
 	case SourceRunner:
 		return "runner"
 	default:
@@ -156,6 +166,11 @@ func NewRegistry(settings config.BriefConfig, observations Observations) Registr
 			text: func(session control.Session) string { return session.LastUserMessage }},
 		SourceRunner: sourceFunc{id: SourceRunner, proven: true,
 			text: func(session control.Session) string { return string(session.Backend) + " session" }},
+		// The activity source reads the same cache a configured command does.
+		// That is the whole reason the cache exists: a render must not be the
+		// thing that opens a file, and a source with nothing cached must fall
+		// through rather than render blank.
+		SourceActivity: observedSource{id: SourceActivity, observations: observations},
 	}
 	for name := range settings.Sources {
 		id := SourceID(name)

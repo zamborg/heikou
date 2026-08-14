@@ -596,14 +596,26 @@ type claudeRecord struct {
 	Message          *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		// StopReason is why the model stopped. Only the activity reader uses it:
+		// "tool_use" means another call is coming, and anything else means the
+		// reply is finished. Turns do not care, because a user message is what
+		// ends a turn for a reader.
+		StopReason string `json:"stop_reason"`
 	} `json:"message"`
 }
 
 // contentBlock is one element of a structured message body.
+//
+// ID, Input and ToolUseID are read only by the activity reader, which has to
+// pair a tool call with its result and say what the call was about. Turns need
+// neither: they count tool names and report what was said.
 type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-	Name string `json:"name"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	ID        string          `json:"id"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
 }
 
 type readStats struct {
