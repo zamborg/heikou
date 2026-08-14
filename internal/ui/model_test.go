@@ -626,6 +626,77 @@ func TestEscapeCancelsAnOrganizeEditInOnePress(t *testing.T) {
 	}
 }
 
+// TestOptionArrowsJumpBetweenWorkstreams pins the motion, not the key: the
+// cursor crosses the list one group at a time, in the order the list draws its
+// groups, and stops rather than wrapping at either end.
+func TestOptionArrowsJumpBetweenWorkstreams(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	now := time.Now()
+	first := testWorkstream("018f0000-0000-4000-8000-000000000071", "First", []string{"/tmp"}, now)
+	second := testWorkstream("018f0000-0000-4000-8000-000000000072", "Second", []string{"/tmp"}, now)
+	inner := testDurableSession("018f0000-0000-4000-8000-000000000073", first.ID, heikou.BackendCodex, "one", "/tmp", now)
+	last := testDurableSession("018f0000-0000-4000-8000-000000000074", first.ID, heikou.BackendCodex, "two", "/tmp", now)
+	model.snapshot.Workstreams = []workstream.Workstream{first, second}
+	model.snapshot.Sessions = []control.Session{
+		inner, last,
+		testDurableSession("018f0000-0000-4000-8000-000000000075", second.ID, heikou.BackendCodex, "three", "/tmp", now),
+		testDurableSession("018f0000-0000-4000-8000-000000000076", "", heikou.BackendCodex, "four", "/tmp", now),
+	}
+	model.snapshot.Orphans = []control.Session{testOrphan("018f0000-0000-4000-8000-000000000077", "/tmp", now)}
+	model.setSnapshot(model.snapshot)
+
+	jump := func(t *testing.T, model Model, mod tea.KeyMod, code rune, want, why string) Model {
+		t.Helper()
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: code, Mod: mod}))
+		model = updated.(Model)
+		if model.selected != want {
+			t.Fatalf("%s: selected %q, want %q", why, model.selected, want)
+		}
+		return model
+	}
+
+	// Up from inside a group lands on that group's own header first, so the
+	// press never has to be walked back.
+	model.selected = sessionRowKey(last)
+	model.restoreSelection()
+	model = jump(t, model, tea.ModAlt, tea.KeyUp, workstreamRowKey(first.ID), "Option-Up from a session")
+	model = jump(t, model, tea.ModAlt, tea.KeyUp, workstreamRowKey(first.ID), "Option-Up at the first workstream")
+
+	// Down walks the groups the list actually draws, synthetic ones included.
+	model = jump(t, model, tea.ModAlt, tea.KeyDown, workstreamRowKey(second.ID), "Option-Down past the sessions of the first workstream")
+	model = jump(t, model, tea.ModMeta, tea.KeyDown, ungroupedKey, "Option-Down reported as Meta")
+	model = jump(t, model, tea.ModAlt, tea.KeyDown, orphanedKey, "Option-Down onto Orphaned")
+	model = jump(t, model, tea.ModAlt, tea.KeyDown, orphanedKey, "Option-Down at the last group")
+
+	// A collapsed group is one row, so it is stepped over exactly like an
+	// expanded one rather than being skipped or entered.
+	model.collapsed[workstreamRowKey(first.ID)] = true
+	model.selected = workstreamRowKey(first.ID)
+	model.restoreSelection()
+	model = jump(t, model, tea.ModAlt, tea.KeyDown, workstreamRowKey(second.ID), "Option-Down out of a collapsed workstream")
+
+	// The draft owns ↑ and ↓ once it has more than one line, which is exactly
+	// when a structural jump is the only way left to move the selection.
+	model.collapsed = map[string]bool{}
+	model.selected = sessionRowKey(inner)
+	model.restoreSelection()
+	model.insertText("alpha\nbravo")
+	draft := model.inputValue()
+	model = jump(t, model, tea.ModAlt, tea.KeyUp, workstreamRowKey(first.ID), "Option-Up under a multiline draft")
+	if model.inputValue() != draft {
+		t.Fatalf("Option-Up edited the draft: %q, want %q", model.inputValue(), draft)
+	}
+
+	// A reply pins the selection, and a jump is refused for the same reason a
+	// single step is: the pane below must keep showing what is being answered.
+	model.clearInput()
+	model.replyTarget = inner.ID
+	model = jump(t, model, tea.ModAlt, tea.KeyDown, workstreamRowKey(first.ID), "Option-Down while replying")
+	if !strings.Contains(model.notice, "replying to") {
+		t.Fatalf("locked jump notice = %q", model.notice)
+	}
+}
+
 func TestShiftArrowsReorderOnlyNamedWorkstreams(t *testing.T) {
 	model, controller := newTestModel("/tmp", heikou.BackendCodex)
 	now := time.Now()

@@ -112,6 +112,7 @@ key never depends on remembering which one you meant:
 | `Ctrl-T` | Mark the selected session for a move; on a workstream, move the marked session there or adopt an orphan |
 | `Shift-Up` / `Shift-Down` | Reorder a named workstream, or move a session to the adjacent workstream |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
+| `Option-Up` / `Option-Down` | Jump the selection to the previous or next workstream, passing over the sessions between |
 | `Ctrl-G` | Enter resize mode; `Up` grows the lower pane, `Down` shows more sessions, `r` resets, and `Esc` exits |
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal; inactive while replying, so it cannot attach to a row other than the pinned target |
