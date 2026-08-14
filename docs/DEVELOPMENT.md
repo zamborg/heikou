@@ -44,11 +44,21 @@ next bump carries it along. The `Tag` run on `main` says so in its summary:
 
 ### Choosing the number
 
-Heikou is pre-1.0, so the third component moves for almost everything. Move the
-second when the change is one a user would want to be told about — a new verb, a
-changed key binding, a different default. `make check` refuses a version that is
-not semver, because a version that is not semver cannot be a tag and the failure
-would land on someone running `go install` rather than here.
+The version is `major.minor.patch`, and **which component moves is the owner's
+call, not a rule to derive**. Zubin usually names it with the request — "this is
+just a `0.7.1`" — and that number is the answer even when the change looks
+larger from inside the diff.
+
+When he does not name one, move the third component and say so in the pull
+request. A minor bump claims the tool grew a capability worth being told about
+and a major bump claims something changed out from under existing use; both are
+claims about the product rather than about the code, so they are his to make and
+cheap for him to correct. Heikou is pre-1.0 and the third component is doing
+most of the work.
+
+`make check` refuses a version that is not semver, because a version that is not
+semver cannot be a tag and the failure would land on someone running
+`go install` rather than here.
 
 ### Releasing by hand
 
