@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "revision": 21,
+  "workstreams": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000300",
+      "name": "Conversation fixture",
+      "artifact_dir": "/tmp/heikou-v3-artifacts/018f0000-0000-4000-8000-000000000300",
+      "roots": [
+        "/tmp/heikou-v3-root"
+      ],
+      "revision": 2,
+      "created_at": "2024-03-01T00:00:00Z",
+      "updated_at": "2024-03-02T00:00:00Z"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000301",
+      "backend": "claude",
+      "title": "Assigned at launch",
+      "initial_prompt": "Claude takes the id Heikou chose",
+      "initial_root": "/tmp/heikou-v3-root",
+      "created_at": "2024-03-02T01:02:03Z",
+      "launch": {
+        "status": "started",
+        "binding": {
+          "driver": "tmux",
+          "socket": "heikou",
+          "session_name": "h-018f0000-0000-4000-8000-000000000301",
+          "bound_at": "2024-03-02T01:02:04Z"
+        }
+      },
+      "conversation": {
+        "id": "018f0000-0000-4000-8000-000000000301",
+        "source": "assigned",
+        "recorded_at": "2024-03-02T01:02:04Z"
+      }
+    },
+    {
+      "id": "018f0000-0000-4000-8000-000000000302",
+      "backend": "codex",
+      "initial_prompt": "Codex mints its own id, so this one was matched later",
+      "initial_root": "/tmp/heikou-v3-root",
+      "created_at": "2024-03-02T02:00:00Z",
+      "launch": {
+        "status": "started",
+        "binding": {
+          "driver": "tmux",
+          "socket": "heikou",
+          "session_name": "h-018f0000-0000-4000-8000-000000000302",
+          "bound_at": "2024-03-02T02:00:01Z"
+        }
+      },
+      "conversation": {
+        "id": "019e6d0c-14bd-7792-91d2-f684a8dc6e80",
+        "source": "observed",
+        "recorded_at": "2024-03-02T02:30:00Z"
+      }
+    },
+    {
+      "id": "018f0000-0000-4000-8000-000000000303",
+      "backend": "codex",
+      "initial_prompt": "Nothing proved which rollout was this one",
+      "initial_root": "/tmp/heikou-v3-root",
+      "created_at": "2024-03-02T03:00:00Z",
+      "launch": {
+        "status": "pending"
+      }
+    }
+  ],
+  "memberships": [
+    {
+      "workstream_id": "018f0000-0000-4000-8000-000000000300",
+      "session_id": "018f0000-0000-4000-8000-000000000301",
+      "joined_at": "2024-03-02T01:02:05Z"
+    }
+  ]
+}

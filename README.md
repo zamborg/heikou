@@ -194,6 +194,8 @@ h move a1b2c3 --ungrouped
 h adopt a1b2c3 -w "Public API"
 h peek a1b2c3
 h history a1b2c3 --last 10
+h conversation a1b2c3
+h resume a1b2c3 "Pick this back up and finish the retry work"
 h ws archive "Public API" --yes
 h delete a1b2c3 --yes
 ```
@@ -209,6 +211,56 @@ availability, a stable process-state enum, and an `exit_code` that is `null`
 when tmux cannot prove the outcome. Every command above accepts `--json` and
 returns a machine-readable result. These are local human CLI surfaces; they do
 not enable manager authority.
+
+## Resuming a conversation
+
+A tmux pane is mortal. The conversation inside it is not: both runners write it
+to disk and can continue it later by id. Heikou registers that id on the session
+automatically, so `h resume` picks the work back up instead of restarting it
+cold.
+
+```sh
+h conversation a1b2c3    # the runner conversation id, and how Heikou knows it
+h resume a1b2c3 "Pick this back up and finish the retry work"
+```
+
+Resuming starts a *new* session that continues the old conversation. The
+original record is left exactly as it was, because it is the durable account of
+what already happened, including how it ended.
+
+How the id is known differs by runner, and Heikou reports which case it is
+rather than presenting them as the same fact:
+
+| | id chosen at launch | resume by id | Heikou records it as |
+| --- | --- | --- | --- |
+| **Claude** | yes, `--session-id` | yes, `--resume` | `assigned` |
+| **Codex** | no such flag | yes, `codex resume` | `observed` |
+
+For Claude the id is a fact Heikou caused: Heikou already launched
+`claude --session-id <durable id>`, so the conversation id *is* the session id
+and nothing has to be looked up.
+
+Codex mints its own id and offers no way to set it, so Heikou learns it by
+matching what Codex wrote. A rollout under `~/.codex/sessions` must agree on
+three things before it is accepted: the launch directory, a start time inside
+the match window, and the **verbatim initial prompt**. The prompt is what makes
+this evidence rather than a guess — running several agents in one repository at
+once is the point of Heikou, so directory and time alone routinely describe more
+than one session.
+
+Anything other than exactly one match is refused. If no rollout matches, or if
+two are genuinely indistinguishable, Heikou records nothing and says so:
+
+```text
+$ h conversation a1b2c3
+no conversation registered for a1b2c3 (codex): more than one codex rollout
+matches this session's launch directory, start time and initial prompt, so
+Heikou cannot tell which conversation is this one
+```
+
+That is a deliberate refusal, not a gap to be filled by picking the closest
+match. A wrong id resumes someone else's work while looking exactly as
+confident as a right one.
 
 ## The pilot
 

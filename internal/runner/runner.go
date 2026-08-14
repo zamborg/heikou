@@ -15,10 +15,34 @@ import (
 	"github.com/zamborg/heikou/internal/heikou"
 )
 
+// Launch is everything an adapter needs to build a runner's argv. It is a
+// struct rather than a parameter list because Resume is the fourth thing that
+// varies and a fourth bare string argument would be one nobody could read at
+// the call site.
+type Launch struct {
+	Prompt string
+	Title  string
+	// SessionID is Heikou's durable id for the session being started. Claude
+	// accepts it as its own conversation id, which is what makes a fresh Claude
+	// session's conversation known without asking anyone.
+	SessionID string
+	// Resume names a native conversation to continue instead of beginning one.
+	// Empty starts fresh. When it is set the runner, not Heikou, owns the
+	// resulting conversation id — it is the id being resumed.
+	Resume string
+}
+
+// Resuming reports whether this launch continues an existing conversation.
+func (l Launch) Resuming() bool { return strings.TrimSpace(l.Resume) != "" }
+
 type Adapter interface {
 	Backend() heikou.Backend
 	Binary() string
-	Arguments(prompt, title, sessionID string) []string
+	Arguments(Launch) []string
+	// SupportsResume reports whether this runner can continue a conversation by
+	// id. A runner that cannot must refuse the request rather than silently
+	// starting a fresh session that looks resumed.
+	SupportsResume() bool
 }
 
 type codexAdapter struct{}
@@ -27,8 +51,16 @@ func (codexAdapter) Backend() heikou.Backend { return heikou.BackendCodex }
 func (codexAdapter) Binary() string {
 	return env.ValueOr(env.CodexBinary, "codex")
 }
-func (codexAdapter) Arguments(prompt, _, _ string) []string {
-	return []string{"--", prompt}
+func (codexAdapter) SupportsResume() bool { return true }
+
+// Arguments builds Codex argv. Codex has no flag for choosing a session id at
+// launch, so a fresh session carries no identity Heikou chose; `codex resume`
+// takes the id Codex minted as a positional argument.
+func (codexAdapter) Arguments(launch Launch) []string {
+	if launch.Resuming() {
+		return []string{"resume", launch.Resume, "--", launch.Prompt}
+	}
+	return []string{"--", launch.Prompt}
 }
 
 type claudeAdapter struct{}
@@ -37,8 +69,17 @@ func (claudeAdapter) Backend() heikou.Backend { return heikou.BackendClaude }
 func (claudeAdapter) Binary() string {
 	return env.ValueOr(env.ClaudeBinary, "claude")
 }
-func (claudeAdapter) Arguments(prompt, title, sessionID string) []string {
-	return []string{"--session-id", sessionID, "--name", title, "--", prompt}
+func (claudeAdapter) SupportsResume() bool { return true }
+
+// Arguments builds Claude argv. --session-id and --resume are mutually
+// exclusive: the first names a conversation to create, the second names one
+// that already exists, and passing both asks Claude to do two different things
+// with one identity.
+func (claudeAdapter) Arguments(launch Launch) []string {
+	if launch.Resuming() {
+		return []string{"--resume", launch.Resume, "--name", launch.Title, "--", launch.Prompt}
+	}
+	return []string{"--session-id", launch.SessionID, "--name", launch.Title, "--", launch.Prompt}
 }
 
 func AdapterFor(backend heikou.Backend) (Adapter, error) {
@@ -116,9 +157,9 @@ func firstExecutable(candidates []string) (string, error) {
 }
 
 // ExecEncoded is the hidden child-process entry point launched directly by
-// tmux. Prompt and title are encoded only to keep tmux argv metadata compact;
-// neither value is ever evaluated by a shell.
-func ExecEncoded(backendValue, encodedPrompt, encodedTitle, encodedCommand string) error {
+// tmux. Prompt, title and resume target are encoded only to keep tmux argv
+// metadata compact; no value is ever evaluated by a shell.
+func ExecEncoded(backendValue, encodedPrompt, encodedTitle, encodedCommand, encodedResume string) error {
 	backend, err := heikou.ParseBackend(backendValue)
 	if err != nil {
 		return err
@@ -131,10 +172,21 @@ func ExecEncoded(backendValue, encodedPrompt, encodedTitle, encodedCommand strin
 	if err != nil {
 		return fmt.Errorf("decode title: %w", err)
 	}
+	resume, err := decode(encodedResume)
+	if err != nil {
+		return fmt.Errorf("decode resume target: %w", err)
+	}
 
 	adapter, err := AdapterFor(backend)
 	if err != nil {
 		return err
+	}
+	launch := Launch{
+		Prompt: prompt, Title: title,
+		SessionID: os.Getenv(env.SessionID), Resume: resume,
+	}
+	if launch.Resuming() && !adapter.SupportsResume() {
+		return fmt.Errorf("runner %s cannot resume a conversation", backend)
 	}
 	command, err := DecodeCommand(encodedCommand)
 	if err != nil {
@@ -148,7 +200,7 @@ func ExecEncoded(backendValue, encodedPrompt, encodedTitle, encodedCommand strin
 		return fmt.Errorf("find %s runner %q: %w", backend, command[0], err)
 	}
 	args := append([]string{path}, command[1:]...)
-	args = append(args, adapter.Arguments(prompt, title, os.Getenv(env.SessionID))...)
+	args = append(args, adapter.Arguments(launch)...)
 	return syscall.Exec(path, args, os.Environ())
 }
 

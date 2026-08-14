@@ -297,11 +297,21 @@ individual override. Because `Workstream.ArtifactDir` is persisted absolute,
 moving artifacts also repoints those recorded directories; that rewrite
 deliberately leaves each workstream's revision and timestamps untouched, because
 relocating files is not a domain edit.
-State schema v2 adds the optional durable session title. The loader uses an
-explicit ordered v1-to-v2 migration: it strictly validates the claimed v1
-shape, migrates in memory, and atomically installs v2 while preserving the
-domain revision. Invalid states, future versions, and fields unknown to the
-claimed schema are rejected rather than rewritten.
+State schema v2 adds the optional durable session title, and v3 the optional
+native runner conversation. The loader applies explicit ordered migrations, one
+adjacent version at a time: it strictly validates the claimed older shape,
+migrates in memory, and atomically installs the current version while preserving
+the domain revision. Each superseded version keeps its own decoder, so a file
+claiming v2 rejects the v3 `conversation` field rather than absorbing it and
+writing it back stripped. Invalid states, future versions, and fields unknown to
+the claimed schema are rejected rather than rewritten.
+
+Both migrations are schema-only and back-fill nothing. Back-filling the
+conversation would be *possible* for Claude — the durable id is the conversation
+id — and is deliberately not done, because a v2 record cannot distinguish a
+session that ran from one whose launch failed before Claude wrote anything. The
+result would be registrations that resume nothing while carrying the same
+provenance as ones that work.
 The workstream array order is also its durable display order; moving an active
 workstream swaps it with an active neighbor in one atomic state mutation and
 does not require a separate position field or schema migration.
@@ -311,9 +321,61 @@ The deliberately small durable model is:
 - `Workstream`: name, description, artifact directory, explicit roots,
   revision, timestamps, and optional archive time;
 - `SessionRecord`: caller-owned launch ID, optional user-authored display title,
-  backend, initial prompt/root, creation time, launch intent/binding, and
-  durable terminal outcome; and
+  backend, initial prompt/root, creation time, launch intent/binding, durable
+  terminal outcome, and the optional native runner conversation; and
 - `Membership`: one optional active-workstream membership per durable session.
+
+## Runner conversations, and why they carry a provenance
+
+A tmux runtime is mortal and the conversation inside it is not: both runners
+write it to disk and accept it back by id. `SessionRecord.Conversation` is that
+id, which is what makes a dead session resumable rather than only readable.
+
+It is a separate field from `SessionRecord.ID` even though the two are equal for
+a freshly launched Claude session. That equality is a property of today's Claude
+adapter, not of the model — a resumed session continues the conversation of the
+session before it while owning a new durable id — and encoding it as sameness
+would make the resume path unrepresentable.
+
+The field records **how Heikou came to know the id**, because the two runners do
+not offer the same thing and reporting them identically would be a claim Heikou
+cannot support:
+
+- `assigned` — Heikou chose the id and passed it as argv. A fresh Claude session
+  is launched as `claude --session-id <durable id>`, and any resume passes the
+  id being continued. The runner had no say, so the id is certain and no
+  filesystem is consulted. Looking one up anyway would downgrade a certainty
+  into an inference, so the resolver refuses to answer for these runners at all.
+- `observed` — the runner minted its own id and Heikou matched a runner-written
+  record back to the launch afterwards. This is Codex, which has no flag for
+  choosing a session id; `codex --session-id` is rejected by its argument parser
+  outright, and there is no environment variable for it either.
+
+This is the same discipline as the brief's `~` mark: the first source that
+guesses must not land unmarked in the same field as one that knows.
+
+A Codex match requires three things to agree — launch directory, a start time
+inside the match window, and the verbatim initial prompt — and anything other
+than exactly one match is refused rather than resolved. The prompt is what makes
+this evidence rather than correlation: running several agents in one repository
+at once is what Heikou is *for*, so directory and time alone routinely describe
+more than one session. Two genuinely indistinguishable launches produce a
+refusal, because picking the nearest would resume the wrong work while looking
+exactly as confident as a real match.
+
+Registration for Codex happens on first use rather than at launch, and that
+costs nothing: the match is anchored to the durable creation time, so asking
+later gets the same answer as asking at launch would have. Scanning during
+`Start` would mostly find nothing — Codex has barely begun when tmux returns —
+and would either race or block the launch path.
+
+Resolution is reached through a `ConversationResolver` seam wired in `cmd/h`,
+the same shape as the trusted argv `CommandResolver`. `internal/control` keeps
+the policy — what may be recorded, and with what provenance — while reading
+another program's files stays outside it. The typed action carries no id and no
+provenance for the same reason: a caller that could supply either could assert
+an unverified conversation as fact, and being unassertable is the whole value of
+the field.
 
 Starting a session is ordered as follows:
 
@@ -707,8 +769,13 @@ The automated suite covers:
 - literal prompts/messages containing shell-looking syntax;
 - strict JSON settings, context-aware composer bindings, and exact configured
   argv transport through the trusted resolver;
-- strict v1-to-v2 state migration fixtures, durable title validation, and
-  unchanged domain revisions for schema-only migration;
+- strict v1-to-v2 and v2-to-v3 state migration fixtures, durable title and
+  conversation validation, superseded decoders refusing a newer schema's fields,
+  and unchanged domain revisions for schema-only migration;
+- conversation registration: assigned at launch for Claude without consulting
+  any file, absent for a fresh Codex session, observed only on a unique
+  directory/window/prompt match, refused on ambiguity, idempotent once written,
+  and carried to the runtime boundary by resume as literal argv;
 - closed command actor/scope validation and local-human authorization;
 - machine-readable list/spawn/send projections with optional known exit codes;
 - brief slot resolution, separate lead/detail truncation budgets, unproven-source

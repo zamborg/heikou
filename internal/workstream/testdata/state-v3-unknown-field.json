@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "revision": 2,
+  "workstreams": [],
+  "sessions": [
+    {
+      "id": "018f0000-0000-4000-8000-000000000401",
+      "backend": "codex",
+      "initial_prompt": "A field this schema does not know is a refusal",
+      "initial_root": "/tmp/heikou-v3-root",
+      "created_at": "2024-03-01T00:00:00Z",
+      "launch": {
+        "status": "pending"
+      },
+      "surprise": true
+    }
+  ],
+  "memberships": []
+}

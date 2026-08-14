@@ -14,8 +14,13 @@ import (
 )
 
 const (
-	StateVersion         = 2
+	StateVersion         = 3
 	MaxSessionTitleRunes = 120
+	// MaxConversationIDRunes bounds a runner-owned identifier. Both runners mint
+	// UUIDs today, so this is far above what either produces; it exists because
+	// the value is another program's to choose and durable state should not grow
+	// without limit on that program's say-so.
+	MaxConversationIDRunes = 200
 )
 
 type LaunchStatus string
@@ -68,6 +73,39 @@ type Outcome struct {
 	RecordedAt time.Time   `json:"recorded_at"`
 }
 
+// ConversationSource records how Heikou came to know a native conversation id.
+// The distinction is the whole point of storing it: one of these is a fact
+// Heikou caused, and the other is a match Heikou made against files another
+// program wrote. Collapsing them would let an inference be read as a guarantee.
+type ConversationSource string
+
+const (
+	// ConversationAssigned means Heikou chose the id and handed it to the runner
+	// on the command line. The runner had no say, so the id is certain.
+	ConversationAssigned ConversationSource = "assigned"
+	// ConversationObserved means the runner minted its own id and Heikou matched
+	// a runner-written record back to this launch afterwards. It is evidence,
+	// not a guarantee: see internal/transcript for exactly what must agree
+	// before a match is accepted, and what makes Heikou refuse to record one.
+	ConversationObserved ConversationSource = "observed"
+)
+
+// Conversation is the native runner's own identity for what was said in a
+// session. It is what survives the pane: a tmux runtime is gone the moment it
+// dies, but the runner's conversation is on disk and can be resumed by id.
+//
+// It is deliberately separate from SessionRecord.ID even though the two are
+// equal for a Claude session Heikou launched fresh. That equality is a property
+// of today's Claude adapter, not of the model — a resumed session carries the
+// conversation of the session it continued, and its own durable id is new.
+type Conversation struct {
+	ID     string             `json:"id"`
+	Source ConversationSource `json:"source"`
+	// RecordedAt is when Heikou registered the id, not when the conversation
+	// began. For an observed id those differ by however long it took to ask.
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 // SessionRecord owns launch identity, optional user-authored display identity,
 // and durable outcome. Live process observations remain exclusively in the
 // Supervisor projection.
@@ -81,6 +119,9 @@ type SessionRecord struct {
 	CreatedAt     time.Time    `json:"created_at"`
 	Launch        LaunchIntent `json:"launch"`
 	Outcome       *Outcome     `json:"outcome,omitempty"`
+	// Conversation is the runner's identity for this session's conversation,
+	// absent until Heikou can state it without guessing.
+	Conversation *Conversation `json:"conversation,omitempty"`
 }
 
 type Membership struct {
@@ -203,6 +244,11 @@ func (s State) validateVersion(version int) error {
 				return fmt.Errorf("session %s has an invalid title: %w", item.ID, err)
 			}
 		}
+		if version >= 3 {
+			if err := validateConversation(item.Conversation); err != nil {
+				return fmt.Errorf("session %s has an invalid conversation: %w", item.ID, err)
+			}
+		}
 		if !filepath.IsAbs(item.InitialRoot) || item.CreatedAt.IsZero() {
 			return fmt.Errorf("session %s has invalid launch metadata", item.ID)
 		}
@@ -279,6 +325,44 @@ func validateSessionTitle(title string) error {
 		if unicode.IsControl(r) {
 			return errors.New("must not contain control characters")
 		}
+	}
+	return nil
+}
+
+// validateConversation refuses a registration that cannot be acted on. An
+// absent conversation is the normal state for a session Heikou has not been
+// able to name yet, so nil is valid; a present one must be usable as a runner
+// argument, which is why whitespace and control characters are rejected rather
+// than trimmed.
+func validateConversation(conversation *Conversation) error {
+	if conversation == nil {
+		return nil
+	}
+	id := conversation.ID
+	if id == "" {
+		return errors.New("id cannot be empty")
+	}
+	if !utf8.ValidString(id) {
+		return errors.New("id must be valid UTF-8")
+	}
+	if strings.TrimSpace(id) != id {
+		return errors.New("id must not have leading or trailing whitespace")
+	}
+	if utf8.RuneCountInString(id) > MaxConversationIDRunes {
+		return fmt.Errorf("id must be at most %d characters", MaxConversationIDRunes)
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return errors.New("id must not contain control characters")
+		}
+	}
+	switch conversation.Source {
+	case ConversationAssigned, ConversationObserved:
+	default:
+		return fmt.Errorf("unknown source %q (want assigned or observed)", conversation.Source)
+	}
+	if conversation.RecordedAt.IsZero() {
+		return errors.New("missing recorded_at")
 	}
 	return nil
 }

@@ -105,12 +105,19 @@ type StartRequest struct {
 	Prompt       string
 	Root         string
 	WorkstreamID string
+	// resume names a native conversation the new session continues. It is
+	// unexported because it is never a caller's choice: it is filled by the
+	// resume path from a conversation Heikou already registered, so no surface
+	// can start a session against an id nobody verified.
+	resume string
 }
 
 type Service interface {
 	Snapshot(context.Context) (Snapshot, error)
 	Find(context.Context, string) (Session, error)
 	Start(context.Context, StartRequest) (Session, error)
+	ResumeSession(context.Context, string, string) (Session, error)
+	RegisterConversation(context.Context, string) (workstream.Conversation, error)
 	Send(context.Context, string, string) error
 	Capture(context.Context, string, int) (string, error)
 	Stop(context.Context, string) error
@@ -129,12 +136,13 @@ type Service interface {
 }
 
 type Controller struct {
-	supervisor      heikou.Supervisor
-	store           workstream.Repository
-	socket          string
-	now             func() time.Time
-	authorizer      Authorizer
-	commandResolver CommandResolver
+	supervisor           heikou.Supervisor
+	store                workstream.Repository
+	socket               string
+	now                  func() time.Time
+	authorizer           Authorizer
+	commandResolver      CommandResolver
+	conversationResolver ConversationResolver
 }
 
 func New(supervisor heikou.Supervisor, store workstream.Repository, socket string, options ...controllerOption) *Controller {
@@ -170,6 +178,12 @@ func (c *Controller) Execute(ctx context.Context, command Command) (CommandResul
 			WorkstreamID: command.Scope.WorkstreamID,
 		})
 		return CommandResult{Session: session}, err
+	case ResumeSessionAction:
+		session, err := c.resumeSession(ctx, action.SessionID, action.Prompt, command.Scope.WorkstreamID)
+		return CommandResult{Session: session}, err
+	case RegisterConversationAction:
+		conversation, err := c.registerConversation(ctx, action.SessionID)
+		return CommandResult{Conversation: conversation}, err
 	case SendAction:
 		return CommandResult{}, c.send(ctx, action.SessionID, action.Message)
 	case StopAction:
@@ -374,6 +388,7 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 		startAttempted = true
 		runtime, launchErr = c.supervisor.Start(ctx, heikou.StartRequest{
 			ID: id, Backend: request.Backend, Prompt: prompt, Root: root, Command: command,
+			Resume: request.resume,
 		})
 	}
 	if launchErr != nil && startAttempted {
@@ -424,6 +439,13 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 			if state.Sessions[index].Outcome != nil && state.Sessions[index].Outcome.Kind == workstream.OutcomeStartFailed {
 				state.Sessions[index].Outcome = nil
 			}
+			// The conversation is registered in the same mutation that records
+			// the binding, because it is known for exactly the same reason: the
+			// launch happened and Heikou chose what it passed. Nothing is read
+			// back from the runner to establish it.
+			if conversation := assignedConversation(request, id, boundAt); conversation != nil {
+				state.Sessions[index].Conversation = conversation
+			}
 			return true, nil
 		}
 		return false, fmt.Errorf("pending session %s disappeared", id)
@@ -437,6 +459,149 @@ func (c *Controller) startLocked(ctx context.Context, request StartRequest) (Ses
 		return view, fmt.Errorf("session started but runtime binding was not recorded: %w", err)
 	}
 	return view, nil
+}
+
+// assignedConversation returns the conversation a launch is entitled to claim
+// without asking anyone, or nil when the runner did not let Heikou name one.
+//
+// There are exactly two such cases, and both are facts Heikou caused:
+//
+//   - a resume, for any runner, passes the conversation id on the command line,
+//     so the session continues that conversation by construction;
+//   - a fresh Claude session is launched as `claude --session-id <durable id>`,
+//     so Claude's conversation id is Heikou's session id.
+//
+// A fresh Codex session gets nil. Codex has no flag for choosing a session id —
+// verified against codex 0.145, which rejects --session-id outright — so its
+// conversation can only be observed later, and inventing one here would be the
+// exact failure the source field exists to prevent.
+func assignedConversation(request StartRequest, id string, at time.Time) *workstream.Conversation {
+	switch {
+	case strings.TrimSpace(request.resume) != "":
+		return &workstream.Conversation{
+			ID: request.resume, Source: workstream.ConversationAssigned, RecordedAt: at,
+		}
+	case request.Backend == heikou.BackendClaude:
+		return &workstream.Conversation{
+			ID: id, Source: workstream.ConversationAssigned, RecordedAt: at,
+		}
+	default:
+		return nil
+	}
+}
+
+// RegisterConversation learns the conversation id a runner minted for a session
+// Heikou could not name at launch, and records it durably.
+//
+// It is idempotent: a session that already has a registration returns it
+// unchanged rather than re-deriving it. That matters beyond saving work — the
+// resolver matches against files the runner owns, and re-running it later could
+// find a different answer as those files come and go, so the first answer that
+// could be proven is the one that is kept.
+func (c *Controller) RegisterConversation(ctx context.Context, id string) (workstream.Conversation, error) {
+	result, err := c.Execute(ctx, humanCommand(InstallationScope(), RegisterConversationAction{SessionID: id}))
+	return result.Conversation, err
+}
+
+func (c *Controller) registerConversation(ctx context.Context, id string) (workstream.Conversation, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return workstream.Conversation{}, errors.New("session id is required")
+	}
+	state, err := c.store.Load(ctx)
+	if err != nil {
+		return workstream.Conversation{}, err
+	}
+	record, ok := state.Session(id)
+	if !ok {
+		return workstream.Conversation{}, fmt.Errorf("durable session %q not found", id)
+	}
+	if record.Conversation != nil {
+		return *record.Conversation, nil
+	}
+	if record.Backend == heikou.BackendNoAgent {
+		return workstream.Conversation{}, fmt.Errorf(
+			"session %q runs a plain shell, which records no conversation to resume", id)
+	}
+	if c.conversationResolver == nil {
+		return workstream.Conversation{}, errors.New("no conversation resolver is configured")
+	}
+	resolved, err := c.conversationResolver.Resolve(ctx, record)
+	if err != nil {
+		return workstream.Conversation{}, err
+	}
+	if strings.TrimSpace(resolved) == "" {
+		return workstream.Conversation{}, errors.New("conversation resolver returned an empty id")
+	}
+
+	conversation := workstream.Conversation{
+		ID: resolved, Source: workstream.ConversationObserved, RecordedAt: c.now(),
+	}
+	_, err = c.store.Mutate(ctx, func(state *workstream.State) (bool, error) {
+		for index := range state.Sessions {
+			if state.Sessions[index].ID != id {
+				continue
+			}
+			// Another process may have registered while the resolver ran. Its
+			// answer wins, because two writers racing to record an observation
+			// should converge rather than take turns overwriting each other.
+			if existing := state.Sessions[index].Conversation; existing != nil {
+				conversation = *existing
+				return false, nil
+			}
+			state.Sessions[index].Conversation = &conversation
+			return true, nil
+		}
+		return false, fmt.Errorf("durable session %q not found", id)
+	})
+	if err != nil {
+		return workstream.Conversation{}, err
+	}
+	return conversation, nil
+}
+
+// ResumeSession starts a new session continuing an existing session's native
+// conversation. The earlier record is left exactly as it is: it is the history
+// of what already happened, and a resume is new work, not a correction.
+func (c *Controller) ResumeSession(ctx context.Context, id, prompt string) (Session, error) {
+	state, err := c.store.Load(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	workstreamID := state.WorkstreamForSession(strings.TrimSpace(id))
+	result, err := c.Execute(ctx, humanCommand(scopeForWorkstream(workstreamID), ResumeSessionAction{
+		SessionID: id, Prompt: prompt,
+	}))
+	return result.Session, err
+}
+
+func (c *Controller) resumeSession(ctx context.Context, id, prompt, workstreamID string) (Session, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Session{}, errors.New("session id is required")
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return Session{}, errors.New("prompt cannot be empty")
+	}
+	state, err := c.store.Load(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	record, ok := state.Session(id)
+	if !ok {
+		return Session{}, fmt.Errorf("durable session %q not found", id)
+	}
+	// Registering here is what makes resume work without the user ever handling
+	// a runner id: a Claude session already carries one, and a Codex session
+	// gets one resolved on first use.
+	conversation, err := c.registerConversation(ctx, id)
+	if err != nil {
+		return Session{}, fmt.Errorf("resume session %q: %w", id, err)
+	}
+	return c.start(ctx, StartRequest{
+		Backend: record.Backend, Prompt: prompt, Root: record.InitialRoot,
+		WorkstreamID: workstreamID, resume: conversation.ID,
+	})
 }
 
 func (c *Controller) Send(ctx context.Context, id, message string) error {

@@ -15,6 +15,7 @@ package controltest
 import (
 	"context"
 	"os/exec"
+	"time"
 
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/workstream"
@@ -29,24 +30,26 @@ import (
 // usually embeds Stub in its own type and overrides the method there, so the
 // recorded fields stay next to the assertions that read them.
 type Stub struct {
-	SnapshotFunc          func(context.Context) (control.Snapshot, error)
-	FindFunc              func(context.Context, string) (control.Session, error)
-	StartFunc             func(context.Context, control.StartRequest) (control.Session, error)
-	SendFunc              func(context.Context, string, string) error
-	CaptureFunc           func(context.Context, string, int) (string, error)
-	StopFunc              func(context.Context, string) error
-	DeleteSessionFunc     func(context.Context, string) error
-	SetSessionTitleFunc   func(context.Context, string, string) error
-	AttachCommandFunc     func(context.Context, string) (*exec.Cmd, error)
-	CreateWorkstreamFunc  func(context.Context, string, string, []string) (workstream.Workstream, error)
-	RenameWorkstreamFunc  func(context.Context, string, string) error
-	ReorderWorkstreamFunc func(context.Context, string, int) (bool, error)
-	ArchiveWorkstreamFunc func(context.Context, string) error
-	MoveSessionFunc       func(context.Context, string, string) error
-	AdoptSessionFunc      func(context.Context, string, string) (control.Session, error)
-	AddRootFunc           func(context.Context, string, string) error
-	ReplaceRootFunc       func(context.Context, string, string, string) error
-	RemoveRootFunc        func(context.Context, string, string) error
+	SnapshotFunc             func(context.Context) (control.Snapshot, error)
+	FindFunc                 func(context.Context, string) (control.Session, error)
+	StartFunc                func(context.Context, control.StartRequest) (control.Session, error)
+	ResumeSessionFunc        func(context.Context, string, string) (control.Session, error)
+	RegisterConversationFunc func(context.Context, string) (workstream.Conversation, error)
+	SendFunc                 func(context.Context, string, string) error
+	CaptureFunc              func(context.Context, string, int) (string, error)
+	StopFunc                 func(context.Context, string) error
+	DeleteSessionFunc        func(context.Context, string) error
+	SetSessionTitleFunc      func(context.Context, string, string) error
+	AttachCommandFunc        func(context.Context, string) (*exec.Cmd, error)
+	CreateWorkstreamFunc     func(context.Context, string, string, []string) (workstream.Workstream, error)
+	RenameWorkstreamFunc     func(context.Context, string, string) error
+	ReorderWorkstreamFunc    func(context.Context, string, int) (bool, error)
+	ArchiveWorkstreamFunc    func(context.Context, string) error
+	MoveSessionFunc          func(context.Context, string, string) error
+	AdoptSessionFunc         func(context.Context, string, string) (control.Session, error)
+	AddRootFunc              func(context.Context, string, string) error
+	ReplaceRootFunc          func(context.Context, string, string, string) error
+	RemoveRootFunc           func(context.Context, string, string) error
 }
 
 // Compile-time proof that the stub keeps up with the interface. This is the
@@ -73,6 +76,26 @@ func (s *Stub) Start(ctx context.Context, request control.StartRequest) (control
 		return s.StartFunc(ctx, request)
 	}
 	return control.Session{}, nil
+}
+
+func (s *Stub) ResumeSession(ctx context.Context, id, prompt string) (control.Session, error) {
+	if s.ResumeSessionFunc != nil {
+		return s.ResumeSessionFunc(ctx, id, prompt)
+	}
+	return control.Session{}, nil
+}
+
+// RegisterConversation answers with an assigned conversation naming the session
+// itself, which is what a Claude session really carries. The zero value would be
+// an empty id with an empty source, and that is not a shape the real controller
+// can ever return, so a caller checking one would be testing against fiction.
+func (s *Stub) RegisterConversation(ctx context.Context, id string) (workstream.Conversation, error) {
+	if s.RegisterConversationFunc != nil {
+		return s.RegisterConversationFunc(ctx, id)
+	}
+	return workstream.Conversation{
+		ID: id, Source: workstream.ConversationAssigned, RecordedAt: time.Now(),
+	}, nil
 }
 
 func (s *Stub) Send(ctx context.Context, id, message string) error {

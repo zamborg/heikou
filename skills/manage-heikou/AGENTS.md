@@ -111,6 +111,24 @@ When history is not available, say you can report the durable facts and the
 current screen but not what the session actually did. Do not guess, and do not
 narrate the frame as if it were history.
 
+**Picking work back up** goes through `h resume <session> <message>`. A tmux
+pane dying does not end the runner's conversation, and Heikou registers that
+conversation's id per session so it can be continued rather than restarted. The
+resume starts a *new* session; the old record stays as the account of what
+already happened. Confirm with the user before running it — it launches a
+session and sends it a message.
+
+`h conversation <session>` reports the id and, just as importantly, its source:
+
+- `assigned` — Heikou chose the id and gave it to the runner. Certain.
+- `observed` — the runner minted its own id and Heikou matched a file it wrote.
+
+Codex has no flag for setting the id, so a Codex conversation is always
+observed, and sometimes cannot be established at all — no rollout matched, or
+two were indistinguishable. That prints as "no conversation registered" and is a
+normal answer. Report it as it stands. Never offer a likely id, and never repeat
+an id without its source.
+
 ## Style
 
 Be brief. The user is looking at a dashboard and wants state changed, not an
