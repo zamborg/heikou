@@ -61,7 +61,37 @@ const (
 	maxTurnTools = 32
 	// maxProjectDirectories bounds the fallback scan for a session's file.
 	maxProjectDirectories = 4096
+
+	// maxRolloutCandidates bounds how many Codex rollout files one match reads.
+	// The scan is already narrowed to three day-directories; this stops a
+	// pathological day from turning a lookup into a full-disk read.
+	maxRolloutCandidates = 2048
+	// maxRolloutHeadRecords bounds how far into a rollout the scan reads looking
+	// for the first real user message. Codex writes a handful of injected
+	// developer and environment records first; a file that has not reached the
+	// prompt by here is not going to.
+	maxRolloutHeadRecords = 40
+
+	// CodexMatchWindow is how long after a launch Codex may write its rollout
+	// and still be recognised as that launch. It is generous because it is not
+	// what makes a match trustworthy — the launch directory and the verbatim
+	// initial prompt are — and a cold start on a loaded machine is slow.
+	CodexMatchWindow = 10 * time.Minute
+	// codexMatchBackdate tolerates a rollout timestamped fractionally before the
+	// durable record. Codex cannot start before Heikou asked it to, so this
+	// covers rounding rather than a real ordering.
+	codexMatchBackdate = 5 * time.Second
 )
+
+// ErrConversationNotFound means no runner-written record matched the launch. It
+// is the normal answer for a session that never started, whose rollout has been
+// deleted, or that Codex has not written yet.
+var ErrConversationNotFound = errors.New("no runner conversation matches this launch")
+
+// ErrConversationAmbiguous means more than one record matched. It is deliberately
+// an error and not a choice: picking the nearest would attribute one session's
+// conversation to another, and a wrong id resumes the wrong work.
+var ErrConversationAmbiguous = errors.New("more than one runner conversation matches this launch")
 
 // Availability separates the three answers a caller must be able to tell apart:
 // a transcript that was read, a runner that keeps one but has none for this
@@ -157,10 +187,239 @@ type Request struct {
 
 // Reader locates and parses runner-written transcripts.
 //
-// ClaudeProjects is a field rather than a constant so tests can point at a
-// fixture directory. Empty means the real location under the user's home.
+// ClaudeProjects and CodexSessions are fields rather than constants so tests
+// can point at a fixture directory. Empty means the real location under the
+// user's home.
 type Reader struct {
 	ClaudeProjects string
+	CodexSessions  string
+}
+
+// ConversationRequest describes one launch precisely enough to recognise the
+// record a runner wrote for it. Every field is durable Heikou state, so the
+// question can be asked long after the pane is gone and gets the same answer.
+type ConversationRequest struct {
+	Runner heikou.Backend
+	// Root is the directory the session was launched in.
+	Root string
+	// StartedAt is when Heikou created the durable record, which is immediately
+	// before it asked the runtime to start.
+	StartedAt time.Time
+	// Prompt is the launch prompt, verbatim. It is the discriminator that makes
+	// a match evidence rather than a guess: two sessions in one directory
+	// minutes apart are common in Heikou and are told apart by what was asked.
+	Prompt string
+}
+
+// Conversation is a runner-minted conversation Heikou matched to a launch. Path
+// is reported so the match can be checked against the file it came from.
+type Conversation struct {
+	ID   string
+	Path string
+}
+
+// FindConversation identifies the conversation a runner minted for one launch,
+// for runners that do not let Heikou name it.
+//
+// It exists only for Codex. Claude takes --session-id, so Heikou never has to
+// look: the id is whatever Heikou chose, and asking the filesystem would turn a
+// certainty into an inference. Calling this for any other runner is a
+// programming error and says so.
+//
+// A match requires three things to agree: the launch directory, a rollout
+// written inside the match window, and the verbatim initial prompt. Anything
+// less than exactly one match is an error — ErrConversationNotFound or
+// ErrConversationAmbiguous — because the caller is about to write the answer
+// into durable state and resume against it.
+func (r Reader) FindConversation(request ConversationRequest) (Conversation, error) {
+	if request.Runner != heikou.BackendCodex {
+		return Conversation{}, fmt.Errorf(
+			"find conversation: runner %q does not mint its own conversation id", request.Runner)
+	}
+	root := strings.TrimSpace(request.Root)
+	if root == "" {
+		return Conversation{}, errors.New("find conversation: root is empty")
+	}
+	if request.StartedAt.IsZero() {
+		return Conversation{}, errors.New("find conversation: started_at is zero")
+	}
+	if strings.TrimSpace(request.Prompt) == "" {
+		return Conversation{}, errors.New("find conversation: prompt is empty")
+	}
+	sessions := r.codexSessions()
+	if sessions == "" {
+		return Conversation{}, ErrConversationNotFound
+	}
+
+	root = filepath.Clean(root)
+	earliest := request.StartedAt.Add(-codexMatchBackdate)
+	latest := request.StartedAt.Add(CodexMatchWindow)
+
+	var matches []Conversation
+	read := 0
+	for _, day := range codexDayDirectories(sessions, request.StartedAt) {
+		entries, err := os.ReadDir(day)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return Conversation{}, fmt.Errorf("read %s: %w", format.CompactPath(day), err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") ||
+				!strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			if read++; read > maxRolloutCandidates {
+				// Reporting ambiguity beats reporting absence: the scan stopped
+				// early, so "not found" would be a claim the scan never earned.
+				return Conversation{}, ErrConversationAmbiguous
+			}
+			path := filepath.Join(day, entry.Name())
+			if !isRegularFile(path) {
+				continue
+			}
+			id, ok := matchCodexRollout(path, root, request.Prompt, earliest, latest)
+			if !ok {
+				continue
+			}
+			matches = append(matches, Conversation{ID: id, Path: path})
+			if len(matches) > 1 {
+				return Conversation{}, ErrConversationAmbiguous
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return Conversation{}, ErrConversationNotFound
+	}
+	return matches[0], nil
+}
+
+func (r Reader) codexSessions() string {
+	if strings.TrimSpace(r.CodexSessions) != "" {
+		return r.CodexSessions
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex", "sessions")
+}
+
+// codexDayDirectories names the day directories a launch could have landed in.
+// Codex partitions by local date while stamping records in UTC, so the day
+// either side of the launch is included rather than reasoning about which
+// convention applies at a given offset.
+func codexDayDirectories(sessions string, startedAt time.Time) []string {
+	days := make([]string, 0, 3)
+	for _, offset := range []int{-1, 0, 1} {
+		day := startedAt.AddDate(0, 0, offset)
+		days = append(days, filepath.Join(sessions,
+			fmt.Sprintf("%04d", day.Year()),
+			fmt.Sprintf("%02d", int(day.Month())),
+			fmt.Sprintf("%02d", day.Day())))
+	}
+	return days
+}
+
+// codexSessionMeta is the first record of a rollout, which is where Codex
+// states the id it minted and the directory it started in.
+type codexSessionMeta struct {
+	Type    string `json:"type"`
+	Payload struct {
+		ID        string    `json:"id"`
+		CWD       string    `json:"cwd"`
+		Timestamp time.Time `json:"timestamp"`
+	} `json:"payload"`
+}
+
+// codexRolloutRecord is the subset of a later rollout line the match reads. Only
+// the first genuine user message is wanted, so nothing else is decoded.
+type codexRolloutRecord struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"payload"`
+}
+
+// matchCodexRollout reports whether one rollout is the record of this launch.
+//
+// It reads the head of the file only. The first record names the directory and
+// the time; the prompt appears a few records later, after the developer and
+// environment messages Codex injects.
+func matchCodexRollout(path, root, prompt string, earliest, latest time.Time) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+
+	limited := &io.LimitedReader{R: file, N: maxTranscriptBytes}
+	reader := bufio.NewReaderSize(limited, 64<<10)
+
+	line, _, err := readBoundedLine(reader, maxLineBytes)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	var meta codexSessionMeta
+	if json.Unmarshal(line, &meta) != nil || meta.Type != "session_meta" {
+		return "", false
+	}
+	if meta.Payload.ID == "" || filepath.Clean(meta.Payload.CWD) != root {
+		return "", false
+	}
+	at := meta.Payload.Timestamp
+	if at.IsZero() || at.Before(earliest) || at.After(latest) {
+		return "", false
+	}
+	if errors.Is(err, io.EOF) {
+		return "", false
+	}
+
+	for records := 0; records < maxRolloutHeadRecords; records++ {
+		line, _, readErr := readBoundedLine(reader, maxLineBytes)
+		if text, ok := codexUserPrompt(line); ok {
+			return meta.Payload.ID, text == prompt
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// codexUserPrompt returns the text of a genuine user message, and reports false
+// for everything else — including the environment context Codex injects under
+// the user role before the person's first word. Trusting the role would compare
+// the launch prompt against a machine-written preamble and never match.
+func codexUserPrompt(line []byte) (string, bool) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return "", false
+	}
+	var record codexRolloutRecord
+	if json.Unmarshal(line, &record) != nil {
+		return "", false
+	}
+	if record.Type != "response_item" || record.Payload.Type != "message" ||
+		record.Payload.Role != "user" {
+		return "", false
+	}
+	var builder strings.Builder
+	for _, block := range record.Payload.Content {
+		if block.Type == "input_text" || block.Type == "text" {
+			builder.WriteString(block.Text)
+		}
+	}
+	text := builder.String()
+	if text == "" || strings.HasPrefix(strings.TrimSpace(text), "<environment_context>") {
+		return "", false
+	}
+	return text, true
 }
 
 // Read returns what the runner recorded, or a plain statement that it recorded
@@ -337,14 +596,26 @@ type claudeRecord struct {
 	Message          *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		// StopReason is why the model stopped. Only the activity reader uses it:
+		// "tool_use" means another call is coming, and anything else means the
+		// reply is finished. Turns do not care, because a user message is what
+		// ends a turn for a reader.
+		StopReason string `json:"stop_reason"`
 	} `json:"message"`
 }
 
 // contentBlock is one element of a structured message body.
+//
+// ID, Input and ToolUseID are read only by the activity reader, which has to
+// pair a tool call with its result and say what the call was about. Turns need
+// neither: they count tool names and report what was said.
 type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-	Name string `json:"name"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	ID        string          `json:"id"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
 }
 
 type readStats struct {

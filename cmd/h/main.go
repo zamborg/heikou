@@ -30,15 +30,15 @@ import (
 	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.7.1"
+var version = "0.7.2"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
-		if len(os.Args) != 6 {
+		if len(os.Args) != 7 {
 			fmt.Fprintln(os.Stderr, "heikou: invalid internal runner invocation")
 			os.Exit(2)
 		}
-		if err := runner.ExecEncoded(os.Args[2], os.Args[3], os.Args[4], os.Args[5]); err != nil {
+		if err := runner.ExecEncoded(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 			fmt.Fprintln(os.Stderr, "heikou:", err)
 			os.Exit(127)
 		}
@@ -168,6 +168,10 @@ func (a *app) run(args []string) error {
 		return a.runPeek(args[1:])
 	case "history":
 		return a.runHistory(args[1:])
+	case "resume":
+		return a.runResume(args[1:])
+	case "conversation":
+		return a.runConversation(args[1:])
 	case "ws", "workstream":
 		return a.runWorkstreamCommand(args[1:])
 	case "title":
@@ -651,6 +655,8 @@ Usage:
   h attach ID                          enter the native agent terminal
   h peek ID [--lines N]                print the pane's current frame
   h history ID [--last N] [--json]     print what the runner recorded happened
+  h conversation ID [--json]           print the runner conversation id Heikou registered
+  h resume [--json] ID MESSAGE         continue that conversation in a new session
   h stop ID                            stop runtime; keep the durable record
   h doctor                             check local dependencies
 
@@ -749,7 +755,53 @@ func newController(socket string) (*supervisor.Tmux, *control.Controller, workst
 		}
 		return runner.ResolveCommand(backend, settings.Command(backend))
 	})
-	return manager, control.New(manager, stateStore, socket, control.WithCommandResolver(resolver)), stateStore, nil
+	return manager, control.New(manager, stateStore, socket,
+		control.WithCommandResolver(resolver),
+		control.WithConversationResolver(conversationResolver(transcript.Reader{})),
+	), stateStore, nil
+}
+
+// conversationResolver answers "which conversation did this runner mint for
+// this launch" from the files the runner wrote.
+//
+// Only Codex ever reaches it. Claude takes --session-id, so its conversation is
+// registered at launch from what Heikou passed and no lookup happens; a runner
+// that reached here without minting its own id would be answered with a refusal
+// rather than a scan, because scanning for something already known is how a
+// certainty gets downgraded into a guess.
+func conversationResolver(reader transcript.Reader) control.ConversationResolver {
+	return control.ResolveConversationFunc(func(_ context.Context, record workstream.SessionRecord) (string, error) {
+		if record.Backend != heikou.BackendCodex {
+			return "", fmt.Errorf("runner %s names its own conversation at launch; nothing to resolve", record.Backend)
+		}
+		found, err := reader.FindConversation(transcript.ConversationRequest{
+			Runner:    record.Backend,
+			Root:      record.InitialRoot,
+			StartedAt: record.CreatedAt,
+			Prompt:    record.InitialPrompt,
+		})
+		if err != nil {
+			return "", codexResolveError(err)
+		}
+		return found.ID, nil
+	})
+}
+
+// codexResolveError turns a failed match into a sentence that says what Heikou
+// looked for and why it will not answer, rather than reporting a bare miss.
+func codexResolveError(err error) error {
+	switch {
+	case errors.Is(err, transcript.ErrConversationNotFound):
+		return fmt.Errorf(
+			"codex mints its own conversation id, and no rollout under ~/.codex/sessions matches this "+
+				"session's launch directory, start time and initial prompt: %w", err)
+	case errors.Is(err, transcript.ErrConversationAmbiguous):
+		return fmt.Errorf(
+			"more than one codex rollout matches this session's launch directory, start time and initial "+
+				"prompt, so Heikou cannot tell which conversation is this one: %w", err)
+	default:
+		return err
+	}
 }
 
 func resolveWorkstream(snapshot control.Snapshot, query string) (string, error) {

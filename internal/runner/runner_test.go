@@ -17,7 +17,7 @@ func TestCodexArgumentsUseOptionTerminator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := adapter.Arguments("--help", "ignored", "ignored")
+	got := adapter.Arguments(Launch{Prompt: "--help", Title: "ignored", SessionID: "ignored"})
 	want := []string{"--", "--help"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Arguments() = %#v, want %#v", got, want)
@@ -29,13 +29,61 @@ func TestClaudeArgumentsCarryStableSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := adapter.Arguments("task", "title", "018f0000-0000-4000-8000-000000000000")
+	got := adapter.Arguments(Launch{
+		Prompt: "task", Title: "title", SessionID: "018f0000-0000-4000-8000-000000000000",
+	})
 	want := []string{
 		"--session-id", "018f0000-0000-4000-8000-000000000000",
 		"--name", "title", "--", "task",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Arguments() = %#v, want %#v", got, want)
+	}
+}
+
+// A resumed launch must name the conversation being continued and must not also
+// claim a new identity. Claude rejects --session-id together with --resume, and
+// Codex takes the id as a positional after its subcommand, so this asserts the
+// exact argv each runner accepts rather than a shape that merely looks right.
+func TestResumeArgumentsNameTheConversationBeingContinued(t *testing.T) {
+	launch := Launch{
+		Prompt: "--keep going", Title: "title",
+		SessionID: "018f0000-0000-4000-8000-000000000000",
+		Resume:    "019e6d0c-14bd-7792-91d2-f684a8dc6e80",
+	}
+	tests := []struct {
+		backend heikou.Backend
+		want    []string
+	}{
+		{
+			backend: heikou.BackendClaude,
+			want: []string{
+				"--resume", "019e6d0c-14bd-7792-91d2-f684a8dc6e80",
+				"--name", "title", "--", "--keep going",
+			},
+		},
+		{
+			backend: heikou.BackendCodex,
+			want:    []string{"resume", "019e6d0c-14bd-7792-91d2-f684a8dc6e80", "--", "--keep going"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(string(test.backend), func(t *testing.T) {
+			adapter, err := AdapterFor(test.backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !adapter.SupportsResume() {
+				t.Fatalf("%s reports it cannot resume", test.backend)
+			}
+			got := adapter.Arguments(launch)
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("Arguments() = %#v, want %#v", got, test.want)
+			}
+			if slices.Contains(got, "--session-id") {
+				t.Fatal("a resumed launch also claimed a new session id")
+			}
+		})
 	}
 }
 
@@ -151,6 +199,52 @@ func TestExecEncodedCarriesConfiguredArgvWithoutShellEvaluation(t *testing.T) {
 	}
 }
 
+// The resume target crosses a tmux argv boundary like the prompt does, so it
+// gets the same proof: a value full of shell syntax must arrive at the runner
+// byte-for-byte and must never be evaluated on the way.
+func TestExecEncodedCarriesResumeTargetWithoutShellEvaluation(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "fake agent")
+	result := filepath.Join(directory, "arguments.txt")
+	marker := filepath.Join(directory, "shell-evaluated")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"$HEIKOU_TEST_ARGUMENTS\"\n"
+	if err := os.WriteFile(target, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	encodedCommand, err := EncodeCommand([]string{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume := "$(touch " + marker + ")"
+	command := exec.Command(os.Args[0], "-test.run=^TestExecEncodedHelper$")
+	command.Env = append(os.Environ(),
+		"HEIKOU_EXEC_HELPER=1",
+		"HEIKOU_TEST_ARGUMENTS="+result,
+		"HEIKOU_TEST_BACKEND=claude",
+		"HEIKOU_TEST_PROMPT="+Encode("carry on"),
+		"HEIKOU_TEST_TITLE="+Encode("title"),
+		"HEIKOU_TEST_COMMAND="+encodedCommand,
+		"HEIKOU_TEST_RESUME="+Encode(resume),
+		"HEIKOU_SESSION_ID=018f0000-0000-4000-8000-000000000000",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("helper: %v\n%s", err, output)
+	}
+	data, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	want := []string{"--resume", resume, "--name", "title", "--", "carry on"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("resume target was evaluated by a shell: %v", err)
+	}
+}
+
 func TestExecEncodedHelper(t *testing.T) {
 	if os.Getenv("HEIKOU_EXEC_HELPER") != "1" {
 		return
@@ -160,6 +254,7 @@ func TestExecEncodedHelper(t *testing.T) {
 		os.Getenv("HEIKOU_TEST_PROMPT"),
 		os.Getenv("HEIKOU_TEST_TITLE"),
 		os.Getenv("HEIKOU_TEST_COMMAND"),
+		os.Getenv("HEIKOU_TEST_RESUME"),
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -41,6 +41,41 @@ func TestHumanWrappersUseCommandAuthorizationBoundary(t *testing.T) {
 	}
 }
 
+// The dashboard's archive chord calls ArchiveWorkstream, so this is the seam
+// that decides whether a keystroke reaches durable state as a typed,
+// scoped, authorized command or as a bare store write.
+func TestArchiveWorkstreamCrossesTheCommandBoundaryScopedToItsWorkstream(t *testing.T) {
+	root := t.TempDir()
+	repository := newMemoryRepository(root)
+	var observed Command
+	controller := New(&fakeSupervisor{}, repository, "heikou-test", WithAuthorizer(AuthorizeFunc(
+		func(_ context.Context, command Command) error {
+			observed = command
+			return nil
+		},
+	)))
+	container, err := controller.CreateWorkstream(context.Background(), "Core", "", []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.ArchiveWorkstream(context.Background(), container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Actor != LocalHuman() || observed.Scope != WorkstreamScope(container.ID) {
+		t.Fatalf("observed command actor/scope = %#v/%#v", observed.Actor, observed.Scope)
+	}
+	if _, ok := observed.Action.(ArchiveWorkstreamAction); !ok {
+		t.Fatalf("observed action = %T, want ArchiveWorkstreamAction", observed.Action)
+	}
+
+	// An installation-scoped archive is refused before any authorizer runs, so
+	// the workstream a caller names cannot be left implicit.
+	if _, err := controller.Execute(context.Background(), humanCommand(InstallationScope(), ArchiveWorkstreamAction{})); err == nil ||
+		!strings.Contains(err.Error(), "requires workstream scope") {
+		t.Fatalf("unscoped archive error = %v", err)
+	}
+}
+
 func TestSessionActorUsesTypedScopeAndTrustedCommandResolver(t *testing.T) {
 	root := t.TempDir()
 	repository := newMemoryRepository(root)

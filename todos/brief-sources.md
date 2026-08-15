@@ -4,6 +4,12 @@ Status: shipped. Configuration and command sources are implemented; a
 model-written summary is deliberately out of scope because the command source
 already makes it a user's own program rather than Heikou's problem.
 
+The second request below — "the runner's own status line" — was answered by
+configuration alone, which turned out to be only half an answer: a user could
+point a slot at a source, and every source Heikou shipped restated something it
+had already been told. [runner-activity.md](runner-activity.md) is that gap and
+what closed it, and it owns the question of what each runner exposes.
+
 ## Where this starts
 
 A session row's **brief** is the one-line cell between its state and its
@@ -38,6 +44,15 @@ source-name lists, `brief.sources` defines argv commands, and an empty `detail`
 asks for a title-only row. The README documents the block; the constraints below
 are why it looks the way it does.
 
+A built-in `activity` source was added afterwards and is first in the default
+`detail` list. It reads the tail of the transcript the runner writes and phrases
+the last record — `running make check`, `editing observer.go`,
+`replied · make check is green` — behind the same observer, the same activity
+gate, and the same `~` mark as a command source. It is the first built-in that
+observes the agent rather than repeating what the user told it. See
+[runner-activity.md](runner-activity.md) for what each runner exposes and for
+the signals that were rejected.
+
 ## Constraints that are not negotiable
 
 **Sources are argv, never shell strings.** Claude Code's status line is a shell
@@ -61,6 +76,11 @@ already reports an activity timestamp, and a session that has not moved cannot
 have a different status line. Runs are also capped at four concurrent and
 thirty-two per pass, and a capped pass reports its deferral.
 
+The built-in `activity` source obeys the same two conditions but sets its own
+interval rather than taking one from settings, because its cost is not a cost
+the user chose: a command source spends a process, and that one spends a read of
+the last 128 KiB of a file the runner is writing anyway.
+
 **Untrusted output.** A command's stdout and a model's completion are both
 untrusted text landing in a TUI. `brief.OneLine` strips ANSI, drops control
 characters, collapses whitespace, and bounds the result; a bounded writer keeps
@@ -69,9 +89,11 @@ character which separates words has to become a space rather than vanish —
 deleting a tab outright welds the words on either side of it together.
 
 **Provenance is already enforced; keep it that way.** A model-written summary
-sets `Proven: false` and renders with a leading `~`. Do not add a config flag
-that turns the mark off. The whole argument for the mark is that the row is
-otherwise indistinguishable from text the user typed.
+sets `Proven: false` and renders with a leading `~`, and so does the built-in
+`activity` source: a phrase assembled from another program's records is a
+reading, not a sighting. Do not add a config flag that turns the mark off. The
+whole argument for the mark is that the row is otherwise indistinguishable from
+text the user typed.
 
 ## The third request is already answered
 

@@ -105,7 +105,8 @@ The package boundaries are:
   one-time migration from the earlier XDG layout;
 - `internal/config`: the single JSON settings model and strict loader;
 - `internal/brief`: the session-row summary, its ordered source layout, and the
-  observer that runs configured command sources off the render path;
+  observer that reads transcripts and runs configured command sources off the
+  render path;
 - `internal/workstream`: durable workstream/session/membership types and the
   versioned atomic store;
 - `internal/control`: the sole join between durable organization and current
@@ -113,7 +114,8 @@ The package boundaries are:
 - `internal/runner`: tiny Codex and Claude argv adapters plus the exec wrapper;
 - `internal/supervisor`: the tmux implementation;
 - `internal/transcript`: the read-only observer for what a native runner
-  recorded about a session;
+  recorded about a session — the whole conversation as turns, and the tail of it
+  as the one thing the session was last doing;
 - `internal/ui`: typed screen reducers, their shared overview read model, and
   rendering; and
 - `cmd/h`: human-facing CLI commands and dependency diagnostics.
@@ -297,11 +299,21 @@ individual override. Because `Workstream.ArtifactDir` is persisted absolute,
 moving artifacts also repoints those recorded directories; that rewrite
 deliberately leaves each workstream's revision and timestamps untouched, because
 relocating files is not a domain edit.
-State schema v2 adds the optional durable session title. The loader uses an
-explicit ordered v1-to-v2 migration: it strictly validates the claimed v1
-shape, migrates in memory, and atomically installs v2 while preserving the
-domain revision. Invalid states, future versions, and fields unknown to the
-claimed schema are rejected rather than rewritten.
+State schema v2 adds the optional durable session title, and v3 the optional
+native runner conversation. The loader applies explicit ordered migrations, one
+adjacent version at a time: it strictly validates the claimed older shape,
+migrates in memory, and atomically installs the current version while preserving
+the domain revision. Each superseded version keeps its own decoder, so a file
+claiming v2 rejects the v3 `conversation` field rather than absorbing it and
+writing it back stripped. Invalid states, future versions, and fields unknown to
+the claimed schema are rejected rather than rewritten.
+
+Both migrations are schema-only and back-fill nothing. Back-filling the
+conversation would be *possible* for Claude — the durable id is the conversation
+id — and is deliberately not done, because a v2 record cannot distinguish a
+session that ran from one whose launch failed before Claude wrote anything. The
+result would be registrations that resume nothing while carrying the same
+provenance as ones that work.
 The workstream array order is also its durable display order; moving an active
 workstream swaps it with an active neighbor in one atomic state mutation and
 does not require a separate position field or schema migration.
@@ -311,9 +323,61 @@ The deliberately small durable model is:
 - `Workstream`: name, description, artifact directory, explicit roots,
   revision, timestamps, and optional archive time;
 - `SessionRecord`: caller-owned launch ID, optional user-authored display title,
-  backend, initial prompt/root, creation time, launch intent/binding, and
-  durable terminal outcome; and
+  backend, initial prompt/root, creation time, launch intent/binding, durable
+  terminal outcome, and the optional native runner conversation; and
 - `Membership`: one optional active-workstream membership per durable session.
+
+## Runner conversations, and why they carry a provenance
+
+A tmux runtime is mortal and the conversation inside it is not: both runners
+write it to disk and accept it back by id. `SessionRecord.Conversation` is that
+id, which is what makes a dead session resumable rather than only readable.
+
+It is a separate field from `SessionRecord.ID` even though the two are equal for
+a freshly launched Claude session. That equality is a property of today's Claude
+adapter, not of the model — a resumed session continues the conversation of the
+session before it while owning a new durable id — and encoding it as sameness
+would make the resume path unrepresentable.
+
+The field records **how Heikou came to know the id**, because the two runners do
+not offer the same thing and reporting them identically would be a claim Heikou
+cannot support:
+
+- `assigned` — Heikou chose the id and passed it as argv. A fresh Claude session
+  is launched as `claude --session-id <durable id>`, and any resume passes the
+  id being continued. The runner had no say, so the id is certain and no
+  filesystem is consulted. Looking one up anyway would downgrade a certainty
+  into an inference, so the resolver refuses to answer for these runners at all.
+- `observed` — the runner minted its own id and Heikou matched a runner-written
+  record back to the launch afterwards. This is Codex, which has no flag for
+  choosing a session id; `codex --session-id` is rejected by its argument parser
+  outright, and there is no environment variable for it either.
+
+This is the same discipline as the brief's `~` mark: the first source that
+guesses must not land unmarked in the same field as one that knows.
+
+A Codex match requires three things to agree — launch directory, a start time
+inside the match window, and the verbatim initial prompt — and anything other
+than exactly one match is refused rather than resolved. The prompt is what makes
+this evidence rather than correlation: running several agents in one repository
+at once is what Heikou is *for*, so directory and time alone routinely describe
+more than one session. Two genuinely indistinguishable launches produce a
+refusal, because picking the nearest would resume the wrong work while looking
+exactly as confident as a real match.
+
+Registration for Codex happens on first use rather than at launch, and that
+costs nothing: the match is anchored to the durable creation time, so asking
+later gets the same answer as asking at launch would have. Scanning during
+`Start` would mostly find nothing — Codex has barely begun when tmux returns —
+and would either race or block the launch path.
+
+Resolution is reached through a `ConversationResolver` seam wired in `cmd/h`,
+the same shape as the trusted argv `CommandResolver`. `internal/control` keeps
+the policy — what may be recorded, and with what provenance — while reading
+another program's files stays outside it. The typed action carries no id and no
+provenance for the same reason: a caller that could supply either could assert
+an unverified conversation as fact, and being unassertable is the whole value of
+the field.
 
 Starting a session is ordered as follows:
 
@@ -577,10 +641,20 @@ differently.
 It has two slots. The lead is always rendered; the detail sits behind a `↳` and
 yields first when the row is narrow. Each slot is an ordered list of **sources**
 and takes the first with something to say — today title, initial task, then
-runner for the lead, and latest-via-Heikou then initial task for the detail. A
-source already spent on the lead is skipped in the detail, which is the whole of
-the rule that used to be written out as "show the initial task as detail, but
-only when a title exists".
+runner for the lead, and runner activity, latest-via-Heikou, then initial task
+for the detail. A source already spent on the lead is skipped in the detail,
+which is the whole of the rule that used to be written out as "show the initial
+task as detail, but only when a title exists".
+
+The sources divide into two kinds, and the division is what the package is
+shaped around. Four of them restate something Heikou already holds: a title, a
+prompt, a message it sent, a runner's name. One of them, **activity**, goes and
+looks: it reads the tail of the transcript the runner is already writing and
+reports the last record — a tool call, or the first line of a finished reply.
+That is the first built-in that observes the agent rather than repeating what
+the user said to it, and it is why the detail slot defaults to it first. A row's
+lead already answers "which session is this?"; putting the latest message first
+in the detail answered the same question twice.
 
 Two properties are load-bearing:
 
@@ -594,19 +668,39 @@ Two properties are load-bearing:
   source filled the slot so the two surfaces cannot drift.
 - **Provenance.** A fragment records whether its source could prove the text
   from durable state or a tmux observation. Anything else renders with a leading
-  `~`. Nothing today is unproven; the flag exists because the first source that
-  guesses — a model asked to retitle a session from its output — would otherwise
-  land unmarked in the same columns as a title the user typed, which is the same
-  claim-more-than-you-know failure that reporting an unprovable exit code as
-  zero would be.
+  `~`, and that is now the ordinary case rather than a reserved one: the
+  activity source is a phrase assembled from a file another program wrote, so it
+  is something Heikou was told rather than something it watched. The mark exists
+  because such text lands in the same columns as a title the user typed, which
+  is the same claim-more-than-you-know failure that reporting an unprovable exit
+  code as zero would be.
+
+The activity source draws one line that the transcript cannot support, and does
+not cross it. A tool call with no result after it is reported as `running`,
+never as blocked or waiting, because the record is identical whether the command
+is executing or sitting behind an approval prompt. Nothing it produces reaches
+the status column either: that column is the runtime lifecycle, and the semantic
+agent turn state in [`todos/session-status-titles.md`](../todos/session-status-titles.md)
+needs a signal about *now* rather than a reading of the most recent record.
+[`todos/runner-activity.md`](../todos/runner-activity.md) records what each
+runner actually exposes, including the signal that would support that column.
 
 `Source.Fragment` must not block: it runs for every visible row on every frame.
-A source backed by a subprocess reads a cache there and does its work in an
-`Observer`, which owns its own cadence. `internal/brief` is a package rather
-than a few functions in `internal/ui` for exactly that reason: filling the cell
-can mean running a program, and process execution does not belong in the
-package that draws frames. What stays in the UI is rendering — the budgets, the
-separator, and the mark.
+A source backed by a subprocess or a file reads a cache there and does its work
+in an `Observer`, which owns its own cadence. `internal/brief` is a package
+rather than a few functions in `internal/ui` for exactly that reason: filling
+the cell can mean running a program, and process execution does not belong in
+the package that draws frames. What stays in the UI is rendering — the budgets,
+the separator, and the mark.
+
+The activity source is the same shape as a configured command and shares its
+machinery entirely: the observer runs it, the cache holds it, an empty answer
+falls through. It reaches its file through `internal/transcript` rather than
+opening one itself, so there stays exactly one answer to where a runner's
+records live, and `internal/brief` keeps the part that is a choice — that
+`Edit(/long/path/observer.go)` is worth twenty columns as `editing observer.go`.
+A reading and its phrasing are different concerns, and the details pane already
+wants to make a different choice from the same reading.
 
 The layout is `config.BriefConfig`: two ordered lists of source names, plus a
 map of argv commands for anything not built in. Validation is strict in the
@@ -628,6 +722,17 @@ and a pass that hits its own cap reports how much it deferred rather than
 looking complete. A failing source drops its cached text instead of freezing
 it, because text that can no longer be refreshed is worse than no text: it
 looks current.
+
+Two things follow from that last rule and are worth naming, because both are
+ways a line could go on looking current after it stopped being true. A source
+that does not apply to a session drops its text rather than merely skipping the
+session — which is how `running make check` leaves a row the moment its pane
+exits, since the activity source applies only to a live session. And the
+activity interval is fixed at five seconds rather than configurable, because it
+is not a cost the user chose: a command source spends a process, and this one
+spends a page-cache read of the last 128 KiB of a file the runner is writing
+anyway. A record longer than that window fills it, and the reader then reports
+nothing rather than reaching further back for something that is no longer true.
 
 Commands are told which session through `HEIKOU_SESSION_*` variables and are
 never given the prompt or messages. Wanting a status line in a row is not a
@@ -707,8 +812,13 @@ The automated suite covers:
 - literal prompts/messages containing shell-looking syntax;
 - strict JSON settings, context-aware composer bindings, and exact configured
   argv transport through the trusted resolver;
-- strict v1-to-v2 state migration fixtures, durable title validation, and
-  unchanged domain revisions for schema-only migration;
+- strict v1-to-v2 and v2-to-v3 state migration fixtures, durable title and
+  conversation validation, superseded decoders refusing a newer schema's fields,
+  and unchanged domain revisions for schema-only migration;
+- conversation registration: assigned at launch for Claude without consulting
+  any file, absent for a fresh Codex session, observed only on a unique
+  directory/window/prompt match, refused on ambiguity, idempotent once written,
+  and carried to the runtime boundary by resume as literal argv;
 - closed command actor/scope validation and local-human authorization;
 - machine-readable list/spawn/send projections with optional known exit codes;
 - brief slot resolution, separate lead/detail truncation budgets, unproven-source
@@ -717,6 +827,15 @@ The automated suite covers:
   and the renderer, observer change detection, concurrency and per-pass caps,
   reported deferrals, dropped text from a failing source, output sanitization,
   and prompts withheld from a source's environment;
+- transcript activity read from a tail: a finished tool no longer reported as
+  running, an absent stop reason not read as a turn ending, a subagent's tools
+  excluded, a half-written last record tolerated, a record larger than the
+  window reported as nothing known, and control sequences stripped from a
+  command before it reaches a row;
+- the activity source reading only its cache — proven with a transcript written
+  where an unconfigured reader would find it — falling through when nothing is
+  observed, never marked proven, and dropping its text when a session stops
+  being alive;
 - scrollable help/glossary and contextual organize chords on one list;
 - typed screen/edit state over a single indexed overview model;
 - raw `no-agent` shells whose labels are never executed;

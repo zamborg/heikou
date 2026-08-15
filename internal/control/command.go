@@ -56,6 +56,30 @@ type StartAction struct {
 
 func (StartAction) commandAction() {}
 
+// ResumeSessionAction starts a new session that continues an existing
+// session's native conversation. It is a start, not an edit: the earlier
+// record keeps its own history and outcome, and the new one records that it
+// was handed the conversation rather than given a fresh one.
+type ResumeSessionAction struct {
+	SessionID string
+	Prompt    string
+}
+
+func (ResumeSessionAction) commandAction() {}
+
+// RegisterConversationAction asks Heikou to learn the conversation id a runner
+// minted for a session it could not name at launch.
+//
+// It deliberately carries no id and no provenance. A caller that could supply
+// either could assert an unverified conversation as fact, and the entire value
+// of the field is that it cannot be asserted — the controller resolves it
+// through the configured resolver and records how it came to know it.
+type RegisterConversationAction struct {
+	SessionID string
+}
+
+func (RegisterConversationAction) commandAction() {}
+
 type SendAction struct {
 	SessionID string
 	Message   string
@@ -136,9 +160,10 @@ type Command struct {
 }
 
 type CommandResult struct {
-	Session    Session
-	Workstream workstream.Workstream
-	Moved      bool
+	Session      Session
+	Workstream   workstream.Workstream
+	Conversation workstream.Conversation
+	Moved        bool
 }
 
 // Authorizer is the future manager-policy seam. The V0.3.4 policy admits only
@@ -175,6 +200,25 @@ func (f ResolveCommandFunc) Resolve(ctx context.Context, backend heikou.Backend)
 	return f(ctx, backend)
 }
 
+// ConversationResolver discovers the conversation id a runner minted for a
+// session Heikou could not name at launch. It is an interface here, and
+// implemented over runner-written files in cmd/h, for the same reason
+// CommandResolver is: the controller owns the policy — what may be recorded and
+// with what provenance — while reading another program's files stays outside it.
+//
+// An implementation must return an error rather than a best guess. The
+// controller writes whatever it returns into durable state and resumes against
+// it, so a plausible-but-wrong id is worse than no answer.
+type ConversationResolver interface {
+	Resolve(context.Context, workstream.SessionRecord) (string, error)
+}
+
+type ResolveConversationFunc func(context.Context, workstream.SessionRecord) (string, error)
+
+func (f ResolveConversationFunc) Resolve(ctx context.Context, record workstream.SessionRecord) (string, error) {
+	return f(ctx, record)
+}
+
 type controllerOption func(*Controller)
 
 func WithAuthorizer(authorizer Authorizer) controllerOption {
@@ -188,6 +232,12 @@ func WithAuthorizer(authorizer Authorizer) controllerOption {
 func WithCommandResolver(resolver CommandResolver) controllerOption {
 	return func(controller *Controller) {
 		controller.commandResolver = resolver
+	}
+}
+
+func WithConversationResolver(resolver ConversationResolver) controllerOption {
+	return func(controller *Controller) {
+		controller.conversationResolver = resolver
 	}
 }
 
@@ -230,9 +280,12 @@ func validateActionScope(command Command) error {
 		return nil
 	}
 	switch action := command.Action.(type) {
-	case StartAction:
+	// A resume is a start: either scope is meaningful, because the scope names
+	// where the new session lands.
+	case StartAction, ResumeSessionAction:
 		return nil
-	case SendAction, StopAction, DeleteSessionAction, SetSessionTitleAction:
+	case SendAction, StopAction, DeleteSessionAction, SetSessionTitleAction,
+		RegisterConversationAction:
 		return nil
 	case CreateWorkstreamAction:
 		if command.Scope.Kind != ScopeInstallation {

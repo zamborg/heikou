@@ -21,6 +21,7 @@ import (
 	"github.com/zamborg/heikou/internal/config"
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/control/controltest"
+	"github.com/zamborg/heikou/internal/format"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/transcript"
 	"github.com/zamborg/heikou/internal/workstream"
@@ -123,6 +124,8 @@ func TestRefusalsNeverReachForAController(t *testing.T) {
 		{"stop takes exactly one session", []string{"stop", "a", "b"}, "usage: h stop"},
 		{"peek takes exactly one session", []string{"peek"}, "usage: h peek"},
 		{"history takes exactly one session", []string{"history"}, "usage: h history"},
+		{"resume requires a message", []string{"resume", testSessionID}, "usage: h resume"},
+		{"conversation takes exactly one session", []string{"conversation"}, "usage: h conversation"},
 		{"history refuses a negative count", []string{"history", testSessionID, "--last", "-1"}, "cannot be negative"},
 		{"delete demands confirmation", []string{"delete", testSessionID}, "pass --yes to confirm"},
 		{"archive demands confirmation", []string{"ws", "archive", "Parser"}, "pass --yes to confirm"},
@@ -532,6 +535,101 @@ func TestHistoryDistinguishesAnUnsupportedRunnerFromAMissingFile(t *testing.T) {
 	}
 	if decoded["runner"] != "codex" {
 		t.Errorf("runner = %v, want the answer to name what supplied it", decoded["runner"])
+	}
+}
+
+// The verb prints the source next to the id, because the two mean different
+// things: one is what Heikou told the runner to use, the other is a match
+// against files the runner wrote. A reader about to resume needs to know which.
+func TestConversationReportsTheIdAndHowHeikouKnowsIt(t *testing.T) {
+	h := newHarness(t)
+	h.service.RegisterConversationFunc = func(context.Context, string) (workstream.Conversation, error) {
+		return workstream.Conversation{
+			ID: "019e6d0c-14bd-7792-91d2-f684a8dc6e80", Source: workstream.ConversationObserved,
+			RecordedAt: time.Now(),
+		}, nil
+	}
+	if err := h.app.run([]string{"conversation", testSessionID, "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &decoded); err != nil {
+		t.Fatalf("--json output is not an object: %v", err)
+	}
+	if decoded["registered"] != true {
+		t.Errorf("registered = %v, want true", decoded["registered"])
+	}
+	if decoded["conversation_id"] != "019e6d0c-14bd-7792-91d2-f684a8dc6e80" {
+		t.Errorf("conversation_id = %v", decoded["conversation_id"])
+	}
+	if decoded["conversation_source"] != "observed" {
+		t.Errorf("conversation_source = %v, want observed", decoded["conversation_source"])
+	}
+}
+
+// An unregistered conversation is an answer, not a failure — Codex mints its
+// own id and the record proving which one may simply not be there. Exiting
+// non-zero would make a normal state look like a broken installation.
+func TestConversationWithoutARegistrationSucceedsAndSaysWhy(t *testing.T) {
+	h := newHarness(t)
+	h.service.RegisterConversationFunc = func(context.Context, string) (workstream.Conversation, error) {
+		return workstream.Conversation{}, errors.New("no rollout matches this session's launch")
+	}
+	if err := h.app.run([]string{"conversation", testSessionID}); err != nil {
+		t.Fatalf("an unregistered conversation must not be an error: %v", err)
+	}
+	output := h.out.String()
+	if !strings.Contains(output, "no conversation registered") || !strings.Contains(output, "no rollout matches") {
+		t.Errorf("output = %q, want a plain statement of why", output)
+	}
+}
+
+func TestResumeReportsTheConversationItContinuedAndTheSessionItMade(t *testing.T) {
+	h := newHarness(t)
+	const resumedID = "018f0000-0000-4000-8000-0000000000c3"
+	h.service.ResumeSessionFunc = func(_ context.Context, id, prompt string) (control.Session, error) {
+		if id != testSessionID {
+			t.Errorf("resumed session id = %q, want %q", id, testSessionID)
+		}
+		if prompt != "carry on with the parser" {
+			t.Errorf("resume prompt = %q", prompt)
+		}
+		return control.Session{
+			ID: resumedID, Backend: heikou.BackendClaude, Status: control.StatusLive, Durable: true,
+			Record: workstream.SessionRecord{
+				ID: resumedID,
+				Conversation: &workstream.Conversation{
+					ID: testSessionID, Source: workstream.ConversationAssigned, RecordedAt: time.Now(),
+				},
+			},
+		}, nil
+	}
+	if err := h.app.run([]string{"resume", testSessionID, "carry", "on", "with", "the", "parser"}); err != nil {
+		t.Fatal(err)
+	}
+	output := h.out.String()
+	if !strings.Contains(output, "resumed claude conversation") {
+		t.Errorf("output = %q", output)
+	}
+	if !strings.Contains(output, format.ShortID(resumedID)) {
+		t.Errorf("output = %q, want it to name the new session", output)
+	}
+}
+
+// Resume needs a durable record, because that is where the conversation lives.
+// An orphaned pane has a runtime and no registration, and saying so beats
+// starting something that continues nothing.
+func TestResumeRefusesASessionWithNoDurableRecord(t *testing.T) {
+	h := newHarness(t)
+	h.service.FindFunc = func(context.Context, string) (control.Session, error) {
+		return control.Session{
+			ID: testSessionID, Backend: heikou.BackendCodex,
+			Status: control.StatusLive, Orphaned: true, Durable: false,
+		}, nil
+	}
+	err := h.app.run([]string{"resume", testSessionID, "carry on"})
+	if err == nil || !strings.Contains(err.Error(), "no durable record") {
+		t.Fatalf("error = %v, want a refusal naming the missing record", err)
 	}
 }
 

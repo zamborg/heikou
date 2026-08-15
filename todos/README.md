@@ -8,9 +8,11 @@ not become an undifferentiated backlog.
 | --- | --- |
 | [Code-quality and reliability audit](code-quality-audit.md) | Active backlog |
 | [Heikou pilot](heikou-pilot.md) | CLI verbs and agent instructions shipped; pilot loop and UI deferred |
-| [Session history](session-history.md) | `h history` shipped for Claude; Codex unsupported |
+| [Session history](session-history.md) | `h history` shipped for Claude; Codex parser still open |
+| [Session resume](session-resume.md) | Shipped; conversations registered automatically and `h resume` continues them |
 | [Composable composer modules](composer-modules.md) | Proposed |
 | [Configurable brief sources](brief-sources.md) | Shipped |
+| [What a runner exposes about what it is doing](runner-activity.md) | Transcript `activity` source shipped; Claude's per-process status file documented and unbuilt |
 | [Session status, titles, and recency](session-status-titles.md) | Durable titles shipped in V0.3.4; semantic status deferred |
 | [Session ordering within a workstream](session-ordering.md) | Proposed; needs a durable order field and a migration |
 

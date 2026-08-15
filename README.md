@@ -23,9 +23,10 @@ daemon, manager agent, task graph, or replacement execution engine.
 - **Composer** — the dashboard input bar used to start sessions and send
   follow-up messages. Its prefix names the destination `Enter` will commit to.
 - **Brief** — the one-line summary in the middle of a session row. Its lead is
-  the session's title, initial task, or runner; the text after `↳` is the latest
-  message sent through Heikou. A leading `~` marks text Heikou derived rather
-  than observed.
+  the session's title, initial task, or runner; the text after `↳` is what the
+  runner last recorded the session doing, falling back to the latest message
+  sent through Heikou. A leading `~` marks text Heikou derived rather than
+  observed.
 - **Ungrouped** — durable sessions with no active workstream membership.
 - **Orphaned** — tmux panes carrying a Heikou ID unknown to durable state; they
   are never silently adopted.
@@ -110,6 +111,7 @@ key never depends on remembering which one you meant:
 | `Ctrl-N` | Create a workstream, named through the composer |
 | `Ctrl-R` | Rename the selected workstream, or edit/clear the selected session's durable title |
 | `Ctrl-T` | Mark the selected session for a move; on a workstream, move the marked session there or adopt an orphan |
+| `Ctrl-V` twice on a workstream | Archive it off the dashboard. The first press names what happens and the second does it; its sessions move to Ungrouped and keep running, and any other key cancels |
 | `Shift-Up` / `Shift-Down` | Reorder a named workstream, or move a session to the adjacent workstream |
 | `Up` / `Down` | Select a workstream or session, or move between multiline composer rows |
 | `Option-Up` / `Option-Down` | Jump the selection to the previous or next workstream, passing over the sessions between |
@@ -141,20 +143,34 @@ Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 view of its own.
 
 Each session row carries a **brief**: the durable user title when one is set,
-otherwise a one-line initial task, followed after `↳` by the most recent message
-successfully sent through Heikou, for as long as the tmux runtime is retained.
-The two halves get separate width budgets, so a long title cannot crowd the
-message out and a narrow row drops the message rather than showing a fragment of
-it. Rows omit the **latest via Heikou** label that names the field — twenty
-columns the message itself can use — and the details pane below still spells it
-out. Text entered directly in an attached native terminal is not observable by
-this shim.
+otherwise a one-line initial task, followed after `↳` by what the session is
+doing. The two halves get separate width budgets, so a long title cannot crowd
+the second out and a narrow row drops it rather than showing a fragment of it.
+Rows omit the label that names the field — twenty columns the text itself can
+use — and the details pane below still spells it out.
+
+That second half is a real status line, not a restatement of what you typed:
+
+```text
+● claude  a1b2c3  live   Fix flaky OAuth tests  ↳ ~running make check
+● claude  d4e5f6  live   Release the Linux build ↳ ~editing packaging.go
+● codex   9a8b7c  live   Rewrite the retry loop  ↳ also check the timeout
+```
+
+Heikou reads it from the transcript Claude Code writes for the session it
+launched — the last tool call, or the first line of a finished reply. The `~` is
+not decoration: the phrase is derived from another program's records, so it is
+marked as something Heikou was told rather than saw. Codex writes an equivalent
+record but mints its own session id, so Heikou cannot tell which file belongs to
+which session; those rows fall through to the latest message sent through
+Heikou, as before. Text entered directly in an attached native terminal is not
+observable either way.
 
 Which sources fill a brief is a single ordered layout you can change in
-settings, so a row can show only your title, or carry a runner's own status
-line. Anything a source cannot prove from durable state or a tmux observation
-renders with a leading `~`, the same way an exit code tmux cannot prove is
-reported as unknown rather than as zero.
+settings, so a row can show only your title, or drop the activity line, or carry
+your own program's output. Anything a source cannot prove from durable state or
+a tmux observation renders with a leading `~`, the same way an exit code tmux
+cannot prove is reported as unknown rather than as zero.
 
 Leaving the dashboard never stops an agent. Exited and failed panes remain
 inspectable while tmux retains them. Stopping removes the runtime but preserves
@@ -179,7 +195,7 @@ h stop a1b2c3
 ```
 
 Every organizing action is also a command, so the whole durable model can be
-driven without the TUI. Root and archive management live here only:
+driven without the TUI:
 
 ```sh
 h ws create "API work" -C ~/code/api -d "the public API"
@@ -193,6 +209,8 @@ h move a1b2c3 --ungrouped
 h adopt a1b2c3 -w "Public API"
 h peek a1b2c3
 h history a1b2c3 --last 10
+h conversation a1b2c3
+h resume a1b2c3 "Pick this back up and finish the retry work"
 h ws archive "Public API" --yes
 h delete a1b2c3 --yes
 ```
@@ -208,6 +226,56 @@ availability, a stable process-state enum, and an `exit_code` that is `null`
 when tmux cannot prove the outcome. Every command above accepts `--json` and
 returns a machine-readable result. These are local human CLI surfaces; they do
 not enable manager authority.
+
+## Resuming a conversation
+
+A tmux pane is mortal. The conversation inside it is not: both runners write it
+to disk and can continue it later by id. Heikou registers that id on the session
+automatically, so `h resume` picks the work back up instead of restarting it
+cold.
+
+```sh
+h conversation a1b2c3    # the runner conversation id, and how Heikou knows it
+h resume a1b2c3 "Pick this back up and finish the retry work"
+```
+
+Resuming starts a *new* session that continues the old conversation. The
+original record is left exactly as it was, because it is the durable account of
+what already happened, including how it ended.
+
+How the id is known differs by runner, and Heikou reports which case it is
+rather than presenting them as the same fact:
+
+| | id chosen at launch | resume by id | Heikou records it as |
+| --- | --- | --- | --- |
+| **Claude** | yes, `--session-id` | yes, `--resume` | `assigned` |
+| **Codex** | no such flag | yes, `codex resume` | `observed` |
+
+For Claude the id is a fact Heikou caused: Heikou already launched
+`claude --session-id <durable id>`, so the conversation id *is* the session id
+and nothing has to be looked up.
+
+Codex mints its own id and offers no way to set it, so Heikou learns it by
+matching what Codex wrote. A rollout under `~/.codex/sessions` must agree on
+three things before it is accepted: the launch directory, a start time inside
+the match window, and the **verbatim initial prompt**. The prompt is what makes
+this evidence rather than a guess — running several agents in one repository at
+once is the point of Heikou, so directory and time alone routinely describe more
+than one session.
+
+Anything other than exactly one match is refused. If no rollout matches, or if
+two are genuinely indistinguishable, Heikou records nothing and says so:
+
+```text
+$ h conversation a1b2c3
+no conversation registered for a1b2c3 (codex): more than one codex rollout
+matches this session's launch directory, start time and initial prompt, so
+Heikou cannot tell which conversation is this one
+```
+
+That is a deliberate refusal, not a gap to be filled by picking the closest
+match. A wrong id resumes someone else's work while looking exactly as
+confident as a right one.
 
 ## The pilot
 
@@ -284,11 +352,19 @@ root and asks once more before doing it. A workstream always keeps its last
 root. The composer prefix names the slot the whole time, which is what lets one
 chord carry three outcomes honestly.
 
+`Ctrl-V` archives the selected workstream, which is the one organize verb that
+takes a row off the dashboard, so it asks: the first press names the workstream
+and says what becomes of its sessions, the second press does it, and any other
+key cancels. It is a bare control chord because those arrive as a single byte
+and need none of the enhanced key reporting that decides whether a modified
+arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
+available — the composer owns it as line start — and `v` is the only other
+letter of "archive" that no chord had already claimed.
+
 Because every printable key belongs to the composer, these are chords rather
 than bare letters. That is the whole reason a separate organizer view existed;
 folding the verbs into chords removed the view and the second set of keys with
-it. Archiving stayed in the CLI rather than claiming a chord, since it is setup
-rather than operation.
+it.
 
 The read-only lower pane follows the selection: a workstream shows a bounded
 `notes.md` preview and a shallow tree of its artifact directory, and a session
@@ -303,9 +379,10 @@ cursor sits still. Press `F3` after an agent or editor rewrites notes under a
 stationary cursor; moving off the row and back does the same thing.
 
 Roots are `Ctrl-O` on the dashboard and `h ws root add|set|rm` on the CLI;
-archiving is `h ws archive`. Every workstream keeps at least one root, root
-edits never rewrite historical session records or touch the filesystem, and
-archiving keeps all durable sessions and moves their memberships to Ungrouped.
+archiving is `Ctrl-V` on the dashboard and `h ws archive` on the CLI. Every
+workstream keeps at least one root, root edits never rewrite historical session
+records or touch the filesystem, and archiving keeps all durable sessions,
+stops no runtime, and moves their memberships to Ungrouped.
 
 The composer always shows its exact workstream and launch root. A workstream may
 contain sessions launched from several registered roots, but membership never
@@ -391,14 +468,43 @@ explicitly empty `detail` is how you ask for a row that shows only its lead:
 }
 ```
 
-The built-in sources are `title`, `prompt`, `latest`, and `runner`. Anything
-else must be defined under `brief.sources` as a command Heikou runs:
+The built-in sources are:
+
+| Source | What fills it |
+| --- | --- |
+| `title` | the durable title you gave the session |
+| `prompt` | the immutable task it was launched with |
+| `latest` | the most recent message sent through Heikou |
+| `activity` | what the runner last recorded the session doing |
+| `runner` | `claude session`, as a last resort |
+
+`activity` is the only one that goes and looks. It reads the tail of the
+transcript Claude Code writes for the session — no network, no API key, nothing
+to configure — and phrases the last record: `running make check`,
+`editing observer.go`, `searching for BriefSource`, or
+`replied · make check is green`. It is derived from another program's file, so
+it always renders with the `~` mark, and it reads at most once every five
+seconds per session and only after that session has shown terminal activity.
+Naming it is what turns that on; drop it from the layout and Heikou reads
+nothing:
 
 ```json
 {
   "brief": {
     "lead": ["title", "prompt", "runner"],
-    "detail": ["status", "latest"],
+    "detail": ["latest", "prompt"]
+  }
+}
+```
+
+Anything that is not built in must be defined under `brief.sources` as a command
+Heikou runs:
+
+```json
+{
+  "brief": {
+    "lead": ["title", "prompt", "runner"],
+    "detail": ["status", "activity", "latest"],
     "sources": {
       "status": {
         "command": ["agent-status", "--porcelain"],
@@ -422,9 +528,11 @@ many it deferred. Output is stripped of ANSI and control characters, reduced to
 one line, and bounded. A source that fails or times out drops its text rather
 than leaving a stale line that looks current.
 
-Command output always renders with a leading `~`. The command may well be
-reporting the truth, but Heikou cannot check that, and the mark is the
-difference between what it observed and what it was told. Unknown source names,
+Command output always renders with a leading `~`, and so does `activity`. A
+command may well be reporting the truth, but Heikou cannot check that; a phrase
+read out of a transcript is a reading of another program's record rather than
+something Heikou watched happen. The mark is the difference between what it
+observed and what it was told. Unknown source names,
 duplicate entries, an empty `lead`, a source nothing refers to, and a timeout
 longer than its interval are all load errors rather than surprises at runtime.
 Brief changes apply as soon as settings are reloaded with `r`.

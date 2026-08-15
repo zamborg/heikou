@@ -16,6 +16,17 @@ cadence can fill either slot without the row learning about it. See the brief
 section of `docs/DESIGN.md`, and `todos/brief-sources.md` for the configurable
 and external sources that remain unbuilt.
 
+Step 3 below is now done, and its answer is in
+[runner-activity.md](runner-activity.md). The short version: Claude Code writes
+`~/.claude/sessions/<pid>.json` keyed by the session id Heikou minted, carrying
+`status` ∈ `busy`/`shell`/`idle`/`waiting` written on every transition, plus a
+`waitingFor` phrase — `input needed`, `sandbox request`, `dialog open`. That is
+the signal steps 4 and 5 were waiting for. Codex has no equivalent and no
+externally supplied session id, so it remains unsupported. A transcript-backed
+`activity` source now fills the brief's detail slot, but nothing from it may
+enter the status column: it reads the most recent record, and this column is a
+claim about now.
+
 ## Product goal
 
 Make the dashboard answer three different questions without conflating them:
@@ -187,8 +198,9 @@ that its turn-start, turn-complete, and input-request signals are reliable.
    rows/details, and downgrade/invalid-state tests.
 2. [x] Represent dead panes with unknown outcomes honestly and stop persisting
    guessed success.
-3. [ ] Probe authoritative Claude and Codex signals in fixtures or opt-in smoke
-   tests.
+3. [x] Probe authoritative Claude and Codex signals in fixtures or opt-in smoke
+   tests. Done in [runner-activity.md](runner-activity.md); Claude's
+   per-process session file is the source steps 4 and 5 should use.
 4. [ ] Add the observer interface with only `working`, `ready`, and `unknown`
    beside the first reliable runner integration. Terminal outcomes always win.
 5. [ ] Add `needs_input` only after its signal is proven.

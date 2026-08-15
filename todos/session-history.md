@@ -29,15 +29,26 @@ wrong:
 - Subagent (sidechain) turns are excluded: they are not this session's
   conversation, and interleaving them reports an order that never happened.
 
+The same file now also answers a second question. `Reader.ReadActivity` reads
+the tail rather than the whole transcript and reports the one thing the session
+was last recorded doing, which fills the brief's detail slot; see
+[runner-activity.md](runner-activity.md).
+
 ## Still open
 
-Codex. It writes `~/.codex/sessions/<date>/rollout-<timestamp>-<uuid>.jsonl`
-with the launch `cwd` in a `session_meta` record, but it mints the id itself and
-Heikou never learns it. Correlating by directory and start time is a guess, and
-a guess that attributes one session's history to another is worse than no
-answer. Making Codex work needs Codex to accept an externally supplied session
-id, or to report the id it chose. Until then `h history` says `unsupported` and
-explains why.
+Codex history. **The blocker named here has since been removed** — see
+[session-resume.md](session-resume.md). This document said Codex history needed
+"Codex to accept an externally supplied session id, or to report the id it
+chose". Codex reports the id it chose, in the `session_meta` record of its
+rollout, and Heikou now identifies and registers that id per session on a unique
+launch-directory / time-window / verbatim-prompt match.
+
+So the identification problem is solved and only the parsing is left. Making
+`h history` work for Codex now means reading the rollout's `response_item`
+records — a different record vocabulary from Claude's, with its own ways to be
+wrong — and locating the file from the registered conversation id instead of
+scanning. Until someone does that, `h history` still says `unsupported` for
+Codex, and the reason it gives is now out of date rather than wrong in kind.
 
 ## The problem
 

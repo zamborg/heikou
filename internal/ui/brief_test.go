@@ -191,6 +191,39 @@ func TestConfiguredSourceReachesTheRowMarkedApproximate(t *testing.T) {
 	}
 }
 
+// The shipped default asks for the runner's activity ahead of the latest
+// message, so a row on a machine nobody has configured shows what the session
+// is doing rather than what it was last told.
+func TestTheDefaultDetailPrefersWhatTheRunnerIsDoing(t *testing.T) {
+	model, _ := newTestModel("/tmp", heikou.BackendClaude)
+	model.width, model.height = 120, 30
+	model.settings.Brief = config.Default().Brief
+
+	session := briefTestSession("Fix flaky OAuth tests", "investigate", "also check the retry")
+	model.snapshot.Sessions = []control.Session{session}
+	model.setSnapshot(model.snapshot)
+
+	// Nothing observed yet: the detail falls through to the latest message
+	// rather than leaving the slot blank.
+	if plain := ansi.Strip(model.renderSessionRow(session, false)); !strings.Contains(plain, "also check the retry") {
+		t.Fatalf("unobserved activity source did not fall through: %q", plain)
+	}
+
+	model.briefObservations = brief.Observations{
+		{Session: session.ID, Source: brief.SourceActivity}: {Text: "running make check"},
+	}
+	plain := ansi.Strip(model.renderSessionRow(session, false))
+	if !strings.Contains(plain, briefApproximateMark+"running make check") {
+		t.Fatalf("activity did not reach the row marked approximate: %q", plain)
+	}
+	if strings.Contains(plain, "also check the retry") {
+		t.Fatalf("activity did not take the detail slot ahead of the latest message: %q", plain)
+	}
+	if detail := model.sessionSecondaryDetail(session); !strings.HasPrefix(detail, "runner activity · ") {
+		t.Fatalf("details pane does not name the source: %q", detail)
+	}
+}
+
 // Reloading settings must not leave a removed source's text on screen.
 func TestReloadingSettingsDropsARemovedSourcesText(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)

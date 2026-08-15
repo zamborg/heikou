@@ -252,14 +252,27 @@ func TestSessionEnvironmentWithholdsPromptsAndMessages(t *testing.T) {
 	}
 }
 
-func TestUnconfiguredObserverRunsNothing(t *testing.T) {
-	observer := NewObserver(config.Default().Brief)
+// A layout that names only sources Heikou already has the answers for must not
+// schedule a pass at all. This is what keeps the observer off the clock for
+// someone who has turned the activity source off.
+func TestObserverRunsNothingForALayoutThatAsksNothing(t *testing.T) {
+	observer := NewObserver(config.BriefConfig{Lead: []string{"title", "runner"}, Detail: []string{"latest"}})
 	if observer.Configured() {
-		t.Fatal("the default configuration reported having sources to run")
+		t.Fatal("a layout of built-in state reported having something to run")
 	}
 	observations, report := observer.Observe(t.Context(), []control.Session{observerSession("x", time.Now())}, nil)
 	if len(observations) != 0 || report.Ran != 0 {
 		t.Fatalf("an unconfigured observer did work: %+v %+v", observations, report)
+	}
+}
+
+// The converse: the shipped default names the activity source, so it does have
+// work to schedule even though it defines no commands. A dashboard that decided
+// otherwise would silently show no activity on the configuration nearly every
+// user runs.
+func TestTheDefaultLayoutSchedulesTheActivitySource(t *testing.T) {
+	if !NewObserver(config.Default().Brief).Configured() {
+		t.Fatal("the default layout reported nothing to observe")
 	}
 }
 

@@ -91,6 +91,8 @@ h stop SESSION                                   # confirm with the user first
 h delete SESSION --yes                           # confirm with the user first
 h peek SESSION [--lines N]                       # current frame, not history
 h history SESSION [--last N] [--json]            # what the runner recorded
+h conversation SESSION [--json]                  # the runner conversation id, and its source
+h resume SESSION MESSAGE                         # continue that conversation in a new session
 h attach SESSION                                 # hands over the terminal
 ```
 
@@ -137,3 +139,9 @@ These messages are specific. Show them to the user rather than paraphrasing.
 - describe a session as working, ready, blocked, or needing input
 - present `h peek` output as a record of what a session did; `h history` is
   the surface that answers that, and it says when it cannot
+- run `h resume` without confirming with the user first — it starts a new
+  session and sends it a message
+- report a conversation id without its source. `assigned` means Heikou chose the
+  id and passed it to the runner; `observed` means Heikou matched a file the
+  runner wrote. If `h conversation` says nothing is registered, say that, and do
+  not offer a likely id

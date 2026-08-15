@@ -103,6 +103,10 @@ type StartRequest struct {
 	// runner-specific task/session arguments without invoking a shell. It is
 	// ignored for no-agent sessions, which start tmux's default shell directly.
 	Command []string
+	// Resume names a native runner conversation this launch should continue
+	// rather than begin. Empty starts a fresh conversation. It travels as argv
+	// to the runner like every other launch value and is never interpolated.
+	Resume string
 }
 
 // Supervisor is the deliberately small boundary between the dashboard and

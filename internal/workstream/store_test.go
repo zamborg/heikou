@@ -157,11 +157,20 @@ func TestFileStoreLoadMigratesV1FixtureWithoutChangingDomainRevision(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Version != 2 || state.Revision != 9 {
-		t.Fatalf("migrated header = version %d revision %d, want version 2 revision 9", state.Version, state.Revision)
+	if state.Version != StateVersion || state.Revision != 9 {
+		t.Fatalf("migrated header = version %d revision %d, want version %d revision 9",
+			state.Version, state.Revision, StateVersion)
 	}
 	if len(state.Sessions) != 2 || state.Sessions[0].Title != "" || state.Sessions[0].InitialPrompt != "Preserve this launch identity" {
 		t.Fatalf("migrated sessions = %#v", state.Sessions)
+	}
+	// A v1 record predates the registration entirely, and the migration
+	// deliberately does not invent one. A back-filled conversation would be
+	// indistinguishable from an observed fact while being neither.
+	for _, session := range state.Sessions {
+		if session.Conversation != nil {
+			t.Fatalf("migration invented a conversation for session %s: %#v", session.ID, session.Conversation)
+		}
 	}
 	completed := state.Sessions[1]
 	if completed.Launch.Binding == nil || completed.Launch.Binding.Socket != "heikou-v1" ||
@@ -170,7 +179,7 @@ func TestFileStoreLoadMigratesV1FixtureWithoutChangingDomainRevision(t *testing.
 	}
 
 	persisted := readPersistedState(t, store.Path)
-	if persisted.Version != 2 || persisted.Revision != 9 {
+	if persisted.Version != StateVersion || persisted.Revision != 9 {
 		t.Fatalf("persisted migrated header = version %d revision %d", persisted.Version, persisted.Revision)
 	}
 	info, err := os.Stat(store.Path)
@@ -189,11 +198,11 @@ func TestFileStoreMutateMigratesV1FixtureAndCountsOnlyDomainChange(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.Version != 2 || state.Revision != 9 {
+		if state.Version != StateVersion || state.Revision != 9 {
 			t.Fatalf("no-op migration header = version %d revision %d", state.Version, state.Revision)
 		}
 		persisted := readPersistedState(t, store.Path)
-		if persisted.Version != 2 || persisted.Revision != 9 {
+		if persisted.Version != StateVersion || persisted.Revision != 9 {
 			t.Fatalf("persisted no-op migration header = version %d revision %d", persisted.Version, persisted.Revision)
 		}
 	})
@@ -209,8 +218,9 @@ func TestFileStoreMutateMigratesV1FixtureAndCountsOnlyDomainChange(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.Version != 2 || state.Revision != 10 {
-			t.Fatalf("mutated migration header = version %d revision %d, want version 2 revision 10", state.Version, state.Revision)
+		if state.Version != StateVersion || state.Revision != 10 {
+			t.Fatalf("mutated migration header = version %d revision %d, want version %d revision 10",
+				state.Version, state.Revision, StateVersion)
 		}
 	})
 }
@@ -227,6 +237,109 @@ func TestFileStoreLoadsV2TitleFixture(t *testing.T) {
 	if state.Sessions[0].Title != "Release Linux build" {
 		t.Fatalf("loaded title = %q", state.Sessions[0].Title)
 	}
+	if state.Sessions[0].Conversation != nil {
+		t.Fatalf("v2 migration invented a conversation: %#v", state.Sessions[0].Conversation)
+	}
+}
+
+// The v3 fixture carries all three states a session can be in: a conversation
+// Heikou assigned, one it observed, and none at all. A loader that dropped the
+// source, or that silently defaulted an absent registration into a present one,
+// fails here rather than in whatever resumes the wrong conversation.
+func TestFileStoreLoadsV3ConversationFixture(t *testing.T) {
+	store := storeFromFixture(t, "state-v3-valid.json")
+	state, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != StateVersion || state.Revision != 21 || len(state.Sessions) != 3 {
+		t.Fatalf("loaded v3 state = version %d revision %d sessions %d",
+			state.Version, state.Revision, len(state.Sessions))
+	}
+
+	assigned := state.Sessions[0].Conversation
+	if assigned == nil || assigned.Source != ConversationAssigned ||
+		assigned.ID != "018f0000-0000-4000-8000-000000000301" || assigned.RecordedAt.IsZero() {
+		t.Fatalf("assigned conversation = %#v", assigned)
+	}
+	observed := state.Sessions[1].Conversation
+	if observed == nil || observed.Source != ConversationObserved ||
+		observed.ID != "019e6d0c-14bd-7792-91d2-f684a8dc6e80" {
+		t.Fatalf("observed conversation = %#v", observed)
+	}
+	if state.Sessions[2].Conversation != nil {
+		t.Fatalf("unregistered conversation = %#v", state.Sessions[2].Conversation)
+	}
+
+	// Loading a current-version file must not rewrite it; only a migration may.
+	persisted := readPersistedState(t, store.Path)
+	if persisted.Revision != 21 {
+		t.Fatalf("persisted revision = %d, want 21", persisted.Revision)
+	}
+}
+
+func TestValidateConversationInvariants(t *testing.T) {
+	at := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		conversation *Conversation
+		wantErr      bool
+	}{
+		{name: "absent is valid"},
+		{
+			name:         "assigned",
+			conversation: &Conversation{ID: "abc", Source: ConversationAssigned, RecordedAt: at},
+		},
+		{
+			name:         "observed",
+			conversation: &Conversation{ID: "abc", Source: ConversationObserved, RecordedAt: at},
+		},
+		{
+			name:         "empty id",
+			conversation: &Conversation{Source: ConversationAssigned, RecordedAt: at},
+			wantErr:      true,
+		},
+		{
+			name:         "unknown source",
+			conversation: &Conversation{ID: "abc", Source: "guessed", RecordedAt: at},
+			wantErr:      true,
+		},
+		{
+			name:         "empty source",
+			conversation: &Conversation{ID: "abc", RecordedAt: at},
+			wantErr:      true,
+		},
+		{
+			name:         "missing recorded_at",
+			conversation: &Conversation{ID: "abc", Source: ConversationAssigned},
+			wantErr:      true,
+		},
+		{
+			name:         "surrounding whitespace",
+			conversation: &Conversation{ID: " abc ", Source: ConversationAssigned, RecordedAt: at},
+			wantErr:      true,
+		},
+		{
+			name:         "control character",
+			conversation: &Conversation{ID: "a\nb", Source: ConversationAssigned, RecordedAt: at},
+			wantErr:      true,
+		},
+		{
+			name: "too long",
+			conversation: &Conversation{
+				ID: strings.Repeat("x", MaxConversationIDRunes+1), Source: ConversationAssigned, RecordedAt: at,
+			},
+			wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateConversation(test.conversation)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateConversation(%#v) error = %v, wantErr %t", test.conversation, err, test.wantErr)
+			}
+		})
+	}
 }
 
 func TestFileStoreRejectsInvalidVersionedFixturesWithoutRewriting(t *testing.T) {
@@ -237,7 +350,12 @@ func TestFileStoreRejectsInvalidVersionedFixturesWithoutRewriting(t *testing.T) 
 		{fixture: "state-v1-rejects-v2-field.json", want: `unknown field "title"`},
 		{fixture: "state-v1-invalid.json", want: "invalid launch metadata"},
 		{fixture: "state-v2-unknown-field.json", want: `unknown field "surprise"`},
-		{fixture: "state-v3-future.json", want: "newer than supported version 2"},
+		// A file claiming v2 must refuse the v3 registration rather than absorb
+		// it. Absorbing it would let a newer Heikou's state be read, silently
+		// stripped of the conversation, and written back as if that were v2.
+		{fixture: "state-v2-rejects-v3-field.json", want: `unknown field "conversation"`},
+		{fixture: "state-v3-unknown-field.json", want: `unknown field "surprise"`},
+		{fixture: "state-v4-future.json", want: "newer than supported version 3"},
 	}
 	for _, test := range tests {
 		t.Run(test.fixture, func(t *testing.T) {

@@ -227,6 +227,45 @@ type sessionRecordV1 struct {
 	Outcome       *Outcome       `json:"outcome,omitempty"`
 }
 
+// stateV2 is the exact persisted v2 shape, kept for the same reason stateV1 is:
+// a file claiming v2 must reject the v3 conversation field rather than absorb
+// it, so that a state written by a newer Heikou cannot be silently downgraded
+// and rewritten with the registration dropped.
+type stateV2 struct {
+	Version     int               `json:"version"`
+	Revision    uint64            `json:"revision"`
+	Workstreams []Workstream      `json:"workstreams"`
+	Sessions    []sessionRecordV2 `json:"sessions"`
+	Memberships []Membership      `json:"memberships"`
+}
+
+type sessionRecordV2 struct {
+	ID            string         `json:"id"`
+	Backend       heikou.Backend `json:"backend"`
+	Title         string         `json:"title,omitempty"`
+	InitialPrompt string         `json:"initial_prompt"`
+	InitialRoot   string         `json:"initial_root"`
+	CreatedAt     time.Time      `json:"created_at"`
+	Launch        LaunchIntent   `json:"launch"`
+	Outcome       *Outcome       `json:"outcome,omitempty"`
+}
+
+func (legacy stateV2) state() State {
+	state := State{
+		Version: legacy.Version, Revision: legacy.Revision,
+		Workstreams: legacy.Workstreams, Memberships: legacy.Memberships,
+		Sessions: make([]SessionRecord, 0, len(legacy.Sessions)),
+	}
+	for _, record := range legacy.Sessions {
+		state.Sessions = append(state.Sessions, SessionRecord{
+			ID: record.ID, Backend: record.Backend, Title: record.Title,
+			InitialPrompt: record.InitialPrompt, InitialRoot: record.InitialRoot,
+			CreatedAt: record.CreatedAt, Launch: record.Launch, Outcome: record.Outcome,
+		})
+	}
+	return state
+}
+
 func (legacy stateV1) state() State {
 	state := State{
 		Version: legacy.Version, Revision: legacy.Revision,
@@ -265,6 +304,12 @@ func decodeStoredState(data []byte) (State, error) {
 		}
 		return legacy.state(), nil
 	case 2:
+		var legacy stateV2
+		if err := decodeStrictState(data, &legacy); err != nil {
+			return State{}, err
+		}
+		return legacy.state(), nil
+	case 3:
 		var state State
 		if err := decodeStrictState(data, &state); err != nil {
 			return State{}, err
@@ -292,6 +337,7 @@ type stateMigration struct {
 
 var orderedStateMigrations = []stateMigration{
 	{from: 1, to: 2, apply: migrateStateV1ToV2},
+	{from: 2, to: 3, apply: migrateStateV2ToV3},
 }
 
 func migrateState(state State) (State, bool, error) {
@@ -343,6 +389,22 @@ func migrationFrom(version int) (stateMigration, bool) {
 
 func migrateStateV1ToV2(state State) (State, error) {
 	state.Version = 2
+	return state, nil
+}
+
+// migrateStateV2ToV3 adds the optional conversation registration. It is a
+// schema-only transition: every existing session keeps a nil conversation
+// rather than being back-filled.
+//
+// Back-filling would be possible for Claude — Heikou passed --session-id, so
+// the durable id is the conversation id — and it is deliberately not done. A
+// v2 record cannot distinguish a session that ran from one whose launch failed
+// before Claude ever wrote a transcript, so back-filling would register
+// conversations that never existed and present them as assigned facts. The
+// registration is cheap to acquire on the next launch and worthless if it is
+// not true.
+func migrateStateV2ToV3(state State) (State, error) {
+	state.Version = 3
 	return state, nil
 }
 

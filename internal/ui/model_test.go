@@ -54,6 +54,8 @@ type fakeController struct {
 	createdWorkstream      string
 	renamedWorkstream      string
 	renamedValue           string
+	archivedWorkstream     string
+	archiveErr             error
 }
 
 func (f *fakeController) Snapshot(context.Context) (control.Snapshot, error) { return f.snapshot, nil }
@@ -91,6 +93,10 @@ func (f *fakeController) SetSessionTitle(_ context.Context, id, title string) er
 func (f *fakeController) ReorderWorkstream(_ context.Context, id string, delta int) (bool, error) {
 	f.reorderedWorkstream, f.reorderedDelta = id, delta
 	return !f.reorderNoop, nil
+}
+func (f *fakeController) ArchiveWorkstream(_ context.Context, id string) error {
+	f.archivedWorkstream = id
+	return f.archiveErr
 }
 func (f *fakeController) MoveSession(_ context.Context, sessionID, workstreamID string) error {
 	f.movedSession, f.movedTarget = sessionID, workstreamID
@@ -2472,5 +2478,172 @@ func TestTheReplyLabelRowIsPaidForOutOfTheLayout(t *testing.T) {
 	model = updated.(Model)
 	if replying := model.dashboardAvailableHeight(); replying != plain-1 {
 		t.Fatalf("available height = %d while replying, want %d", replying, plain-1)
+	}
+}
+
+// ctrlV is the archive chord. It is the one organize verb that takes a row off
+// the dashboard, so most of these tests are about the presses that must not
+// archive: the first one, the wrong row, and the one after something else was
+// typed.
+var ctrlV = tea.KeyPressMsg(tea.Key{Code: 'v', Mod: tea.ModCtrl})
+
+func archiveModel(t *testing.T, sessions ...control.Session) (Model, *fakeController, workstream.Workstream) {
+	t.Helper()
+	model, controller := newTestModel("/tmp/cwd", heikou.BackendCodex)
+	container := testWorkstream("018f0000-0000-4000-8000-0000000000d1", "Core", []string{"/tmp/cwd"}, time.Now())
+	for index := range sessions {
+		sessions[index].WorkstreamID = container.ID
+	}
+	model.setSnapshot(control.Snapshot{Workstreams: []workstream.Workstream{container}, Sessions: sessions})
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	return model, controller, container
+}
+
+func TestArchiveChordAsksBeforeItReachesTheCommandPlane(t *testing.T) {
+	now := time.Now()
+	live := testDurableSession("018f0000-0000-4000-8000-0000000000d2", "", heikou.BackendCodex, "still working", "/tmp/cwd", now)
+	stopped := testDurableSession("018f0000-0000-4000-8000-0000000000d3", "", heikou.BackendClaude, "finished", "/tmp/cwd", now)
+	stopped.Runtime, stopped.Status = nil, control.StatusStopped
+	model, controller, container := archiveModel(t, live, stopped)
+
+	updated, cmd := model.Update(ctrlV)
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("the first archive chord dispatched a command")
+	}
+	if model.confirmArchive != container.ID {
+		t.Fatalf("confirmArchive = %q, want %q", model.confirmArchive, container.ID)
+	}
+	if controller.archivedWorkstream != "" {
+		t.Fatalf("an unconfirmed chord archived %q", controller.archivedWorkstream)
+	}
+	// The consequence a chord could otherwise hide: the member sessions are not
+	// deleted and the live runtime is not stopped.
+	for _, want := range []string{"Core", "2 sessions move to Ungrouped", "1 live keep running"} {
+		if !strings.Contains(model.notice, want) {
+			t.Fatalf("armed notice = %q, want it to mention %q", model.notice, want)
+		}
+	}
+
+	updated, cmd = model.Update(ctrlV)
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("the second archive chord did not dispatch")
+	}
+	if model.confirmArchive != "" {
+		t.Fatal("the confirmation outlived the press that consumed it")
+	}
+	message := cmd()
+	if controller.archivedWorkstream != container.ID {
+		t.Fatalf("archived workstream = %q, want %q", controller.archivedWorkstream, container.ID)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	for _, want := range []string{"Core", "Ungrouped"} {
+		if !strings.Contains(model.notice, want) {
+			t.Fatalf("completion notice = %q, want it to mention %q", model.notice, want)
+		}
+	}
+	if model.selected != "" {
+		t.Fatalf("selection = %q, want it released so the cursor follows the sessions to Ungrouped", model.selected)
+	}
+}
+
+func TestArchiveChordAnswersToANamedWorkstreamRowOnly(t *testing.T) {
+	now := time.Now()
+	session := testDurableSession("018f0000-0000-4000-8000-0000000000d4", "", heikou.BackendCodex, "task", "/tmp/cwd", now)
+	orphan := testOrphan("018f0000-0000-4000-8000-0000000000d5", "/tmp/cwd", now)
+	model, controller := newTestModel("/tmp/cwd", heikou.BackendCodex)
+	model.setSnapshot(control.Snapshot{Sessions: []control.Session{session}, Orphans: []control.Session{orphan}})
+
+	for _, test := range []struct{ name, row, want string }{
+		{"ungrouped", ungroupedKey, "cannot be archived"},
+		{"session", sessionRowKey(session), "Ctrl-X is the session chord"},
+		{"orphan header", orphanedKey, "adopt one with Ctrl-T"},
+		{"orphan", sessionRowKey(orphan), "Ctrl-X is the session chord"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model.selected = test.row
+			model.restoreSelection()
+			updated, cmd := model.Update(ctrlV)
+			refused := updated.(Model)
+			if cmd != nil || refused.confirmArchive != "" {
+				t.Fatalf("%s armed an archive", test.name)
+			}
+			if !strings.Contains(refused.errorText, test.want) {
+				t.Fatalf("error = %q, want it to mention %q", refused.errorText, test.want)
+			}
+		})
+	}
+	if controller.archivedWorkstream != "" {
+		t.Fatalf("a row that is not a named workstream archived %q", controller.archivedWorkstream)
+	}
+}
+
+// The gate has to be a gate rather than a delay: anything else the user does
+// between the two presses means the second one is no longer a confirmation.
+func TestAnythingElseDisarmsAPendingArchive(t *testing.T) {
+	model, controller, container := archiveModel(t)
+
+	updated, _ := model.Update(ctrlV)
+	model = updated.(Model)
+	if model.confirmArchive != container.ID {
+		t.Fatal("the archive was not armed")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
+	model = updated.(Model)
+	if model.confirmArchive != "" {
+		t.Fatal("typing into the composer left the archive armed")
+	}
+
+	updated, cmd := model.Update(ctrlV)
+	model = updated.(Model)
+	if cmd != nil || model.confirmArchive != container.ID {
+		t.Fatal("the chord after a disarm archived instead of asking again")
+	}
+	if controller.archivedWorkstream != "" {
+		t.Fatalf("archived %q without a confirmed pair of presses", controller.archivedWorkstream)
+	}
+}
+
+// Archiving never routes through the composer, so it must neither fire while a
+// rename owns it nor quietly discard a launch draft that happens to be typed.
+func TestArchiveChordLeavesTheComposerAlone(t *testing.T) {
+	model, controller, container := archiveModel(t)
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Mod: tea.ModCtrl}))
+	model = updated.(Model)
+	if model.composerEdit != composerEditRenameWorkstream {
+		t.Fatalf("Ctrl-R did not open the rename: %v", model.composerEdit)
+	}
+	updated, cmd := model.Update(ctrlV)
+	model = updated.(Model)
+	if cmd != nil || model.confirmArchive != "" {
+		t.Fatal("the archive chord fired while a rename owned the composer")
+	}
+	if !strings.Contains(model.errorText, "before archiving") {
+		t.Fatalf("error = %q", model.errorText)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model = updated.(Model)
+	model.selected = workstreamRowKey(container.ID)
+	model.restoreSelection()
+	model.insertText("a task for later")
+	updated, _ = model.Update(ctrlV)
+	model = updated.(Model)
+	updated, cmd = model.Update(ctrlV)
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("the confirmed archive did not dispatch")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if controller.archivedWorkstream != container.ID {
+		t.Fatalf("archived workstream = %q", controller.archivedWorkstream)
+	}
+	if model.inputValue() != "a task for later" {
+		t.Fatalf("draft = %q, want the archive to have left it untouched", model.inputValue())
 	}
 }

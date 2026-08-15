@@ -373,6 +373,7 @@ func (t *Tmux) Start(ctx context.Context, request heikou.StartRequest) (heikou.S
 		newSession = append(newSession,
 			t.executable, "__agent", string(request.Backend),
 			runner.Encode(request.Prompt), runner.Encode(title), encodedCommand,
+			runner.Encode(request.Resume),
 		)
 	}
 	commands := [][]string{
