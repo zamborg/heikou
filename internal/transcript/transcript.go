@@ -177,7 +177,11 @@ type Transcript struct {
 // Request names one session to read. Root is the directory the session was
 // launched in, which is how Claude Code files its transcripts.
 type Request struct {
-	Runner    heikou.Backend
+	Runner heikou.Backend
+	// SessionID is the id the runner filed the transcript under, which is the
+	// runner's conversation id rather than Heikou's durable session id. The two
+	// are equal for a session Heikou launched fresh and differ for a resumed
+	// one, so a caller holding a session should ask it which id this is.
 	SessionID string
 	Root      string
 	// Last is how many recent turns to keep. Zero means DefaultTurns; a

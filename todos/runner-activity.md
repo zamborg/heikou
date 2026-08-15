@@ -25,9 +25,17 @@ real files under `~/.claude` and `~/.codex` in August 2026, against Claude Code
 ### 1. The transcript — `~/.claude/projects/<slug>/<session id>.jsonl`
 
 This is what shipped. `internal/transcript` already located and parsed it for
-`h history`, and Heikou owns the session id because it launches
+`h history`, and Heikou owns the id in the file name because it launches
 `claude --session-id <id>`, so the file is identified exactly rather than
 guessed at.
+
+The id in that name is the *conversation*, not the durable session. They are the
+same value for a session Heikou launched fresh and differ the moment one is
+resumed: `--resume <conversation id>` keeps appending to the original file while
+the new session carries a durable id of its own. So a reader asks the session
+which id its records are filed under — `control.Session.ConversationID` — rather
+than assuming the two are interchangeable. 0.7.2 assumed it, and every resumed
+session's activity line was blank for as long as it ran.
 
 The records are richer than `h history` needed. Across 40 real transcripts the
 types present are `assistant`, `user`, `attachment`, `system`, `mode`,

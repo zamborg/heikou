@@ -49,9 +49,12 @@ func (a *app) runHistory(args []string) error {
 	if turns == 0 {
 		turns = -1
 	}
+	// A resumed session appends to the conversation it continued, so the file
+	// is named for that conversation and not for this session's durable id.
+	// Asking by the durable id reports a resumed session as having no history.
 	result, err := a.transcripts.Read(transcript.Request{
 		Runner:    session.Backend,
-		SessionID: session.ID,
+		SessionID: session.ConversationID(),
 		Root:      historyRoot(session.Root, session.Record.InitialRoot),
 		Last:      turns,
 	})

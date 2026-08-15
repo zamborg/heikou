@@ -335,3 +335,63 @@ func TestResumeRequiresADurableSessionAndAPrompt(t *testing.T) {
 		t.Fatal("resuming an unknown session was accepted")
 	}
 }
+
+// Everything that reads a runner-written file asks a session which id it was
+// filed under, so the fallback rule lives in one place rather than at each
+// reader. A resumed session is the case that made this matter: its durable id
+// names no file and never will.
+func TestASessionNamesTheConversationItsTranscriptIsFiledUnder(t *testing.T) {
+	const durable = "018f0000-0000-4000-8000-00000000e001"
+	const conversation = "018f0000-0000-4000-8000-00000000e002"
+	at := time.Now()
+
+	for name, test := range map[string]struct {
+		record workstream.SessionRecord
+		want   string
+	}{
+		"a resumed session answers with the conversation it continued": {
+			record: workstream.SessionRecord{ID: durable, Conversation: &workstream.Conversation{
+				ID: conversation, Source: workstream.ConversationAssigned, RecordedAt: at,
+			}},
+			want: conversation,
+		},
+		// An observed id is the one Heikou matched against a file the runner
+		// wrote, which makes it the better answer to "which file", not a worse
+		// one. Source separates what Heikou caused from what it inferred; it
+		// does not rank ids by how well they name a path.
+		"an observed registration is used just the same": {
+			record: workstream.SessionRecord{ID: durable, Conversation: &workstream.Conversation{
+				ID: conversation, Source: workstream.ConversationObserved, RecordedAt: at,
+			}},
+			want: conversation,
+		},
+		"a fresh claude session answers with its own id": {
+			record: workstream.SessionRecord{ID: durable, Conversation: &workstream.Conversation{
+				ID: durable, Source: workstream.ConversationAssigned, RecordedAt: at,
+			}},
+			want: durable,
+		},
+		"an unregistered session falls back to the durable id": {
+			record: workstream.SessionRecord{ID: durable},
+			want:   durable,
+		},
+		"a blank registration is not allowed to erase the id": {
+			record: workstream.SessionRecord{ID: durable, Conversation: &workstream.Conversation{ID: "  "}},
+			want:   durable,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := Session{ID: durable, Backend: heikou.BackendClaude, Record: test.record}
+			if got := session.ConversationID(); got != test.want {
+				t.Fatalf("ConversationID() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	// An orphan has a runtime and no durable record at all, so the only id it
+	// has is the one the pane carries.
+	orphan := Session{ID: durable, Orphaned: true}
+	if got := orphan.ConversationID(); got != durable {
+		t.Fatalf("orphan ConversationID() = %q, want %q", got, durable)
+	}
+}

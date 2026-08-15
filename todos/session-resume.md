@@ -49,6 +49,14 @@ schema-only and back-fills nothing, deliberately — see `docs/DESIGN.md`.
   starts a new session continuing that conversation; the original record is
   untouched.
 
+The registration is also what anything **reading** a runner's files has to ask
+for. A resumed session's records are filed under the conversation it continued,
+never under its own durable id, so `h history` and the brief's activity line
+both locate a transcript through `control.Session.ConversationID`. Shipping the
+registration and the activity line in the same release without that lookup is
+how 0.7.2 left every resumed session permanently blank; see
+[session-history.md](session-history.md).
+
 The prompt is what makes the Codex match evidence rather than correlation.
 Directory and time alone routinely describe several sessions, because running
 many agents in one repository at once is the entire point of the tool.
