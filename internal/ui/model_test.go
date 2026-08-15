@@ -2487,6 +2487,19 @@ func TestTheReplyLabelRowIsPaidForOutOfTheLayout(t *testing.T) {
 // typed.
 var ctrlV = tea.KeyPressMsg(tea.Key{Code: 'v', Mod: tea.ModCtrl})
 
+// pressArchiveChord delivers one archive chord at a stated moment.
+//
+// The chord is gated on how long ago the previous one arrived, because a press
+// that lands milliseconds after the arming one is a held key repeating rather
+// than a decision. So a test that means "the user pressed it again" has to say
+// when, and none of them depend on how fast the machine running them is.
+func pressArchiveChord(t *testing.T, model Model, at time.Time) (Model, tea.Cmd) {
+	t.Helper()
+	model.now = func() time.Time { return at }
+	updated, cmd := model.Update(ctrlV)
+	return updated.(Model), cmd
+}
+
 func archiveModel(t *testing.T, sessions ...control.Session) (Model, *fakeController, workstream.Workstream) {
 	t.Helper()
 	model, controller := newTestModel("/tmp/cwd", heikou.BackendCodex)
@@ -2507,8 +2520,7 @@ func TestArchiveChordAsksBeforeItReachesTheCommandPlane(t *testing.T) {
 	stopped.Runtime, stopped.Status = nil, control.StatusStopped
 	model, controller, container := archiveModel(t, live, stopped)
 
-	updated, cmd := model.Update(ctrlV)
-	model = updated.(Model)
+	model, cmd := pressArchiveChord(t, model, now)
 	if cmd != nil {
 		t.Fatal("the first archive chord dispatched a command")
 	}
@@ -2526,8 +2538,7 @@ func TestArchiveChordAsksBeforeItReachesTheCommandPlane(t *testing.T) {
 		}
 	}
 
-	updated, cmd = model.Update(ctrlV)
-	model = updated.(Model)
+	model, cmd = pressArchiveChord(t, model, now.Add(time.Second))
 	if cmd == nil {
 		t.Fatal("the second archive chord did not dispatch")
 	}
@@ -2538,7 +2549,7 @@ func TestArchiveChordAsksBeforeItReachesTheCommandPlane(t *testing.T) {
 	if controller.archivedWorkstream != container.ID {
 		t.Fatalf("archived workstream = %q, want %q", controller.archivedWorkstream, container.ID)
 	}
-	updated, _ = model.Update(message)
+	updated, _ := model.Update(message)
 	model = updated.(Model)
 	for _, want := range []string{"Core", "Ungrouped"} {
 		if !strings.Contains(model.notice, want) {
@@ -2607,6 +2618,93 @@ func TestAnythingElseDisarmsAPendingArchive(t *testing.T) {
 	}
 }
 
+// Holding the chord down is the one way to satisfy a press-twice gate without
+// deciding anything: past the terminal's repeat delay the key delivers arm and
+// fire back to back, and archiving is irreversible.
+//
+// The fix stays a gate rather than becoming a timeout. Nothing expires — the
+// arm below survives more than a second of repeats and then an hour of
+// thinking — but a press cannot count as an answer to a question it arrived
+// too fast to have read.
+func TestAHeldArchiveChordNeverSatisfiesItsOwnGate(t *testing.T) {
+	model, controller, container := archiveModel(t)
+
+	held := time.Now()
+	model, cmd := pressArchiveChord(t, model, held)
+	if cmd != nil {
+		t.Fatal("the arming press dispatched a command")
+	}
+
+	// A held key repeats every few tens of milliseconds for as long as it is
+	// held, so no number of repeats may add up to a confirmation.
+	const repeat = 30 * time.Millisecond
+	for range 40 {
+		held = held.Add(repeat)
+		model, cmd = pressArchiveChord(t, model, held)
+		if cmd != nil {
+			t.Fatalf("a repeat of a held key archived after %s", 40*repeat)
+		}
+	}
+	if controller.archivedWorkstream != "" {
+		t.Fatalf("a held key archived %q", controller.archivedWorkstream)
+	}
+	if model.confirmArchive != container.ID {
+		t.Fatal("the repeats disarmed the workstream; a held key must leave the question standing, not answer it")
+	}
+
+	// The arm is still live and still patient, which is the property the gate
+	// exists for: the user reads the notice, takes as long as they like, and
+	// the second press they actually meant archives.
+	model, cmd = pressArchiveChord(t, model, held.Add(time.Hour))
+	if cmd == nil {
+		t.Fatal("a deliberate second press did not archive")
+	}
+	cmd()
+	if controller.archivedWorkstream != container.ID {
+		t.Fatalf("archived workstream = %q, want %q", controller.archivedWorkstream, container.ID)
+	}
+
+	// The threshold itself is the earliest a press can be a decision, so a
+	// press exactly that far apart is one.
+	prompt, promptController, promptContainer := archiveModel(t)
+	at := time.Now()
+	prompt, _ = pressArchiveChord(t, prompt, at)
+	if _, cmd = pressArchiveChord(t, prompt, at.Add(archiveChordMinInterval)); cmd == nil {
+		t.Fatal("a press at the threshold was refused")
+	}
+	cmd()
+	if promptController.archivedWorkstream != promptContainer.ID {
+		t.Fatalf("archived workstream = %q", promptController.archivedWorkstream)
+	}
+}
+
+// A bracketed paste never reaches the key handler, so it was the one thing a
+// user could do between the two presses that left the second one still looking
+// like a confirmation of the first.
+func TestAPasteDisarmsAPendingArchive(t *testing.T) {
+	model, controller, container := archiveModel(t)
+
+	armed := time.Now()
+	model, _ = pressArchiveChord(t, model, armed)
+	if model.confirmArchive != container.ID {
+		t.Fatal("the archive was not armed")
+	}
+
+	updated, _ := model.Update(tea.PasteMsg{Content: "a task from the clipboard"})
+	model = updated.(Model)
+	if model.confirmArchive != "" {
+		t.Fatal("a paste between the two presses left the archive armed")
+	}
+
+	model, cmd := pressArchiveChord(t, model, armed.Add(time.Second))
+	if cmd != nil || model.confirmArchive != container.ID {
+		t.Fatal("the chord after a paste archived instead of asking again")
+	}
+	if controller.archivedWorkstream != "" {
+		t.Fatalf("archived %q with a paste standing between the two presses", controller.archivedWorkstream)
+	}
+}
+
 // Archiving never routes through the composer, so it must neither fire while a
 // rename owns it nor quietly discard a launch draft that happens to be typed.
 func TestArchiveChordLeavesTheComposerAlone(t *testing.T) {
@@ -2631,10 +2729,9 @@ func TestArchiveChordLeavesTheComposerAlone(t *testing.T) {
 	model.selected = workstreamRowKey(container.ID)
 	model.restoreSelection()
 	model.insertText("a task for later")
-	updated, _ = model.Update(ctrlV)
-	model = updated.(Model)
-	updated, cmd = model.Update(ctrlV)
-	model = updated.(Model)
+	armed := time.Now()
+	model, _ = pressArchiveChord(t, model, armed)
+	model, cmd = pressArchiveChord(t, model, armed.Add(time.Second))
 	if cmd == nil {
 		t.Fatal("the confirmed archive did not dispatch")
 	}

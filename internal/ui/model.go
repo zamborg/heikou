@@ -53,6 +53,18 @@ const (
 	// event, so Ctrl-V carries no paste reflex here either.
 	archiveChord      = "ctrl+v"
 	archiveChordLabel = "Ctrl-V"
+	// archiveChordMinInterval is how long the arming press has to have been on
+	// screen before a second press can act on it.
+	//
+	// It is not a timeout, and the difference matters: the arm never expires,
+	// so a user who reads the notice and thinks about it for a minute still
+	// gets the archive they asked for. What this rejects is the one press a
+	// human cannot have made — holding the chord past the terminal's repeat
+	// delay delivers arm and fire back to back with nothing in between, which
+	// would archive a workstream off a key nobody meant to lean on. Repeat
+	// rates run from about 15ms to 125ms apart, and a deliberate second press
+	// takes longer than this, so the two do not overlap.
+	archiveChordMinInterval = 250 * time.Millisecond
 )
 
 var (
@@ -148,6 +160,10 @@ type Model struct {
 	// archiving is the one workstream verb that removes a row from the
 	// dashboard and an unconfirmed keystroke must not reach durable state.
 	confirmArchive string
+	// archiveChordAt is when the archive chord last landed on that workstream.
+	// A gate counts presses and cannot tell one held key from two decisions, so
+	// this is the one thing it needs to know: how long ago the last press was.
+	archiveChordAt time.Time
 	snapshotFetch  snapshotFetchState
 	previewFetch   previewFetchState
 
@@ -197,13 +213,27 @@ type Model struct {
 	confirmRootRemoval string
 	pendingWorkstream  string
 	artifactContext    artifactContextState
+
+	// now is the clock the archive gate reads. It is a field so a test can say
+	// how fast two presses arrived instead of racing a real one.
+	now func() time.Time
 }
 
 func New(controller control.Service, root string, backend heikou.Backend, store config.Store, settings config.Config) Model {
 	return Model{
 		controller: controller, root: root, backend: backend, store: store, settings: settings,
 		overview: newOverviewModel(control.Snapshot{}), collapsed: make(map[string]bool), rootIndex: make(map[string]int),
+		now: time.Now,
 	}
+}
+
+// clock reads the model's clock, defaulting to the real one so a Model built
+// without New still behaves.
+func (m Model) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
 }
 
 // NewWithSelectedSession opens the dashboard with a durable session selected
@@ -570,6 +600,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
+		// A bracketed paste never reaches handleKey, so it would otherwise be
+		// the one thing a user can do between the two archive presses that
+		// leaves the second one looking like a confirmation of the first. Every
+		// other input disarms; arriving by a different message is not a reason
+		// to be the exception.
+		m.confirmStop, m.confirmDelete, m.confirmArchive = "", "", ""
 		if m.busy || m.screen == screenSettings || m.overlay == overlayHelp {
 			return m, nil
 		}
@@ -1278,9 +1314,20 @@ func (m Model) archiveSelection() (tea.Model, tea.Cmd) {
 		m.errorText = "that workstream is no longer available"
 		return m, nil
 	}
+	pressed := m.clock()
 	if m.confirmArchive != item.ID {
 		m.confirmArchive = item.ID
+		m.archiveChordAt = pressed
 		m.notice = archiveChordLabel + " again to archive " + item.Name + " · " + archiveConsequence(m.sessionsForRow(row))
+		return m, nil
+	}
+	// A second press this soon after the first is the terminal repeating a held
+	// key, not an answer to the question the first one asked. The arm survives
+	// it — nothing was decided either way — but the interval is measured from
+	// the latest press, so a key held down goes on refusing rather than
+	// eventually satisfying itself.
+	if pressed.Sub(m.archiveChordAt) < archiveChordMinInterval {
+		m.archiveChordAt = pressed
 		return m, nil
 	}
 	// The arm is consumed by the press that acts on it, so a refused archive

@@ -366,9 +366,11 @@ chord carry three outcomes honestly.
 `Ctrl-V` archives the selected workstream, which is the one organize verb that
 takes a row off the dashboard, so it asks: the first press names the workstream
 and says what becomes of its sessions, the second press does it, and any other
-key cancels. It is a bare control chord because those arrive as a single byte
-and need none of the enhanced key reporting that decides whether a modified
-arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
+key — or a paste — cancels. The question waits as long as you like, but the
+answer cannot arrive in the fraction of a second that means the key is being
+held down rather than pressed again. It is a bare control chord because those
+arrive as a single byte and need none of the enhanced key reporting that
+decides whether a modified arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
 available — the composer owns it as line start — and `v` is the only other
 letter of "archive" that no chord had already claimed.
 
