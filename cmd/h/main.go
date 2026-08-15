@@ -30,7 +30,7 @@ import (
 	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.7.1"
+var version = "0.7.2"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
