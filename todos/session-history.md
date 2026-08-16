@@ -34,6 +34,16 @@ the tail rather than the whole transcript and reports the one thing the session
 was last recorded doing, which fills the brief's detail slot; see
 [runner-activity.md](runner-activity.md).
 
+Both readers ask for the file by the **conversation** id, which is the durable
+session id only until a session is resumed. A resumed session is launched
+`--resume <conversation id>` and gets a durable id of its own, so Claude goes on
+appending to the original file and writes nothing under the new id. Asking by
+the durable id there reports a session with a full history as having none — and
+pays the fallback directory scan to find that out, every time. Callers get the
+right id from `control.Session.ConversationID`, which prefers the registered
+conversation and falls back to the durable id. Provenance does not gate it: an
+`observed` id is precisely the one matched against a file on disk.
+
 ## Still open
 
 Codex history. **The blocker named here has since been removed** — see

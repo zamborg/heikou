@@ -270,8 +270,12 @@ func (o *Observer) observeActivity(ctx context.Context, session control.Session)
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	// The transcript is filed under the runner's conversation id, which is the
+	// durable session id only for a session Heikou launched fresh. A resumed
+	// session asked for by its own id would look for a file Claude never wrote,
+	// and pay the fallback scan for it on every pass.
 	item, err := o.reader.ReadActivity(transcript.Request{
-		Runner: session.Backend, SessionID: session.ID, Root: session.Root,
+		Runner: session.Backend, SessionID: session.ConversationID(), Root: session.Root,
 	})
 	if err != nil {
 		return "", err

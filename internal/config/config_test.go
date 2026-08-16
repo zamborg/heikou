@@ -82,7 +82,7 @@ func TestSettingsLoadAndNormalizeComposerKeys(t *testing.T) {
 func TestPartialComposerKeysInheritDefaults(t *testing.T) {
 	clearSettingsEnvironment(t)
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"composer_keys":{"reply":"ctrl+n"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"composer_keys":{"reply":"f6"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := (Store{Path: path}).Load()
@@ -90,7 +90,7 @@ func TestPartialComposerKeysInheritDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ComposerKeys{
-		Reply:       "ctrl+n",
+		Reply:       "f6",
 		CycleRunner: "tab",
 		CycleRoot:   "shift+tab",
 	}
@@ -157,6 +157,13 @@ func TestSettingsRejectInvalidComposerKeys(t *testing.T) {
 		"internal whitespace":   `{"composer_keys":{"reply":"page down"}}`,
 		"reserved quit":         `{"composer_keys":{"reply":"CTRL + C"}}`,
 		"reserved navigation":   `{"composer_keys":{"cycle_runner":"up"}}`,
+		"reserved create":       `{"composer_keys":{"reply":"ctrl+n"}}`,
+		"reserved roots":        `{"composer_keys":{"cycle_runner":"ctrl+o"}}`,
+		"reserved move":         `{"composer_keys":{"cycle_root":"ctrl+t"}}`,
+		"reserved reorder":      `{"composer_keys":{"reply":"shift+up"}}`,
+		"reserved group jump":   `{"composer_keys":{"cycle_runner":"alt+down"}}`,
+		"reserved word motion":  `{"composer_keys":{"cycle_root":"ctrl+left"}}`,
+		"reserved newline":      `{"composer_keys":{"reply":"shift+enter"}}`,
 		"reserved editor":       `{"composer_keys":{"reply":"backspace"}}`,
 		"reserved lifecycle":    `{"composer_keys":{"reply":"ctrl+x"}}`,
 		"reserved archive":      `{"composer_keys":{"reply":"ctrl+v"}}`,
@@ -192,6 +199,88 @@ func TestSettingsRejectInvalidComposerKeys(t *testing.T) {
 				t.Fatalf("Load() error = %v; want config path", err)
 			}
 		})
+	}
+}
+
+// Reserving the rest of the dashboard's chords means a settings file that was
+// loading yesterday can stop loading today, and Heikou refuses to start rather
+// than dropping the binding. The whole cost of that is carried by this message,
+// so it has to name the key, say what Heikou already does with it, and say what
+// deleting the field falls back to.
+func TestReservedComposerKeyErrorExplainsTheClash(t *testing.T) {
+	clearSettingsEnvironment(t)
+	for name, test := range map[string]struct {
+		data string
+		want []string
+	}{
+		"newly reserved chord": {
+			data: `{"composer_keys":{"reply":"ctrl+n"}}`,
+			want: []string{"reply", `"ctrl+n"`, "reserved", "create a workstream", `"space"`},
+		},
+		"cycle binding": {
+			data: `{"composer_keys":{"cycle_runner":"ctrl+t"}}`,
+			want: []string{"cycle_runner", `"ctrl+t"`, "move", `"tab"`},
+		},
+		"alias spelling names the key it clashes with": {
+			data: `{"composer_keys":{"cycle_root":"shift+/"}}`,
+			want: []string{"cycle_root", `"shift+/"`, `"?"`, "help panel", `"shift+tab"`},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := (Store{Path: path}).Load()
+			if err == nil {
+				t.Fatal("Load() error = nil; want a reserved-key error")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Load() error = %v; want it to mention %s", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A reserved name that normalizeKeyName can never produce holds nothing back:
+// the lookup happens after normalization, so the entry is unreachable and the
+// key it means to protect stays assignable.
+func TestEveryReservedComposerKeyIsANameAUserCanWrite(t *testing.T) {
+	for key := range reservedComposerKeys {
+		normalized, err := normalizeKeyName(key)
+		if err != nil {
+			t.Errorf("reserved key %q is not a name settings can carry: %v", key, err)
+			continue
+		}
+		if normalized != key {
+			t.Errorf("reserved key %q normalizes to %q, so a user writing it is never matched", key, normalized)
+		}
+	}
+	for alias, target := range reservedComposerKeyAliases {
+		normalized, err := normalizeKeyName(alias)
+		if err != nil || normalized != alias {
+			t.Errorf("alias %q normalizes to %q (%v); it can never be matched", alias, normalized, err)
+		}
+		if _, reserved := reservedComposerKeys[target]; !reserved {
+			t.Errorf("alias %q points at %q, which is not reserved", alias, target)
+		}
+	}
+}
+
+// The defaults have to survive their own validation, or a fresh install would
+// ship a settings file it then refuses to load.
+func TestDefaultComposerKeysAreNotReserved(t *testing.T) {
+	defaults := Default().ComposerKeys
+	for name, key := range map[string]string{
+		"reply":        defaults.Reply,
+		"cycle_runner": defaults.CycleRunner,
+		"cycle_root":   defaults.CycleRoot,
+	} {
+		if _, _, taken := reservedComposerKeyUse(key); taken {
+			t.Errorf("default %s binding %q is reserved by Heikou", name, key)
+		}
 	}
 }
 

@@ -241,6 +241,19 @@ regardless of composer content. All three are live simultaneously and therefore
 may not share a key. `Enter` is the sole commit key and is deliberately not
 configurable, since a rebindable commit key would reintroduce the ambiguity the
 visible-destination model exists to remove.
+
+Every other key the dashboard answers to is reserved against those three, down
+to the composer's own editing chords, because a composer binding is consulted
+first and would take the key silently. The reserved list drifted behind the key
+switches once — `Ctrl-N`, `Ctrl-O` and `Ctrl-T` were bound and still rebindable
+— so it is no longer maintained by hand at either end: `internal/ui` declares
+the chords it binds in `boundChords`, one test compares that declaration against
+the key literals in its own source and another compares it against
+`config.ReservedComposerKeys`, both in both directions. Adding a chord therefore
+fails until it is declared and reserved, and reserving it means writing the
+sentence a rejected settings file gets back. The assertions live in
+`internal/ui` because the layering lets it import `internal/config` and not the
+other way round.
 Environment compatibility variables override JSON values; explicit CLI flags
 select the runner and root. Command changes apply to new sessions only.
 

@@ -43,6 +43,30 @@ type Session struct {
 	Runtime         *heikou.Session
 }
 
+// ConversationID is the id the runner filed this session's conversation under,
+// which is what anything reading a runner-written file has to ask for.
+//
+// It is not always the durable session id, and the difference is invisible
+// until it is wrong. A session Heikou launched fresh is `claude --session-id
+// <durable id>`, so the two are equal. A resumed session is launched
+// `--resume <conversation id>` with a durable id of its own, so Claude appends
+// to the file named for the conversation and nothing is ever written under the
+// new session's id. Asking by the durable id there finds no file, forever.
+//
+// The registration's Source is deliberately not consulted. It separates an id
+// Heikou caused from one it matched against a runner's files, which is what
+// must not be blurred when Heikou states provenance — but an observed id is
+// precisely the id that names a file on disk, so it is the better answer to
+// this question and not a worse one.
+func (s Session) ConversationID() string {
+	if s.Record.Conversation != nil {
+		if id := strings.TrimSpace(s.Record.Conversation.ID); id != "" {
+			return id
+		}
+	}
+	return s.ID
+}
+
 // DisplayMessage returns the most recent user message Heikou can honestly
 // observe, falling back to the immutable launch prompt.
 func (s Session) DisplayMessage() string {

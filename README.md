@@ -366,9 +366,11 @@ chord carry three outcomes honestly.
 `Ctrl-V` archives the selected workstream, which is the one organize verb that
 takes a row off the dashboard, so it asks: the first press names the workstream
 and says what becomes of its sessions, the second press does it, and any other
-key cancels. It is a bare control chord because those arrive as a single byte
-and need none of the enhanced key reporting that decides whether a modified
-arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
+key — or a paste — cancels. The question waits as long as you like, but the
+answer cannot arrive in the fraction of a second that means the key is being
+held down rather than pressed again. It is a bare control chord because those
+arrive as a single byte and need none of the enhanced key reporting that
+decides whether a modified arrow reaches Heikou at all. `Ctrl-A` was the obvious letter and is not
 available — the composer owns it as line start — and `v` is the only other
 letter of "archive" that no chord had already claimed.
 
@@ -456,10 +458,16 @@ launch; a command action cannot supply arbitrary runner argv. The three
 `cycle_root` act whether or not the composer has text. All three are live at
 once, so they may not share a key.
 `Enter` is the single commit key and is not configurable — that is what keeps
-the destination the one the composer displays. `Shift-Enter` inserts a newline
-unless it is explicitly assigned to one of the configurable actions.
-`Ctrl-G` is reserved for layout resize mode and cannot be assigned to a
-composer action.
+the destination the one the composer displays.
+
+Every key Heikou already answers to is reserved and cannot be assigned to one
+of the three: the organize chords, `Ctrl-G` resize mode, the help and settings
+screens, and the composer's own editing keys such as `Shift-Enter`, `Ctrl-A`
+and `Option-Left`. A composer binding is consulted before any of them, so
+without the reservation the key would simply stop doing what it used to, with
+nothing said about it at any point. A settings file that names a reserved key
+fails to load with a message giving the key, what Heikou already does with it,
+and the default that deleting the field restores.
 The removed `new_session` and `send_message` fields chose a commit key per
 destination. A config still carrying either one fails to load with a message
 naming `reply` as the replacement.

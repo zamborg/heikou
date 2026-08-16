@@ -12,9 +12,16 @@ import (
 	"github.com/zamborg/heikou/internal/control"
 	"github.com/zamborg/heikou/internal/heikou"
 	"github.com/zamborg/heikou/internal/transcript"
+	"github.com/zamborg/heikou/internal/workstream"
 )
 
-const activitySessionID = "018f0000-0000-4000-8000-0000000000c1"
+const (
+	activitySessionID = "018f0000-0000-4000-8000-0000000000c1"
+	// resumedSessionID is the durable id of a session that continues the
+	// conversation filed under activitySessionID. Nothing is ever written under
+	// it, which is the whole point of the resume tests.
+	resumedSessionID = "018f0000-0000-4000-8000-0000000000c2"
+)
 
 // writeActivityTranscript builds the Claude-shaped project directory the reader
 // looks in, and returns the projects root to point a test reader at.
@@ -26,6 +33,14 @@ func writeActivityTranscript(t *testing.T, records ...map[string]any) string {
 }
 
 func writeTranscriptUnder(t *testing.T, projects string, records ...map[string]any) {
+	t.Helper()
+	writeTranscriptNamed(t, projects, activitySessionID, records...)
+}
+
+// writeTranscriptNamed files a transcript under a chosen id, so a test can put
+// one where a resumed session's conversation lives rather than under its
+// durable id.
+func writeTranscriptNamed(t *testing.T, projects, id string, records ...map[string]any) {
 	t.Helper()
 	directory := filepath.Join(projects, "-tmp-project")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
@@ -40,7 +55,7 @@ func writeTranscriptUnder(t *testing.T, projects string, records ...map[string]a
 		builder.Write(encoded)
 		builder.WriteByte('\n')
 	}
-	path := filepath.Join(directory, activitySessionID+".jsonl")
+	path := filepath.Join(directory, id+".jsonl")
 	if err := os.WriteFile(path, []byte(builder.String()), 0o600); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
@@ -65,6 +80,22 @@ func activitySession(alive bool, backend heikou.Backend, activity time.Time) con
 		ID: activitySessionID, Backend: backend, Prompt: "task", Root: "/tmp/project",
 		Status: status, Durable: true, Runtime: &runtime,
 	}
+}
+
+// resumedActivitySession is a session Heikou started with `--resume`: a durable
+// id of its own, and a registered conversation naming the one it continued.
+func resumedActivitySession(activity time.Time) control.Session {
+	session := activitySession(true, heikou.BackendClaude, activity)
+	session.ID = resumedSessionID
+	session.Runtime.ID = resumedSessionID
+	session.Record = workstream.SessionRecord{
+		ID: resumedSessionID, Backend: heikou.BackendClaude, InitialPrompt: "carry on",
+		InitialRoot: session.Root, CreatedAt: activity,
+		Conversation: &workstream.Conversation{
+			ID: activitySessionID, Source: workstream.ConversationAssigned, RecordedAt: activity,
+		},
+	}
+	return session
 }
 
 func activityObserver(t *testing.T, projects string, now time.Time) *Observer {
@@ -289,5 +320,63 @@ func TestActivityRereadsOnlyAfterTheIntervalAndSomeMovement(t *testing.T) {
 	if _, report = observer.Observe(t.Context(),
 		[]control.Session{activitySession(true, heikou.BackendClaude, start.Add(time.Minute))}, observations); report.Ran != 1 {
 		t.Fatalf("did not read a session that had waited and moved: %+v", report)
+	}
+}
+
+// A resumed session is launched `--resume <conversation id>` and is given a
+// fresh durable id, so Claude keeps appending to the file named for the
+// conversation and never writes one named for the new session. Asking by the
+// durable id finds nothing — not once, but on every pass forever, and each miss
+// costs the fallback scan of the whole projects directory. The line the user
+// sees is blank the entire time, which reads as a session doing nothing.
+//
+// The fixture here exists only under the conversation id, so a lookup by the
+// durable id cannot pass this by luck.
+func TestAResumedSessionIsReadFromTheConversationItContinued(t *testing.T) {
+	now := mustTime(t, "2026-08-12T10:00:00Z")
+	projects := t.TempDir()
+	writeTranscriptNamed(t, projects, activitySessionID,
+		runningRecord("Bash", map[string]any{"command": "make check"}))
+	observer := activityObserver(t, projects, now)
+
+	session := resumedActivitySession(now)
+	observations, report := observer.Observe(t.Context(), []control.Session{session}, nil)
+	if len(report.Failures) != 0 {
+		t.Fatalf("failures: %v", report.Failures)
+	}
+	// The observation is still filed under the durable session id: that is the
+	// row it belongs to, and only the file lookup changes.
+	key := Key{Session: resumedSessionID, Source: SourceActivity}
+	if got := observations[key].Text; got != "running make check" {
+		t.Fatalf("resumed activity = %q, want the conversation's transcript to have been read", got)
+	}
+}
+
+// The fallback is not a special case, it is the ordinary one: a session Heikou
+// launched fresh is `claude --session-id <durable id>`, so the durable id is
+// the conversation id and the registration says exactly that.
+func TestAFreshSessionStillReadsTheTranscriptNamedForItsDurableID(t *testing.T) {
+	now := mustTime(t, "2026-08-12T10:00:00Z")
+	projects := writeActivityTranscript(t, runningRecord("Bash", map[string]any{"command": "make check"}))
+	observer := activityObserver(t, projects, now)
+
+	session := activitySession(true, heikou.BackendClaude, now)
+	session.Record = workstream.SessionRecord{
+		ID: activitySessionID, Backend: heikou.BackendClaude,
+		Conversation: &workstream.Conversation{
+			ID: activitySessionID, Source: workstream.ConversationAssigned, RecordedAt: now,
+		},
+	}
+	observations, _ := observer.Observe(t.Context(), []control.Session{session}, nil)
+	if got := observations[Key{Session: activitySessionID, Source: SourceActivity}].Text; got != "running make check" {
+		t.Fatalf("activity = %q", got)
+	}
+
+	// And a session with no registration at all — a record written before
+	// conversations were stored — still reads by its durable id.
+	unregistered := activitySession(true, heikou.BackendClaude, now)
+	observations, _ = observer.Observe(t.Context(), []control.Session{unregistered}, nil)
+	if got := observations[Key{Session: activitySessionID, Source: SourceActivity}].Text; got != "running make check" {
+		t.Fatalf("unregistered activity = %q", got)
 	}
 }

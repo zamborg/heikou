@@ -68,12 +68,19 @@ func newHarness(t *testing.T) *harness {
 // writeTranscript files a Claude-shaped transcript for the harness session.
 func (h *harness) writeTranscript(t *testing.T, lines ...string) {
 	t.Helper()
+	h.writeTranscriptFor(t, testSessionID, lines...)
+}
+
+// writeTranscriptFor files one under a chosen id. Claude names the file for the
+// conversation, which is not the durable session id once a session is resumed.
+func (h *harness) writeTranscriptFor(t *testing.T, id string, lines ...string) {
+	t.Helper()
 	directory := filepath.Join(h.claudeProjects, "-tmp-project")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatalf("create project directory: %v", err)
 	}
 	body := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(directory, testSessionID+".jsonl"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, id+".jsonl"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
 }
@@ -509,6 +516,46 @@ func TestHistoryWithoutATranscriptSucceedsAndSaysWhy(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "no transcript") {
 		t.Errorf("output = %q, want a plain statement that there is none", h.out.String())
+	}
+}
+
+// A resumed session is launched `--resume <conversation id>` and gets a durable
+// id of its own, so Claude goes on appending to the file named for the
+// conversation and never writes one named for this session. Asking by the
+// durable id reports a session with a full history as having none.
+//
+// The transcript here exists only under the conversation id, so the answer
+// cannot come from anywhere else.
+func TestHistoryForAResumedSessionReadsTheConversationItContinued(t *testing.T) {
+	const resumedID = "018f0000-0000-4000-8000-0000000000a3"
+	h := newHarness(t)
+	h.writeTranscriptFor(t, testSessionID,
+		`{"type":"user","timestamp":"2026-08-13T10:00:00Z","message":{"role":"user","content":"carry on"}}`,
+		`{"type":"assistant","timestamp":"2026-08-13T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"picked it back up"}]}}`,
+	)
+	h.service.FindFunc = func(context.Context, string) (control.Session, error) {
+		return control.Session{
+			ID: resumedID, Backend: heikou.BackendClaude, Root: "/tmp/project",
+			Status: control.StatusLive, Durable: true,
+			Record: workstream.SessionRecord{
+				ID: resumedID, Backend: heikou.BackendClaude, InitialRoot: "/tmp/project",
+				Conversation: &workstream.Conversation{
+					ID: testSessionID, Source: workstream.ConversationAssigned, RecordedAt: time.Now(),
+				},
+			},
+		}, nil
+	}
+	if err := h.app.run([]string{"history", resumedID}); err != nil {
+		t.Fatal(err)
+	}
+	output := h.out.String()
+	if strings.Contains(output, "no transcript") {
+		t.Fatalf("a resumed session reported no history:\n%s", output)
+	}
+	for _, want := range []string{"claude transcript", "carry on", "picked it back up"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("history output is missing %q:\n%s", want, output)
+		}
 	}
 }
 
