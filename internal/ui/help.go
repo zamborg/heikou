@@ -179,6 +179,8 @@ func (m Model) helpContentLines() []string {
 	lines = appendHelpSection(lines, m.width, "Attached terminal")
 	lines = appendHelpParagraph(lines, m.width,
 		"Attachment enters the native Codex, Claude, or shell terminal. Use Ctrl-\\ or Ctrl-b d to detach back to the same Heikou dashboard. Detaching and quitting Heikou leave the agent running.")
+	lines = appendHelpParagraph(lines, m.width,
+		"While attached, tmux owns the mouse: dragging selects and copies to the system clipboard, and the wheel scrolls that pane's scrollback. That selection follows the drawn screen, so it stops at the pane and picks up whatever borders an agent's interface draws. Hold Shift while dragging for your terminal's own selection instead, which crosses panes and takes whole lines. iTerm2 uses Option for that rather than Shift.")
 
 	lines = appendHelpSection(lines, m.width, "CLI commands")
 	for _, binding := range []struct {

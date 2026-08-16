@@ -113,6 +113,7 @@ text, and move mark, then parks on Ungrouped. Quitting is `Ctrl-C`.
 | Leave a reply and compose a new session | `Esc`; the draft goes with it |
 | Attach to a selected session | `Enter` with an empty composer, when not replying |
 | Detach back to Heikou | `Ctrl-b`, release, then `d`; or `Ctrl-\` |
+| Copy text out of an attached session | Drag to use tmux's selection, which reaches the system clipboard but stops at the pane; hold `Shift` (`Option` in iTerm2) for the terminal's own selection |
 | Leave the dashboard without stopping agents | `Ctrl-C`, or `Esc` with an empty composer |
 | Stop a runtime but keep its record | Select it and press `Ctrl-X` twice |
 
