@@ -119,6 +119,7 @@ key never depends on remembering which one you meant:
 | `Enter` on a workstream | Collapse or expand its sessions |
 | `Enter` on a session | Attach its native terminal; inactive while replying, so it cannot attach to a row other than the pinned target |
 | `Ctrl-\` or `Ctrl-b d` while attached | Detach back to Heikou |
+| `Shift-drag` while attached | Select with the terminal rather than tmux, crossing panes and taking whole lines; iTerm2 uses `Option` for this |
 | `Ctrl-X` twice | Stop/remove a present runtime; once no pane remains, press twice again to delete its durable record |
 | `Esc` | Leave a reply and discard its draft, then clear the composer, then release a move mark, then select Ungrouped |
 | `Ctrl-C` | Quit the dashboard; `Esc` never quits |
@@ -137,6 +138,16 @@ the key meant to open a line sends the message instead. A pane reads this when
 it starts, so a session launched before 0.7.0 keeps the old behaviour until you
 restart it. A tmux too old to offer the encoding keeps the behaviour it had;
 nothing else about the session changes.
+
+The mouse is settled the same way, and it is worth knowing which program has it.
+The dashboard never asks for the mouse, so selecting there is your terminal's
+own. Attached, tmux takes it: a drag selects and copies to the system clipboard,
+and the wheel scrolls that pane's scrollback rather than your terminal's. Both
+are worth having, but tmux selects what is drawn on screen, so it stops at the
+pane edge and takes along whatever borders an agent's interface paints — which
+is why the same drag reads cleanly in one runner and raggedly in another. Hold
+`Shift` to hand the drag back to your terminal, which crosses panes, follows
+whole lines, and reaches its own scrollback. iTerm2 spells that `Option`.
 
 Every full-screen surface carries an unmistakable mode badge: **Dashboard**,
 **Settings**, or **Help**. Organizing happens on the dashboard rather than in a
