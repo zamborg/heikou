@@ -126,7 +126,7 @@ func (m Model) helpContentLines() []string {
 		{"← / → · empty", "Collapse or expand the selected workstream."},
 		{"← / → · text", "Move the composer cursor."},
 		{"Enter · empty", "Collapse a workstream, or attach to an available session runtime. Inactive while replying, so it cannot attach to a row other than the pinned target."},
-		{"Shift-Enter / Ctrl-J", "Insert a composer newline unless that chord is explicitly rebound to another composer action."},
+		{"Shift-Enter / Ctrl-J", "Insert a composer newline. Both are reserved, like every other key on this page, so a composer binding cannot take one away."},
 		{"Option-← / Option-→", "Move one word; Option-Delete removes the previous word."},
 		{"Command-← / Command-→", "Move to the start or end of the logical line; Command-↑ / Command-↓ jumps across the whole draft."},
 		{"Home / Ctrl-A", "Move to the start of the logical line; End / Ctrl-E moves to its end."},

@@ -328,14 +328,16 @@ func (keys optionalComposerKeysJSON) apply(target *ComposerKeys) error {
 				"Delete this field, and use \"reply\" to choose the key that aims the composer at the selected session (default \"space\")", removed.name)
 		}
 	}
+	fallbacks := Default().ComposerKeys
 	values := []struct {
-		name   string
-		value  optionalKeyJSON
-		target *string
+		name     string
+		value    optionalKeyJSON
+		fallback string
+		target   *string
 	}{
-		{name: "reply", value: keys.Reply, target: &target.Reply},
-		{name: "cycle_runner", value: keys.CycleRunner, target: &target.CycleRunner},
-		{name: "cycle_root", value: keys.CycleRoot, target: &target.CycleRoot},
+		{name: "reply", value: keys.Reply, fallback: fallbacks.Reply, target: &target.Reply},
+		{name: "cycle_runner", value: keys.CycleRunner, fallback: fallbacks.CycleRunner, target: &target.CycleRunner},
+		{name: "cycle_root", value: keys.CycleRoot, fallback: fallbacks.CycleRoot, target: &target.CycleRoot},
 	}
 	for _, item := range values {
 		if !item.value.set {
@@ -345,8 +347,17 @@ func (keys optionalComposerKeysJSON) apply(target *ComposerKeys) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", item.name, err)
 		}
-		if _, reserved := reservedComposerKeys[normalized]; reserved {
-			return fmt.Errorf("%s: key %q is reserved by Heikou", item.name, normalized)
+		// A rejection here is the only warning a user gets, and the binding they
+		// wrote looked reasonable to them, so the message says which key, what
+		// Heikou already does with it, and how to get back to a loading file.
+		if reserved, use, taken := reservedComposerKeyUse(normalized); taken {
+			spelling := ""
+			if reserved != normalized {
+				spelling = fmt.Sprintf(" (the same key as %q)", reserved)
+			}
+			return fmt.Errorf("%s: key %q is reserved by Heikou%s, which already uses it to %s. "+
+				"Choose a key the dashboard does not answer to, or delete this field to keep the default %q",
+				item.name, normalized, spelling, use, item.fallback)
 		}
 		*item.target = normalized
 	}
@@ -600,39 +611,132 @@ var namedComposerKeys = map[string]struct{}{
 	"select": {}, "space": {}, "tab": {}, "up": {},
 }
 
-// These keys already have dashboard-wide navigation, editing, lifecycle, or
-// panel behavior. Letting a composer binding claim one would make one of the
-// two actions unreachable. Question mark is included for the help panel, and
-// Enter because it is the single commit key for every composer destination.
-var reservedComposerKeys = map[string]struct{}{
-	"?":         {},
-	"backspace": {},
-	"ctrl+a":    {},
-	"enter":     {},
-	"ctrl+c":    {},
-	"ctrl+e":    {},
-	"ctrl+g":    {},
-	"ctrl+h":    {},
-	"ctrl+r":    {},
-	"ctrl+s":    {},
-	"ctrl+u":    {},
-	"ctrl+v":    {},
-	"ctrl+w":    {},
-	"ctrl+x":    {},
-	"delete":    {},
-	"down":      {},
-	"end":       {},
-	"esc":       {},
-	"f1":        {},
-	"f2":        {},
-	"f3":        {},
-	"home":      {},
-	"left":      {},
-	"pgdown":    {},
-	"pgup":      {},
-	"right":     {},
-	"shift+/":   {},
-	"up":        {},
+// reservedComposerKeys is every key Heikou already answers to, and what it does
+// with it. Letting a composer binding claim one would make one of the two
+// actions unreachable, and the composer binding wins, so the loss is silent.
+//
+// The value is not decoration: it is the sentence a rejected settings file gets
+// back, which is the difference between "that key is taken" and knowing which
+// key to pick instead.
+//
+// This list has to match the chords internal/ui actually binds, and drifted
+// once because adding a chord to a key switch and reserving it here are two
+// separate edits. internal/ui now fails a test when the two disagree in either
+// direction — it may import this package while this one may not import it, so
+// the assertion lives at that end. Enter is here as the single commit key for
+// every composer destination rather than as one more dashboard chord.
+var reservedComposerKeys = map[string]string{
+	// Lifecycle, screens, and panels.
+	"ctrl+c": "quit the dashboard",
+	"ctrl+g": "enter layout resize mode",
+	"ctrl+s": "open settings",
+	"ctrl+x": "stop a session's runtime, and then delete its record",
+	"esc":    "leave a reply, cancel an edit, or clear the composer",
+	"f1":     "open the help panel",
+	"f2":     "open settings",
+	"f3":     "re-read sessions, the preview, and the selected workstream",
+	"?":      "open the help panel",
+
+	// Organizing, which reads the selected row for its noun.
+	"ctrl+n":     "create a workstream",
+	"ctrl+o":     "edit the selected workstream's roots",
+	"ctrl+r":     "rename the selected workstream or session",
+	"ctrl+t":     "mark a session for a move, or move it",
+	"ctrl+v":     "archive the selected workstream",
+	"shift+down": "move the selected workstream or session down",
+	"shift+up":   "move the selected workstream or session up",
+
+	// Moving the selection, and paging the help and settings viewports.
+	"alt+down":  "jump to the next workstream",
+	"alt+up":    "jump to the previous workstream",
+	"down":      "move the selection, or the cursor in a multiline draft",
+	"end":       "move to the end of the composer line",
+	"home":      "move to the start of the composer line",
+	"left":      "collapse a workstream, or move the composer cursor",
+	"meta+down": "jump to the next workstream",
+	"meta+up":   "jump to the previous workstream",
+	"pgdown":    "move down one viewport",
+	"pgup":      "move up one viewport",
+	"right":     "expand a workstream, or move the composer cursor",
+	"up":        "move the selection, or the cursor in a multiline draft",
+
+	// Committing, and the settings screen's own two letters.
+	"enter": "commit the composer draft to the destination it names",
+	"e":     "open the settings file in an editor",
+	"r":     "reload settings, and restore automatic sizing in resize mode",
+
+	// Composer editing. Several chords are aliases for one action because the
+	// terminal decides which modifier combinations reach Heikou at all.
+	"alt+b":           "move one word left",
+	"alt+backspace":   "delete the previous word",
+	"alt+delete":      "delete the next word",
+	"alt+enter":       "insert a composer newline",
+	"alt+f":           "move one word right",
+	"alt+left":        "move one word left",
+	"alt+right":       "move one word right",
+	"backspace":       "delete the previous character",
+	"ctrl+a":          "move to the start of the composer line",
+	"ctrl+b":          "move one character left",
+	"ctrl+d":          "delete the next character",
+	"ctrl+e":          "move to the end of the composer line",
+	"ctrl+end":        "move to the end of the draft",
+	"ctrl+f":          "move one character right",
+	"ctrl+h":          "delete the previous character",
+	"ctrl+home":       "move to the start of the draft",
+	"ctrl+j":          "insert a composer newline",
+	"ctrl+k":          "delete to the end of the composer line",
+	"ctrl+left":       "move one word left",
+	"ctrl+p":          "move up one line in a multiline draft",
+	"ctrl+right":      "move one word right",
+	"ctrl+u":          "delete back to the start of the composer line",
+	"ctrl+w":          "delete the previous word",
+	"delete":          "delete the next character",
+	"meta+b":          "move one word left",
+	"meta+backspace":  "delete the previous word",
+	"meta+delete":     "delete the next word",
+	"meta+enter":      "insert a composer newline",
+	"meta+f":          "move one word right",
+	"meta+left":       "move one word left",
+	"meta+right":      "move one word right",
+	"shift+enter":     "insert a composer newline",
+	"super+backspace": "delete back to the start of the composer line",
+	"super+delete":    "delete to the end of the composer line",
+	"super+down":      "move to the end of the draft",
+	"super+left":      "move to the start of the composer line",
+	"super+right":     "move to the end of the composer line",
+	"super+up":        "move to the start of the draft",
+}
+
+// reservedComposerKeyAliases spell a reserved key the way a settings file might
+// name it when normalizeKeyName cannot fold the two spellings together. Shift
+// and slash produce "?", so a user reaching for the help key can write either
+// and has to be told the same thing. The UI never compares a keystroke against
+// these names, which is why they are separate from the list above rather than
+// entries in it.
+var reservedComposerKeyAliases = map[string]string{"shift+/": "?"}
+
+// ReservedComposerKeys returns every key Heikou answers to, mapped to what it
+// does with it. internal/ui asserts in a test that this is exactly the set of
+// chords it binds, so a chord added to a key switch cannot quietly stay
+// rebindable.
+func ReservedComposerKeys() map[string]string {
+	reserved := make(map[string]string, len(reservedComposerKeys))
+	for key, use := range reservedComposerKeys {
+		reserved[key] = use
+	}
+	return reserved
+}
+
+// reservedComposerKeyUse reports what Heikou already does with a normalized key
+// name, and under which spelling it reserves it.
+func reservedComposerKeyUse(normalized string) (string, string, bool) {
+	if target, alias := reservedComposerKeyAliases[normalized]; alias {
+		return target, reservedComposerKeys[target], true
+	}
+	if use, reserved := reservedComposerKeys[normalized]; reserved {
+		return normalized, use, true
+	}
+	return "", "", false
 }
 
 func applyEnvironment(settings Config) (Config, error) {

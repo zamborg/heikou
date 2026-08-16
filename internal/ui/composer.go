@@ -15,8 +15,9 @@ type composerLine struct {
 }
 
 // handleComposerShortcut owns editing chords that never act on dashboard
-// selection. Configured launch/send bindings run first, so an explicitly
-// rebound Shift-Enter still wins; otherwise it is the native multiline key.
+// selection. Every chord it answers to is reserved in internal/config, so a
+// composer binding cannot claim one and leave the editing action unreachable;
+// boundChords is where the two lists are held together.
 func (m *Model) handleComposerShortcut(stroke string) bool {
 	switch stroke {
 	case "shift+enter", "ctrl+j", "alt+enter", "meta+enter":

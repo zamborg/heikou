@@ -458,10 +458,16 @@ launch; a command action cannot supply arbitrary runner argv. The three
 `cycle_root` act whether or not the composer has text. All three are live at
 once, so they may not share a key.
 `Enter` is the single commit key and is not configurable — that is what keeps
-the destination the one the composer displays. `Shift-Enter` inserts a newline
-unless it is explicitly assigned to one of the configurable actions.
-`Ctrl-G` is reserved for layout resize mode and cannot be assigned to a
-composer action.
+the destination the one the composer displays.
+
+Every key Heikou already answers to is reserved and cannot be assigned to one
+of the three: the organize chords, `Ctrl-G` resize mode, the help and settings
+screens, and the composer's own editing keys such as `Shift-Enter`, `Ctrl-A`
+and `Option-Left`. A composer binding is consulted before any of them, so
+without the reservation the key would simply stop doing what it used to, with
+nothing said about it at any point. A settings file that names a reserved key
+fails to load with a message giving the key, what Heikou already does with it,
+and the default that deleting the field restores.
 The removed `new_session` and `send_message` fields chose a commit key per
 destination. A config still carrying either one fails to load with a message
 naming `reply` as the replacement.
