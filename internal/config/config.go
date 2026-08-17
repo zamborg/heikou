@@ -25,6 +25,16 @@ type Config struct {
 	Commands      map[string][]string `json:"commands"`
 	ComposerKeys  ComposerKeys        `json:"composer_keys"`
 	Brief         BriefConfig         `json:"brief"`
+
+	// Mouse lets the pointer move the dashboard selection.
+	//
+	// It is off by default because turning it on has a cost that is not obvious
+	// from the setting's name: Heikou then claims the mouse from the terminal,
+	// and a plain drag stops selecting text on the dashboard. That is the one
+	// surface where selection is still the terminal's own, since an attached
+	// session is under tmux, which claims the mouse the same way. Shift-drag
+	// (Option in iTerm2) gets a selection back when this is on.
+	Mouse bool `json:"mouse"`
 }
 
 // BriefConfig chooses what fills the one-line summary in a session row. Each
@@ -148,6 +158,10 @@ func (s Store) Load() (Config, error) {
 		Commands      map[string][]string `json:"commands"`
 		ComposerKeys  json.RawMessage     `json:"composer_keys"`
 		Brief         json.RawMessage     `json:"brief"`
+		// A pointer so an omitted key keeps the default rather than asserting
+		// false, which is what lets the default flip later without silently
+		// rewriting the intent of every file that never mentioned it.
+		Mouse *bool `json:"mouse"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -185,6 +199,9 @@ func (s Store) Load() (Config, error) {
 		if err := composerKeys.apply(&settings.ComposerKeys); err != nil {
 			return Config{}, fmt.Errorf("parse settings %q: composer_keys: %w", s.Path, err)
 		}
+	}
+	if disk.Mouse != nil {
+		settings.Mouse = *disk.Mouse
 	}
 	if len(disk.Brief) > 0 {
 		brief, err := decodeBrief(disk.Brief)

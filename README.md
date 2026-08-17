@@ -445,7 +445,8 @@ there to create/open `~/.heikou/config.json` in `$VISUAL`, `$EDITOR`, or
     "reply": "space",
     "cycle_runner": "tab",
     "cycle_root": "shift+tab"
-  }
+  },
+  "mouse": false
 }
 ```
 
@@ -459,6 +460,16 @@ launch; a command action cannot supply arbitrary runner argv. The three
 once, so they may not share a key.
 `Enter` is the single commit key and is not configurable — that is what keeps
 the destination the one the composer displays.
+
+`mouse` is off by default. Setting it to `true` lets a click or the wheel move
+the dashboard selection, and takes effect on the next reload rather than on a
+restart. Enter still decides what happens to whatever is selected, so a stray
+click cannot attach, stop, or send anything. The cost is the part worth knowing
+before turning it on: Heikou then claims the mouse from the terminal, and a
+plain drag stops selecting text on the dashboard — the one surface where that is
+still the terminal's own, since an attached session is under tmux, which claims
+the mouse the same way. Hold `Shift` while dragging to get a selection back, or
+`Option` in iTerm2.
 
 Every key Heikou already answers to is reserved and cannot be assigned to one
 of the three: the organize chords, `Ctrl-G` resize mode, the help and settings

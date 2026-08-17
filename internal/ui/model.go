@@ -621,10 +621,63 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.notice = ""
 		return m, nil
 
+	case tea.MouseClickMsg:
+		return m.handleMouse(message.Button, message.Y)
+
+	case tea.MouseWheelMsg:
+		return m.handleMouse(message.Button, message.Y)
+
 	case tea.KeyPressMsg:
 		return m.handleKey(message)
 	}
 	return m, nil
+}
+
+// handleMouse moves the selection and nothing else. The pointer is navigation
+// here: it can put the cursor on a row, and Enter still decides what happens to
+// whatever is selected. That keeps every consequence — attaching, stopping,
+// sending — behind a key the user meant to press, so a misplaced click is
+// always recoverable by looking at the screen.
+//
+// Clicks are ignored entirely while the setting is off, so a terminal that
+// reports mouse events for its own reasons cannot move a selection the user
+// never asked it to move.
+func (m Model) handleMouse(button tea.MouseButton, y int) (tea.Model, tea.Cmd) {
+	if !m.settings.Mouse || m.busy || m.screen != screenDashboard || m.overlay != overlayNone {
+		return m, nil
+	}
+	var target int
+	switch button {
+	case tea.MouseLeft:
+		index, ok := m.rowAtY(y)
+		if !ok {
+			return m, nil
+		}
+		target = index
+	case tea.MouseWheelUp:
+		target = m.cursor - 1
+	case tea.MouseWheelDown:
+		target = m.cursor + 1
+	default:
+		return m, nil
+	}
+	rows := m.rows()
+	if len(rows) == 0 {
+		return m, nil
+	}
+	// Clamped against the same bounds moveSelection uses, so a wheel notch at
+	// either end is recognised as the no-op it is rather than being reported as
+	// a movement that was blocked.
+	if target = min(len(rows)-1, max(0, target)); target == m.cursor {
+		return m, nil
+	}
+	// Deliberately after the no-op checks. A click on the already-selected row
+	// or a wheel notch against the end of the list changes nothing, so it should
+	// not spend the notice line explaining a lock that stopped nothing.
+	if m.selectionLocked() {
+		return m.reportSelectionLock()
+	}
+	return m.moveSelection(target - m.cursor)
 }
 
 func (m Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1540,6 +1593,15 @@ func (m Model) View() tea.View {
 	view := tea.NewView(clipPane(content, m.width, m.height))
 	view.AltScreen = true
 	view.WindowTitle = "heikou · parallel agents"
+	// Only the dashboard asks for the mouse, and only when the setting is on.
+	// Help and settings are read, not navigated, so leaving the mouse with the
+	// terminal there keeps a plain drag selecting text on the two panes most
+	// likely to be copied out of. Bubble Tea diffs this per frame, so the claim
+	// is dropped and retaken as those screens open and close, and flipping the
+	// setting takes effect on the next render without a restart.
+	if m.settings.Mouse {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
 }
 
@@ -1590,6 +1652,45 @@ func (m Model) renderRule() string {
 	return faintStyle.Render(strings.Repeat("─", max(1, m.width)))
 }
 
+// dashboardListTop is the first screen row the workstream list occupies. View
+// stacks exactly two single lines above it, the header and the rule, and
+// TestDashboardHeaderIsOneLineAboveTheRule keeps that true — a click resolved
+// against a stale offset would select a row the pointer was not on, which is
+// worse than a click that does nothing.
+const dashboardListTop = 2
+
+// listWindowStart is the index of the first row the list draws. Rendering and
+// hit-testing have to agree on it exactly: if they drift, every click below the
+// scroll point lands on the wrong row, and it drifts silently because both
+// answers look reasonable in isolation. So both read it from here.
+func (m Model) listWindowStart(rowCount int) int {
+	height := m.listHeight()
+	start := 0
+	if m.cursor >= height {
+		start = m.cursor - height + 1
+	}
+	if start+height > rowCount {
+		start = max(0, rowCount-height)
+	}
+	return start
+}
+
+// rowAtY resolves a screen row to a list index, or reports that the point is
+// not on the list at all. The details pane and composer sit below it and stay
+// unclickable on purpose: they describe the selection rather than offering a
+// second way to change it.
+func (m Model) rowAtY(y int) (int, bool) {
+	if y < dashboardListTop || y >= dashboardListTop+m.listHeight() {
+		return 0, false
+	}
+	rows := m.rows()
+	index := m.listWindowStart(len(rows)) + (y - dashboardListTop)
+	if index < 0 || index >= len(rows) {
+		return 0, false
+	}
+	return index, true
+}
+
 func (m Model) renderWorkstreams() string {
 	height := m.listHeight()
 	rows := m.rows()
@@ -1597,13 +1698,7 @@ func (m Model) renderWorkstreams() string {
 		line := mutedStyle.Render("  No workstreams yet. Press Ctrl-N to create one.")
 		return line + strings.Repeat("\n", max(0, height-1))
 	}
-	start := 0
-	if m.cursor >= height {
-		start = m.cursor - height + 1
-	}
-	if start+height > len(rows) {
-		start = max(0, len(rows)-height)
-	}
+	start := m.listWindowStart(len(rows))
 	end := min(len(rows), start+height)
 	lines := make([]string, 0, height)
 	for index := start; index < end; index++ {
@@ -1946,6 +2041,7 @@ func (m Model) settingsLines() []string {
 		mutedStyle.Render(" state    ") + state,
 		mutedStyle.Render(" app data ") + truncatePlain(format.OneLine(format.CompactPath(m.snapshot.StatePath)), max(1, m.width-10)),
 		mutedStyle.Render(" startup default  ") + backendStyle(m.settings.DefaultRunner).Render(string(m.settings.DefaultRunner)),
+		mutedStyle.Render(" mouse            ") + mouseSettingSummary(m.settings.Mouse),
 		"", lipgloss.NewStyle().Bold(true).Render(" composer keys"),
 		mutedStyle.Render(" commit ") + "Enter sends to the destination shown in the composer",
 		mutedStyle.Render(" empty  ") + helpKeyLabel(m.settings.ReplyKey()) + " reply to selection",
@@ -1968,6 +2064,16 @@ func (m Model) settingsLines() []string {
 
 	lines = append(lines, "", mutedStyle.Render(" Commands are JSON argv arrays. Composer bindings apply after reload."))
 	return lines
+}
+
+// mouseSettingSummary names the cost as well as the state, because the cost is
+// the part nobody expects: the setting reads like it only adds a way to click,
+// and the line is read in the pane where someone would turn it on.
+func mouseSettingSummary(enabled bool) string {
+	if enabled {
+		return `on · "mouse": false to restore plain-drag text selection`
+	}
+	return `off · "mouse": true lets a click or wheel move the selection`
 }
 
 func (m Model) fitPane(lines []string, help string) string {

@@ -49,6 +49,40 @@ func TestLegacySettingsInheritComposerKeyDefaults(t *testing.T) {
 	}
 }
 
+// TestMouseIsOffUntilItIsAskedFor covers the default and both explicit values.
+// The default is the load-bearing half: turning the mouse on costs plain-drag
+// text selection on the dashboard, so it has to be something a user chose
+// rather than something a config file acquired by being written at all.
+func TestMouseIsOffUntilItIsAskedFor(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		file string
+		want bool
+	}{
+		{"omitted", `{"default_runner":"claude"}`, false},
+		{"explicitly off", `{"mouse":false}`, false},
+		{"explicitly on", `{"mouse":true}`, true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			clearSettingsEnvironment(t)
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(testCase.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			settings, err := (Store{Path: path}).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.Mouse != testCase.want {
+				t.Fatalf("mouse = %v, want %v", settings.Mouse, testCase.want)
+			}
+		})
+	}
+	if Default().Mouse {
+		t.Fatal("Default() enables the mouse")
+	}
+}
+
 func TestSettingsLoadAndNormalizeComposerKeys(t *testing.T) {
 	clearSettingsEnvironment(t)
 	path := filepath.Join(t.TempDir(), "config.json")
