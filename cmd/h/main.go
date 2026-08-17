@@ -694,6 +694,7 @@ Dashboard:
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
   F3                re-read sessions, preview, and the selected notes/files
   Up / Down         select a session; move draft lines when multiline
+  Option-↑/↓        jump to the previous or next workstream
   Mouse             off by default; "mouse": true in settings moves the selection
   Ctrl-G            resize snapshot/context with Up/Down; r resets
   Empty Enter       collapse a workstream or attach a session (not while replying)
