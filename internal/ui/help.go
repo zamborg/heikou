@@ -175,6 +175,8 @@ func (m Model) helpContentLines() []string {
 	lines = appendHelpBinding(lines, m.width, "r", "Reload settings from disk.")
 	lines = appendHelpBinding(lines, m.width, "↑ / ↓ · PgUp / PgDn", "Scroll settings; Home and End jump to the first and last rows.")
 	lines = appendHelpBinding(lines, m.width, "Esc", "Return to the dashboard. Changes affect new sessions and future key presses.")
+	lines = appendHelpParagraph(lines, m.width,
+		`The mouse is off by default. Set "mouse": true to let a click or the wheel move the dashboard selection; Enter still decides what happens to whatever is selected, so a stray click cannot attach or stop anything. It takes effect on reload rather than on restart. The cost is that Heikou then claims the mouse and a plain drag stops selecting text on the dashboard — hold Shift while dragging for that, or Option in iTerm2.`)
 
 	lines = appendHelpSection(lines, m.width, "Attached terminal")
 	lines = appendHelpParagraph(lines, m.width,

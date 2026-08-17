@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -635,6 +636,157 @@ func TestEscapeCancelsAnOrganizeEditInOnePress(t *testing.T) {
 // TestOptionArrowsJumpBetweenWorkstreams pins the motion, not the key: the
 // cursor crosses the list one group at a time, in the order the list draws its
 // groups, and stops rather than wrapping at either end.
+// mouseTestModel builds a list long enough to scroll, so a click can be checked
+// against a window that has moved rather than only against the top of the list.
+func mouseTestModel(t *testing.T) Model {
+	t.Helper()
+	model, _ := newTestModel("/tmp", heikou.BackendCodex)
+	model.width, model.height = 120, 30
+	now := time.Now()
+	group := testWorkstream("018f0000-0000-4000-8000-000000000081", "First", []string{"/tmp"}, now)
+	model.snapshot.Workstreams = []workstream.Workstream{group}
+	sessions := make([]control.Session, 0, 12)
+	for index := range 12 {
+		id := fmt.Sprintf("018f0000-0000-4000-8000-0000000000%02d", 90+index)
+		sessions = append(sessions, testDurableSession(id, group.ID, heikou.BackendCodex, fmt.Sprintf("task %d", index), "/tmp", now))
+	}
+	model.snapshot.Sessions = sessions
+	model.setSnapshot(model.snapshot)
+	model.settings.Mouse = true
+	model.selected = model.rows()[0].key
+	model.restoreSelection()
+	return model
+}
+
+// TestDashboardHeaderIsOneLineAboveTheRule pins the assumption dashboardListTop
+// encodes. Hit-testing reads a constant rather than measuring the render, so a
+// header that grows a line would silently start selecting the row above the
+// pointer; this fails instead.
+func TestDashboardHeaderIsOneLineAboveTheRule(t *testing.T) {
+	model := mouseTestModel(t)
+	above := []string{model.renderHeader(), model.renderRule()}
+	total := 0
+	for _, section := range above {
+		total += len(strings.Split(section, "\n"))
+	}
+	if total != dashboardListTop {
+		t.Fatalf("header and rule occupy %d lines, but dashboardListTop is %d", total, dashboardListTop)
+	}
+}
+
+// TestMouseIsIgnoredWhileTheSettingIsOff is the whole point of the flag: a
+// terminal that reports mouse events for its own reasons must not move a
+// selection the user never asked it to move.
+func TestMouseIsIgnoredWhileTheSettingIsOff(t *testing.T) {
+	model := mouseTestModel(t)
+	model.settings.Mouse = false
+	before := model.selected
+
+	updated, _ := model.Update(tea.MouseClickMsg{Button: tea.MouseLeft, Y: dashboardListTop + 3})
+	if got := updated.(Model).selected; got != before {
+		t.Fatalf("click with the setting off selected %q, want %q", got, before)
+	}
+	updated, _ = model.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, Y: dashboardListTop})
+	if got := updated.(Model).selected; got != before {
+		t.Fatalf("wheel with the setting off selected %q, want %q", got, before)
+	}
+	if view := model.View(); view.MouseMode != tea.MouseModeNone {
+		t.Fatalf("view claimed the mouse with the setting off: %v", view.MouseMode)
+	}
+	model.settings.Mouse = true
+	if view := model.View(); view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("view did not claim the mouse with the setting on: %v", view.MouseMode)
+	}
+}
+
+// TestClickSelectsTheRowUnderThePointer checks the mapping against the rows the
+// list actually drew, including after it has scrolled — the case where a
+// hit-test that recomputed its own window start would go wrong.
+func TestClickSelectsTheRowUnderThePointer(t *testing.T) {
+	model := mouseTestModel(t)
+
+	click := func(t *testing.T, model Model, y int, why string) Model {
+		t.Helper()
+		updated, _ := model.Update(tea.MouseClickMsg{Button: tea.MouseLeft, Y: y})
+		return updated.(Model)
+	}
+
+	rows := model.rows()
+	for offset := range min(4, model.listHeight()) {
+		got := click(t, model, dashboardListTop+offset, "click")
+		want := rows[model.listWindowStart(len(rows))+offset].key
+		if got.selected != want {
+			t.Fatalf("click at row %d selected %q, want %q", offset, got.selected, want)
+		}
+	}
+
+	// Drive the cursor past the window so the list scrolls, then confirm a click
+	// still lands on the row the pointer is over rather than on the row that
+	// would be there if the list had never moved.
+	model.cursor = len(rows) - 1
+	model.selected = rows[model.cursor].key
+	start := model.listWindowStart(len(rows))
+	if start == 0 {
+		t.Fatalf("list did not scroll with %d rows in a %d-row window", len(rows), model.listHeight())
+	}
+	scrolled := click(t, model, dashboardListTop+1, "click after scrolling")
+	if want := rows[start+1].key; scrolled.selected != want {
+		t.Fatalf("click after scrolling selected %q, want %q", scrolled.selected, want)
+	}
+
+	// Above and below the list nothing moves. The details pane and composer
+	// describe the selection; they are not a second way to change it.
+	for _, y := range []int{0, dashboardListTop - 1, dashboardListTop + model.listHeight(), model.height - 1} {
+		before := model.selected
+		if got := click(t, model, y, "outside").selected; got != before {
+			t.Fatalf("click at y=%d selected %q, want it left at %q", y, got, before)
+		}
+	}
+}
+
+// TestWheelMovesTheSelectionAndStopsAtTheEnds also pins that a notch against an
+// end is treated as the no-op it is, rather than as movement worth reporting.
+func TestWheelMovesTheSelectionAndStopsAtTheEnds(t *testing.T) {
+	model := mouseTestModel(t)
+	rows := model.rows()
+
+	updated, _ := model.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, Y: dashboardListTop})
+	model = updated.(Model)
+	if want := rows[1].key; model.selected != want {
+		t.Fatalf("wheel down selected %q, want %q", model.selected, want)
+	}
+	updated, _ = model.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: dashboardListTop})
+	model = updated.(Model)
+	if want := rows[0].key; model.selected != want {
+		t.Fatalf("wheel up selected %q, want %q", model.selected, want)
+	}
+
+	model.notice = ""
+	updated, _ = model.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: dashboardListTop})
+	model = updated.(Model)
+	if model.selected != rows[0].key || model.notice != "" {
+		t.Fatalf("wheel up at the top moved to %q with notice %q", model.selected, model.notice)
+	}
+}
+
+// TestMouseObeysTheSelectionLock keeps the pointer under the same rule as the
+// arrows: a pinned reply owns the selection, and a click says so instead of
+// quietly redirecting the message.
+func TestMouseObeysTheSelectionLock(t *testing.T) {
+	model := mouseTestModel(t)
+	model.replyTarget = model.snapshot.Sessions[0].ID
+	before := model.selected
+
+	updated, _ := model.Update(tea.MouseClickMsg{Button: tea.MouseLeft, Y: dashboardListTop + 2})
+	model = updated.(Model)
+	if model.selected != before {
+		t.Fatalf("click while replying selected %q, want it left at %q", model.selected, before)
+	}
+	if !strings.Contains(model.notice, "replying to") {
+		t.Fatalf("click while replying gave notice %q, want it to name the pinned reply", model.notice)
+	}
+}
+
 func TestOptionArrowsJumpBetweenWorkstreams(t *testing.T) {
 	model, _ := newTestModel("/tmp", heikou.BackendCodex)
 	now := time.Now()

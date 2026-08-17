@@ -30,7 +30,7 @@ import (
 	learnheikou "github.com/zamborg/heikou/skills/learn-heikou"
 )
 
-var version = "0.7.4"
+var version = "0.7.5"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent" {
@@ -694,6 +694,7 @@ Dashboard:
   Ctrl-S / F2       open settings (e edits JSON, r reloads)
   F3                re-read sessions, preview, and the selected notes/files
   Up / Down         select a session; move draft lines when multiline
+  Mouse             off by default; "mouse": true in settings moves the selection
   Ctrl-G            resize snapshot/context with Up/Down; r resets
   Empty Enter       collapse a workstream or attach a session (not while replying)
   Ctrl-N            create a workstream, named through the composer

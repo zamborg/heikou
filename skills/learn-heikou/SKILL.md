@@ -99,6 +99,7 @@ text, and move mark, then parks on Ungrouped. Quitting is `Ctrl-C`.
 | Open settings | `Ctrl-S` or `F2` |
 | See a workstream's notes and files | Select it; they fill the pane below the list |
 | Cross a long list | `Option-Up` / `Option-Down` jump to the previous or next workstream, passing over the sessions between |
+| Navigate with the mouse | Off by default; set `"mouse": true` in settings, then a click or the wheel moves the selection. Costs plain-drag text selection on the dashboard — `Shift`-drag, or `Option` in iTerm2, restores it |
 | Re-read everything from disk | `F3` |
 | Resize the lower pane | `Ctrl-G`, then `Up` / `Down`; `r` resets and `Esc` exits |
 | Create a workstream | `Ctrl-N`, type a name, then `Enter` |
